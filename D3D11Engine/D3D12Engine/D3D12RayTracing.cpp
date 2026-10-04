@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "D3D12RayTracing.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12GpuScene.h"
 #include "D3D12VobArena.h"
 #include "D3D12MeshArena.h"
 #include "D3D12VertexBuffer.h"
@@ -40,6 +41,10 @@ namespace {
     constexpr UINT kIdleFramesBeforeRelease = 300;
     constexpr UINT64 kMinScratchBytes = 8ull << 20;
     constexpr UINT64 kMinDynamicBlasBytes = 8ull << 20;
+    // GPU scene instances: the TLAS covers last count x 1.25 + headroom, at least the minimum
+    constexpr UINT kSceneBudgetMin = 1024;
+    constexpr UINT kSceneBudgetHeadroom = 512;
+    constexpr UINT kSceneSpareGeoms = 4096;
 
     constexpr uint32_t kKindVob = 1, kKindAttach = 2, kKindSkinned = 3;
     constexpr uint32_t kWorldInstanceId = 0xFFFFFFu;
@@ -80,6 +85,15 @@ namespace {
         UINT ContactIndex; UINT Pad1[3];
     };
     static_assert( sizeof( RtShadowCBData ) == 240, "RtShadowCBData must match RtShadows.hlsl's RtShadowCB" );
+    // Mirror RtSceneInstances.hlsl
+    struct VisualRtGPU { uint32_t BlasLo, BlasHi, TemplateBase, Layout; };
+    struct RtSceneCBData {
+        XMFLOAT3 CamPos; float OutdoorRadius;
+        float SmallRadius, IndoorRadius, MobRadius; UINT VisualCount;
+        UINT OutputBase, Budget, GeomBase, Pad;
+    };
+    static_assert( sizeof( RtSceneCBData ) == 48, "RtSceneCBData must match RtSceneInstances.hlsl's RtSceneCB" );
+    static_assert( D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE == 0x8, "RtSceneInstances.hlsl writes the flag literally" );
     static_assert( sizeof( D3D12_RAYTRACING_INSTANCE_DESC ) == 64, "instance descs are packed at 64 bytes" );
     static_assert( sizeof( Affine3x4 ) == sizeof( float ) * 12, "Affine3x4 is the instance transform verbatim" );
 
@@ -323,6 +337,15 @@ struct D3D12RayTracing::Impl {
         ComPtr<Rhi::Resource> StatsReadback;
         const uint32_t* StatsPtr = nullptr;
         bool StatsPending = false;
+        // GPU scene: this frame's VisualRtGPU mirror, and the feedback copied back (instances wanted, in-range flags)
+        ComPtr<Rhi::Resource> SceneVisuals;
+        uint8_t* SceneVisualsPtr = nullptr;
+        UINT64 SceneVisualsBytes = 0;
+        ComPtr<Rhi::Resource> SceneFeedback;
+        const uint32_t* SceneFeedbackPtr = nullptr;
+        UINT64 SceneFeedbackBytes = 0;
+        uint32_t SceneFeedbackVisuals = 0;   // 0 = nothing to read
+        uint32_t SceneFeedbackGeneration = 0;
     };
     FrameSlot Slots[D3D12GraphicsEngine::kBackBufferMax];
     UINT64 ScratchWant = kMinScratchBytes;
@@ -350,6 +373,21 @@ struct D3D12RayTracing::Impl {
     bool SceneBuilt = false, SceneValid = false;
     bool PosedInRead = false;
     std::vector<const zCVob*> Carriers;
+
+    // GPU scene (D3D12GpuScene): its instances and records are appended on the GPU behind the CPU-written ones,
+    // so the TLAS inputs live in DEFAULT buffers that the CPU part is copied into.
+    struct GpuBuffer {
+        ComPtr<Rhi::Resource> Res;
+        UINT64 Bytes = 0;
+        D3D12_RESOURCE_STATES State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    };
+    GpuBuffer SceneDescs, SceneInstances, SceneGeoms, SceneFeedback;
+    std::vector<VisualBlas*> SceneBlas;   // per scene visual; null until it was in range
+    uint32_t SceneGeneration = UINT32_MAX;
+    bool SceneBlasStale = false;          // a Visuals entry was erased: SceneBlas is re-found
+    bool SceneOnGpu = false;              // this frame's static VOBs come from the scene
+    UINT SceneWanted = 0;                 // scene instances in range, from the newest feedback
+    bool SceneOverflowLogged = false, SceneGeomMismatchLogged = false;
 
     // VOB collection, bucketed per instancing visual like the other passes
     RenderView Vobs;
@@ -661,41 +699,48 @@ struct D3D12RayTracing::Impl {
         return local * std::sqrt( scaleSq ) * 2.0f + 5.0f;
     }
 
-    void AddVisual( FrameSlot& s, MeshVisualInfo* visual, const std::vector<VobInstanceInfo>& instances ) {
-        D3D12VobArena* arena = E.m_VobArena.get();
-        if ( !visual || !visual->GetIsReady() || instances.empty() ) return;
-
+    /** The visual's cache entry, its BLAS built if the arena and the build budget allow; null while not ready. */
+    VisualBlas* EnsureVisualBlas( FrameSlot& s, MeshVisualInfo* visual ) {
+        if ( !visual || !visual->GetIsReady() ) return nullptr;
         auto [it, inserted] = Visuals.try_emplace( visual );
         VisualBlas& vb = it->second;
-        if ( vb.Empty ) return;
-        if ( !vb.Mem.Valid() ) {
-            // First sight (or still waiting on the arena / the build budget)
-            GeomDescs.clear();
-            vb.Geoms.clear();
-            UINT64 triangles = 0;
-            bool resident = true;
-            const D3D12_GPU_VIRTUAL_ADDRESS vbVa = arena->GetVertexBuffer()->GetGPUVirtualAddress();
-            const D3D12_GPU_VIRTUAL_ADDRESS ibVa = arena->GetIndexBuffer()->GetGPUVirtualAddress();
-            for ( auto const& [key, list] : visual->MeshesByTexture ) {
-                if ( !key.Material || IsBlended( key.Material ) ) continue;
-                const bool opaque = IsKnownOpaque( key.Material );
-                for ( MeshInfo* mi : list ) {
-                    if ( !mi || mi->Indices.empty() || mi->Vertices.empty() ) continue;
-                    const D3D12VobArena::Range* r = arena->Find( mi );
-                    if ( !r || r->IndexCount == 0 ) { resident = false; break; }
-                    GeomDescs.push_back( TriangleGeometry( vbVa + static_cast<UINT64>( r->BaseVertex ) * D3D12VobArena::VertexStride(),
-                        D3D12VobArena::VertexStride(), static_cast<UINT>( mi->Vertices.size() ),
-                        ibVa + static_cast<UINT64>( r->IndexStart ) * sizeof( uint16_t ), DXGI_FORMAT_R16_UINT, r->IndexCount, opaque ) );
-                    vb.Geoms.push_back( { mi, key.Material } );
-                    triangles += r->IndexCount / 3;
-                }
-                if ( !resident ) break;
+        if ( vb.Empty || vb.Mem.Valid() ) return &vb;
+
+        // First sight (or still waiting on the arena / the build budget). The GPU scene's near templates skip the
+        // same sub-meshes in the same order (D3D12GpuScene::BuildTemplates).
+        D3D12VobArena* arena = E.m_VobArena.get();
+        GeomDescs.clear();
+        vb.Geoms.clear();
+        UINT64 triangles = 0;
+        const D3D12_GPU_VIRTUAL_ADDRESS vbVa = arena->GetVertexBuffer()->GetGPUVirtualAddress();
+        const D3D12_GPU_VIRTUAL_ADDRESS ibVa = arena->GetIndexBuffer()->GetGPUVirtualAddress();
+        for ( auto const& [key, list] : visual->MeshesByTexture ) {
+            if ( !key.Material || IsBlended( key.Material ) ) continue;
+            const bool opaque = IsKnownOpaque( key.Material );
+            for ( MeshInfo* mi : list ) {
+                if ( !mi || mi->Indices.empty() || mi->Vertices.empty() ) continue;
+                const D3D12VobArena::Range* r = arena->Find( mi );
+                if ( !r || r->IndexCount == 0 ) return &vb;   // not resident yet
+                GeomDescs.push_back( TriangleGeometry( vbVa + static_cast<UINT64>( r->BaseVertex ) * D3D12VobArena::VertexStride(),
+                    D3D12VobArena::VertexStride(), static_cast<UINT>( mi->Vertices.size() ),
+                    ibVa + static_cast<UINT64>( r->IndexStart ) * sizeof( uint16_t ), DXGI_FORMAT_R16_UINT, r->IndexCount, opaque ) );
+                vb.Geoms.push_back( { mi, key.Material } );
+                triangles += r->IndexCount / 3;
             }
-            if ( !resident ) return;
-            if ( GeomDescs.empty() ) { vb.Empty = true; return; }
-            if ( !BuildCached( s, vb, OwnerKind::Visual, visual, triangles ) ) return;
-            for ( const auto& g : vb.Geoms ) MeshToVisual[g.Mesh] = visual;
         }
+        if ( GeomDescs.empty() ) { vb.Empty = true; return &vb; }
+        if ( BuildCached( s, vb, OwnerKind::Visual, visual, triangles ) )
+            for ( const auto& g : vb.Geoms ) MeshToVisual[g.Mesh] = visual;
+        return &vb;
+    }
+
+    void AddVisual( FrameSlot& s, MeshVisualInfo* visual, const std::vector<VobInstanceInfo>& instances,
+        uint32_t mask = D3D12RayTracing::kMaskVob ) {
+        if ( instances.empty() ) return;
+        VisualBlas* found = EnsureVisualBlas( s, visual );
+        if ( !found || !found->Mem.Valid() ) return;
+        VisualBlas& vb = *found;
+        D3D12VobArena* arena = E.m_VobArena.get();
         vb.LastUsed = Frame;
 
         if ( vb.FrameStamp != Frame ) {
@@ -710,7 +755,7 @@ struct D3D12RayTracing::Impl {
             vb.FrameRecordBase = first;
         }
         for ( const VobInstanceInfo& inst : instances )
-            if ( !AddInstance( vb.Mem.Address, &inst.world._11, vb.FrameRecordBase, inst.color, kMaskVob, SwayReach( inst ) ) ) return;
+            if ( !AddInstance( vb.Mem.Address, &inst.world._11, vb.FrameRecordBase, inst.color, mask, SwayReach( inst ) ) ) return;
     }
 
     void AddAttachments( FrameSlot& s, std::span<const FrameAttachDraw> draws ) {
@@ -860,12 +905,31 @@ struct D3D12RayTracing::Impl {
         ctx.drawFlags.CollectIndoorVobs = indoor;
         ctx.drawFlags.CollectMobs = false;
         ctx.drawFlags.CollectLights = false;
+        // The scene's instances are appended on the GPU; only its CPU-path list joins the dynamic vobs here.
+        ctx.drawFlags.SkipStaticVobs = SceneOnGpu;
+        ctx.extraVobs = SceneOnGpu ? &E.m_GpuScene->CpuVobs() : nullptr;
         Engine::GAPI->CollectVisibleVobs( ctx );
 
         for ( size_t i = 0; i < buckets; ++i ) {
             const auto& instances = Vobs.buckets[i].instances;
             if ( instances.empty() ) continue;
             AddVisual( s, E.VobVisualForBucket( i ), instances );
+        }
+    }
+
+    /** MOB snapshots the GPU scene draws have no attachment records; their node meshes come from the scene. */
+    void CollectSceneMobs( FrameSlot& s, float radius ) {
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( !E.m_GpuSceneActive || !rs.DrawMobs || !E.m_VobArena->Ready() ) return;
+        ZoneScopedN( "RT scene MOBs" );
+        const D3D12GpuScene& scene = *E.m_GpuScene;
+        const XMFLOAT3 cam = Engine::GAPI->GetCameraPosition();
+        const float reach = std::min( radius, rs.SkeletalMeshDrawRadius );
+        static std::vector<VobInstanceInfo> instances;
+        for ( uint32_t v = scene.FirstMobVisual(); v < scene.VisualCount(); ++v ) {
+            scene.GatherMobInstances( v, cam, reach, instances );
+            // The mask the CPU path's attachment instances carry.
+            if ( !instances.empty() ) AddVisual( s, scene.VisualInfo( v ), instances, D3D12RayTracing::kMaskDynamic );
         }
     }
 
@@ -878,6 +942,7 @@ struct D3D12RayTracing::Impl {
                 FreeDeferred( it->second.Mem );
                 it->second.Mem = {};   // the deferred free owns it now
                 it = Visuals.erase( it );
+                SceneBlasStale = true;
             } else ++it;
         }
         for ( auto it = Attachments.begin(); it != Attachments.end() && CachedPool.Used() > target; ) {
@@ -1025,6 +1090,8 @@ struct D3D12RayTracing::Impl {
         Visuals.clear();
         Attachments.clear();
         MeshToVisual.clear();
+        SceneBlas.clear();
+        SceneGeneration = UINT32_MAX;
         for ( FrameSlot& s : Slots ) s.Pending.clear();
     }
 
@@ -1045,6 +1112,7 @@ struct D3D12RayTracing::Impl {
                     for ( const auto& g : v->second.Geoms ) if ( g.Mesh != mesh ) MeshToVisual.erase( g.Mesh );
                     FreeDeferred( v->second.Mem );
                     Visuals.erase( v );
+                    SceneBlasStale = true;
                 }
                 MeshToVisual.erase( mesh );
             }
@@ -1055,12 +1123,213 @@ struct D3D12RayTracing::Impl {
     void ReleaseSlots() {
         for ( FrameSlot& s : Slots ) {
             for ( ComPtr<Rhi::Resource>* r : { std::addressof( s.Ring ), std::addressof( s.Tlas ), std::addressof( s.Scratch ),
-                      std::addressof( s.DynamicBlas ), std::addressof( s.PostbuildGpu ), std::addressof( s.PostbuildReadback ) } )
+                      std::addressof( s.DynamicBlas ), std::addressof( s.PostbuildGpu ), std::addressof( s.PostbuildReadback ),
+                      std::addressof( s.SceneVisuals ), std::addressof( s.SceneFeedback ) } )
                 if ( *r ) E.QueueResourceForRelease( std::move( *r ) );
             s = FrameSlot{};
         }
+        for ( GpuBuffer* b : { &SceneDescs, &SceneInstances, &SceneGeoms, &SceneFeedback } ) {
+            if ( b->Res ) E.QueueResourceForRelease( std::move( b->Res ) );
+            *b = GpuBuffer{};
+        }
         ScratchWant = kMinScratchBytes;
         DynamicBlasWant = kMinDynamicBlasBytes;
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // GPU scene: RtSceneInstances.hlsl appends the table's instances and records behind the CPU-written ones.
+    bool SceneUsable() const {
+        const D3D12PipelineState& p = E.m_Pipelines;
+        if ( !E.m_GpuSceneActive || !E.m_GpuScene || !p.RtSceneClear.PSO || !p.RtSceneInstances.PSO || !p.RtSceneTail.PSO ) return false;
+        const D3D12GpuScene& scene = *E.m_GpuScene;
+        // One group per visual; InstanceID (24 bits) holds kMaxGeoms + a template index.
+        return scene.VisualCount() > 0 && scene.VisualCount() <= D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION
+            && scene.Table() && scene.Records() && scene.Templates()
+            && static_cast<UINT64>( kMaxGeoms ) + scene.CommandCapacity() < kWorldInstanceId;
+    }
+
+    /** Grows a DEFAULT UAV buffer; a replaced one is released once the frames in flight are done with it. */
+    bool EnsureGpuBuffer( GpuBuffer& b, UINT64 bytes, UINT64 spare, const wchar_t* name ) {
+        if ( b.Res && b.Bytes >= bytes ) return true;
+        if ( b.Res ) E.QueueResourceForRelease( std::move( b.Res ) );
+        b.Res = CreateUavBuffer( Rhi(), bytes + spare, name );
+        b.Bytes = b.Res ? bytes + spare : 0;
+        b.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        return b.Res != nullptr;
+    }
+
+    bool EnsureSceneResources( FrameSlot& s ) {
+        const D3D12GpuScene& scene = *E.m_GpuScene;
+        const UINT64 visuals = scene.VisualCount();
+        if ( !EnsureGpuBuffer( SceneDescs, sizeof( D3D12_RAYTRACING_INSTANCE_DESC ) * kMaxInstances, 0, L"RtSceneInstanceDescs" )
+            || !EnsureGpuBuffer( SceneInstances, sizeof( RtInstanceGPU ) * kMaxInstances, 0, L"RtSceneInstances" )
+            || !EnsureGpuBuffer( SceneGeoms, sizeof( RtGeomGPU ) * ( kMaxGeoms + static_cast<UINT64>( scene.CommandCapacity() ) ),
+                sizeof( RtGeomGPU ) * kSceneSpareGeoms, L"RtSceneGeometry" )
+            || !EnsureGpuBuffer( SceneFeedback, sizeof( uint32_t ) * ( visuals + 1 ), sizeof( uint32_t ) * 1024, L"RtSceneFeedback" ) )
+            return false;
+
+        // This slot's previous frame retired, so its own buffers can be swapped outright.
+        if ( s.SceneVisualsBytes < visuals * sizeof( VisualRtGPU ) ) {
+            if ( s.SceneVisuals ) E.QueueResourceForRelease( std::move( s.SceneVisuals ) );
+            s.SceneVisualsBytes = 0;
+            const UINT64 bytes = ( visuals + 1024 ) * sizeof( VisualRtGPU );
+            const D3D12_RESOURCE_DESC d = BufferDesc( bytes );
+            D3D12_RANGE noRead = { 0, 0 };
+            if ( FAILED( Rhi()->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &d, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, s.SceneVisuals.GetAddressOf() ) )
+                || FAILED( s.SceneVisuals->Map( 0, &noRead, reinterpret_cast<void**>( &s.SceneVisualsPtr ) ) ) ) {
+                s.SceneVisuals.Reset();
+                return false;
+            }
+            s.SceneVisuals->SetName( L"RtSceneVisuals" );
+            s.SceneVisualsBytes = bytes;
+        }
+        if ( s.SceneFeedbackBytes < ( visuals + 1 ) * sizeof( uint32_t ) ) {
+            if ( s.SceneFeedback ) E.QueueResourceForRelease( std::move( s.SceneFeedback ) );
+            s.SceneFeedbackBytes = 0;
+            s.SceneFeedbackVisuals = 0;
+            const UINT64 bytes = ( visuals + 1 + 1024 ) * sizeof( uint32_t );
+            const D3D12_RESOURCE_DESC d = BufferDesc( bytes );
+            if ( FAILED( Rhi()->CreateResource( D3D12_HEAP_TYPE_READBACK, &d, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, s.SceneFeedback.GetAddressOf() ) )
+                || FAILED( s.SceneFeedback->Map( 0, nullptr, reinterpret_cast<void**>( const_cast<uint32_t**>( &s.SceneFeedbackPtr ) ) ) ) ) {
+                s.SceneFeedback.Reset();
+                return false;
+            }
+            s.SceneFeedback->SetName( L"RtSceneFeedbackReadback" );
+            s.SceneFeedbackBytes = bytes;
+        }
+        return true;
+    }
+
+    /** Follows table rebuilds and erased cache entries, then turns the slot's feedback into BLAS builds and LastUsed. */
+    void SyncSceneVisuals( FrameSlot& s ) {
+        const D3D12GpuScene& scene = *E.m_GpuScene;
+        const UINT visuals = scene.VisualCount();
+        if ( SceneGeneration != scene.Generation() || SceneBlas.size() != visuals ) {
+            SceneBlas.assign( visuals, nullptr );
+            SceneGeneration = scene.Generation();
+            SceneWanted = 0;
+        } else if ( SceneBlasStale ) {
+            for ( uint32_t v = 0; v < visuals; ++v ) {
+                if ( !SceneBlas[v] ) continue;
+                const auto it = Visuals.find( scene.VisualInfo( v ) );
+                SceneBlas[v] = it != Visuals.end() ? &it->second : nullptr;
+            }
+        }
+        SceneBlasStale = false;
+
+        // The slot's frame retired, so its copy has landed.
+        if ( s.SceneFeedbackVisuals == visuals && s.SceneFeedbackGeneration == SceneGeneration ) {
+            SceneWanted = s.SceneFeedbackPtr[0];
+            const uint32_t* inRange = s.SceneFeedbackPtr + 1;
+            for ( uint32_t v = 0; v < visuals; ++v ) {
+                if ( !inRange[v] ) continue;
+                VisualBlas* vb = SceneBlas[v];
+                if ( !vb || ( !vb->Mem.Valid() && !vb->Empty ) ) vb = SceneBlas[v] = EnsureVisualBlas( s, scene.VisualInfo( v ) );
+                if ( vb ) vb->LastUsed = Frame;
+            }
+        }
+        s.SceneFeedbackVisuals = 0;
+    }
+
+    /** Writes the visual mirror, copies the CPU part to the front of the DEFAULT buffers and appends the scene's
+        instances and records on the GPU. Returns the instance budget the TLAS covers behind the CPU instances. */
+    UINT RecordSceneInstances( FrameSlot& s, float radius, bool indoor ) {
+        ZoneScopedN( "RT scene instances" );
+        const D3D12GpuScene& scene = *E.m_GpuScene;
+        const UINT visuals = scene.VisualCount();
+
+        // A visual is traced once its near templates match its BLAS geometries one to one.
+        VisualRtGPU* mirror = reinterpret_cast<VisualRtGPU*>( s.SceneVisualsPtr );
+        for ( uint32_t v = 0; v < visuals; ++v ) {
+            VisualRtGPU r = {};
+            const VisualBlas* vb = SceneBlas[v];
+            uint32_t base = 0, nearCount = 0, casterOffset = 0;
+            if ( vb && vb->Mem.Valid() && scene.RtTemplates( v, base, nearCount, casterOffset ) ) {
+                if ( nearCount == vb->Geoms.size() && casterOffset <= 0xFFFFu ) {
+                    r = { static_cast<uint32_t>( vb->Mem.Address ), static_cast<uint32_t>( vb->Mem.Address >> 32 ), base,
+                        nearCount | ( casterOffset << 16 ) };
+                } else if ( !std::exchange( SceneGeomMismatchLogged, true ) ) {
+                    Logging::Wrn( "D3D12: RT scene visual {} has {} BLAS geometries but {} templates; it is not ray traced.",
+                        scene.VisualInfo( v )->VisualName, vb->Geoms.size(), nearCount );
+                }
+            }
+            mirror[v] = r;   // write-combined: one sequential store
+        }
+
+        const UINT room = kMaxInstances - std::min( InstanceCount, kMaxInstances );
+        const UINT budget = static_cast<UINT>( std::min<UINT64>( room,
+            std::max<UINT64>( static_cast<UINT64>( SceneWanted ) * 5 / 4 + kSceneBudgetHeadroom, kSceneBudgetMin ) ) );
+        if ( SceneWanted > room && !std::exchange( SceneOverflowLogged, true ) )
+            Logging::Wrn( "D3D12: more than {} ray tracing instances with the GPU scene's; the rest are not ray traced.", kMaxInstances );
+
+        DX_ZONE( Cmd().Get(), "RT scene instances" );
+        // The CPU part to the front
+        D3D12ResourceTransition pre[3] = {};
+        UINT n = 0;
+        for ( const GpuBuffer* b : { &SceneDescs, &SceneInstances, &SceneGeoms } )
+            if ( b->State != D3D12_RESOURCE_STATE_COPY_DEST ) pre[n++] = { b->Res.Get(), b->State, D3D12_RESOURCE_STATE_COPY_DEST };
+        if ( n ) Cmd()->TransitionBarriers( pre, n );
+        if ( InstanceCount ) {
+            Cmd()->CopyBufferRegion( SceneDescs.Res.Get(), 0, s.Ring.Get(), kOffInstanceDescs,
+                static_cast<UINT64>( InstanceCount ) * sizeof( D3D12_RAYTRACING_INSTANCE_DESC ) );
+            Cmd()->CopyBufferRegion( SceneInstances.Res.Get(), 0, s.Ring.Get(), kOffInstances,
+                static_cast<UINT64>( InstanceCount ) * sizeof( RtInstanceGPU ) );
+        }
+        if ( GeomCount ) Cmd()->CopyBufferRegion( SceneGeoms.Res.Get(), 0, s.Ring.Get(), kOffGeoms, static_cast<UINT64>( GeomCount ) * sizeof( RtGeomGPU ) );
+        Cmd()->TransitionBarriers( {
+            { SceneDescs.Res.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { SceneInstances.Res.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { SceneGeoms.Res.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            } );
+
+        // As CollectVobs' distances
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        RtSceneCBData cb = {};
+        cb.CamPos = Engine::GAPI->GetCameraPosition();
+        cb.OutdoorRadius = rs.DrawVOBs ? std::min( radius, rs.OutdoorVobDrawRadius ) : 0.0f;
+        cb.SmallRadius = rs.DrawVOBs ? std::min( radius * 0.5f, rs.OutdoorSmallVobDrawRadius ) : 0.0f;
+        cb.IndoorRadius = rs.DrawVOBs && indoor ? std::min( radius, rs.IndoorVobDrawRadius ) : 0.0f;
+        cb.MobRadius = rs.DrawMobs ? std::min( radius, rs.SkeletalMeshDrawRadius ) : 0.0f;
+        cb.VisualCount = visuals;
+        cb.OutputBase = InstanceCount;
+        cb.Budget = budget;
+        cb.GeomBase = kMaxGeoms;
+
+        const D3D12PipelineState& p = E.m_Pipelines;
+        Cmd()->SetComputeRootSignature( p.RtSceneInstances.RootSig.Get() );
+        Cmd()->SetComputeRoot32BitConstants( 0, sizeof( cb ) / 4, &cb, 0 );
+        Cmd()->SetComputeRootShaderResourceView( 1, scene.Records()->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootShaderResourceView( 2, scene.Table()->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootShaderResourceView( 3, scene.Templates()->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootShaderResourceView( 4, s.SceneVisuals->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootUnorderedAccessView( 5, SceneDescs.Res->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootUnorderedAccessView( 6, SceneInstances.Res->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootUnorderedAccessView( 7, SceneGeoms.Res->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootUnorderedAccessView( 8, SceneFeedback.Res->GetGPUVirtualAddress() );
+        Cmd()->SetPipelineState( p.RtSceneClear.PSO.Get() );
+        Cmd()->Dispatch( 1, 1, 1 );
+        Cmd()->UAVBarrier( SceneFeedback.Res.Get() );
+        Cmd()->SetPipelineState( p.RtSceneInstances.PSO.Get() );
+        Cmd()->Dispatch( visuals, 1, 1 );
+        if ( budget > 0 ) {
+            Cmd()->UAVBarriers( { SceneDescs.Res.Get(), SceneFeedback.Res.Get() } );
+            Cmd()->SetPipelineState( p.RtSceneTail.PSO.Get() );
+            Cmd()->Dispatch( ( budget + 63 ) / 64, 1, 1 );
+        }
+
+        Cmd()->TransitionBarriers( {
+            { SceneDescs.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+            { SceneInstances.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+            { SceneGeoms.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+            { SceneFeedback.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE },
+            } );
+        for ( GpuBuffer* b : { &SceneDescs, &SceneInstances, &SceneGeoms } ) b->State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        Cmd()->CopyBufferRegion( s.SceneFeedback.Get(), 0, SceneFeedback.Res.Get(), 0, ( visuals + 1ull ) * sizeof( uint32_t ) );
+        Cmd()->TransitionBarrier( SceneFeedback.Res.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        s.SceneFeedbackVisuals = visuals;
+        s.SceneFeedbackGeneration = SceneGeneration;
+        TracyPlot( "RT scene instances", static_cast<int64_t>( SceneWanted ) );
+        return budget;
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -1115,6 +1384,8 @@ struct D3D12RayTracing::Impl {
         ProcessCompactions( s );
         if ( !EnsureWorld( s ) ) return false;
         EvictIfOverBudget();
+        SceneOnGpu = SceneUsable() && EnsureSceneResources( s );
+        if ( SceneOnGpu ) SyncSceneVisuals( s );
 
         // Instance 0: the world
         static const float kIdentity[12] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
@@ -1124,8 +1395,10 @@ struct D3D12RayTracing::Impl {
 
         AcquirePosed();
         CollectVobs( s, vobRadius, indoorVobs );
+        if ( !SceneOnGpu ) CollectSceneMobs( s, vobRadius );
         AddAttachments( s, E.FrameAttachDraws() );
         if ( PosedInRead ) AddSkinned( s, E.FrameSkelDraws() );
+        const UINT sceneBudget = SceneOnGpu ? RecordSceneInstances( s, vobRadius, indoorVobs ) : 0u;
 
         Cmd()->AccelerationStructureBarrier();
         // Compacted sizes out to the readback copy
@@ -1137,8 +1410,8 @@ struct D3D12RayTracing::Impl {
         }
 
         // TLAS
-        tin.NumDescs = InstanceCount;
-        tin.InstanceDescs = s.Ring->GetGPUVirtualAddress() + kOffInstanceDescs;
+        tin.NumDescs = InstanceCount + sceneBudget;
+        tin.InstanceDescs = SceneOnGpu ? SceneDescs.Res->GetGPUVirtualAddress() : s.Ring->GetGPUVirtualAddress() + kOffInstanceDescs;
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC tdesc = {};
         tdesc.Inputs = tin;
         tdesc.DestAccelerationStructureData = s.Tlas->GetGPUVirtualAddress();
@@ -1163,8 +1436,8 @@ struct D3D12RayTracing::Impl {
         D3D12MeshArena* skelArena = E.m_SkelArena.get();
         const D3D12_GPU_VIRTUAL_ADDRESS ring = s.Ring->GetGPUVirtualAddress();
         Cmd()->SetComputeRootShaderResourceView( 2, s.Tlas->GetGPUVirtualAddress() );
-        Cmd()->SetComputeRootShaderResourceView( 3, ring + kOffGeoms );
-        Cmd()->SetComputeRootShaderResourceView( 4, ring + kOffInstances );
+        Cmd()->SetComputeRootShaderResourceView( 3, SceneOnGpu ? SceneGeoms.Res->GetGPUVirtualAddress() : ring + kOffGeoms );
+        Cmd()->SetComputeRootShaderResourceView( 4, SceneOnGpu ? SceneInstances.Res->GetGPUVirtualAddress() : ring + kOffInstances );
         Cmd()->SetComputeRootShaderResourceView( 5, WorldBlas.Geoms->GetGPUVirtualAddress() );
         Cmd()->SetComputeRootShaderResourceView( 6, ring + kOffWorldMats );
         Cmd()->SetComputeRootShaderResourceView( 7, worldVb );
@@ -1367,7 +1640,7 @@ D3D12RayTracing::D3D12RayTracing( D3D12GraphicsEngine& engine ) : m( std::make_u
 D3D12RayTracing::~D3D12RayTracing() = default;
 
 void D3D12RayTracing::BeginFrame() {
-    m->SceneBuilt = m->SceneValid = false;
+    m->SceneBuilt = m->SceneValid = m->SceneOnGpu = false;
     m->Carriers.clear();
 }
 

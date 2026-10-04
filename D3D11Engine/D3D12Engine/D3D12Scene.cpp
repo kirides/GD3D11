@@ -53,6 +53,8 @@ using Microsoft::WRL::ComPtr;
 #include "../WorldMeshSection.h"
 #include "../GSky.h"
 #include "D3D12VobArena.h"
+#include "D3D12GpuScene.h"
+#include "D3D12GpuWorld.h"
 #include "D3D12MeshArena.h"
 #include "../TransparencyQueue.h"
 
@@ -373,11 +375,20 @@ XRESULT D3D12GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     // by POINTER against what each slot baked -- nothing about the dying vob can be read here, which is also
     // why no StaticVob gate is left: a slot that never baked it simply doesn't match.
     m_PointShadows.InvalidateStaticForVobRemoved( vob );
+    // GPU-baked cubes keep no pointers, so a table vob invalidates by its load-time bounds instead.
+    XMFLOAT4 baked;
+    if ( m_GpuScene->OnVobLeft( vob, &baked ) )
+        m_PointShadows.InvalidateStaticForVobAdded( XMFLOAT3( baked.x, baked.y, baked.z ), baked.w );
     return XR_SUCCESS;
 }
 
 
 void D3D12GraphicsEngine::OnVobMoved( zCVob* vob ) {
+    // It left its leaf (GothicAPI::OnVobMoved), so DynamicallyAddedVobs draws it from now on, and a cube that
+    // GPU-baked it where it stood has to let go.
+    XMFLOAT4 baked;
+    if ( m_GpuScene->OnVobLeft( vob, &baked ) )
+        m_PointShadows.InvalidateStaticForVobAdded( XMFLOAT3( baked.x, baked.y, baked.z ), baked.w );
     // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
     // missing from its cube. Queued because a falling item moves several times before coming to rest.
     m_PointShadows.QueueVobChangedInvalidation( vob );
@@ -385,14 +396,31 @@ void D3D12GraphicsEngine::OnVobMoved( zCVob* vob ) {
 
 
 void D3D12GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
-    // It started moving (a door swinging open, a chest lid), so anything that baked it has to let go --
-    // same pointer match as the removal case, and equally cheap when nothing baked it.
+    // A skeletal vob left its leaf (its transform changed), so anything that baked it has to let go -- same
+    // pointer match as the removal case, and equally cheap when nothing baked it.
     m_PointShadows.InvalidateStaticForVobRemoved( vob );
+    // The CPU path draws it from now on; a cube that GPU-baked its snapshot lets go by bounds.
+    XMFLOAT4 baked;
+    if ( m_GpuScene->OnVobLeft( vob, &baked ) )
+        m_PointShadows.InvalidateStaticForVobAdded( XMFLOAT3( baked.x, baked.y, baked.z ), baked.w );
+}
+
+
+void D3D12GraphicsEngine::OnVobsReset() {
+    m_GpuScene->Reset();
+}
+
+
+void D3D12GraphicsEngine::OnWorldMeshReset() {
+    // Not every load mode reaches OnLoadWorld, and the GPU world points into the sections being deleted.
+    m_GpuWorld->Reset();
 }
 
 
 void D3D12GraphicsEngine::OnLoadWorld()
 {
+    m_GpuScene->Reset();
+    m_GpuWorld->Reset();
     g_vobInfoVisualToBucket.clear();
     g_vobInfoVisualIndexToVisualInfo.clear();
     g_GeometryPassVobs.Reset();
@@ -2522,6 +2550,30 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	m_VobLodDistance = Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius > 0.0f
 		? Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius : 0.0f;
 
+	// GPU scene (D3D12GpuScene.h): static VOBs come from a persistent table that the GPU culls, which also puts
+	// the rest (moved and CPU-path vobs) on the GPU cull. After the LOD snapshot, which the templates bake in.
+	{
+		const GothicRendererSettings& srs = Engine::GAPI->GetRendererState().RendererSettings;
+		const auto& cull = m_Pipelines.Cull;
+		const bool sceneWanted = srs.GpuScene && srs.DrawVOBs && m_FrameOpen && m_VobCullReady && m_VobIndirectCmdSig
+			&& cull.VobCullPSO && cull.VobCullNoMotionPSO && cull.VobCullRootSig && cull.PatchPSO && cull.PatchRootSig
+			&& cull.VobCullScenePSO && cull.VobCullSceneNoMotionPSO && cull.SceneArgsRootSig && cull.SceneArgsPSO
+			&& cull.SceneClearPSO;
+		m_GpuSceneActive = sceneWanted && m_GpuScene->BeginFrame( m_CmdList, ComputeSkeletalFocusVob(), srs.DrawMobs );
+		if ( m_GpuSceneActive ) m_GpuVobCullActive = true;
+		// A MOB whose pose left or rejoined the table: cubes holding its old pose re-bake.
+		if ( m_GpuSceneActive ) {
+			for ( const XMFLOAT4& s : m_GpuScene->MobInvalidations() )
+				m_PointShadows.InvalidateStaticForVobAdded( XMFLOAT3( s.x, s.y, s.z ), s.w );
+		}
+		m_GpuSceneFocusSlot = 0xFFFFFFFFu;
+		if ( m_GpuSceneActive && oCGame::GetHighlightInteractFocus() && oCGame::GetPlayer() )
+			m_GpuSceneFocusSlot = m_GpuScene->SlotOf( oCGame::GetPlayer()->GetFocusVob() );
+		// GPU world (D3D12GpuWorld.h): the world mesh is culled per view on the GPU.
+		m_GpuWorldActive = srs.GpuWorld && m_FrameOpen && m_WorldIndirectCmdSig && cull.WorldCullPSO && cull.WorldClearPSO
+			&& m_GpuWorld->BeginFrame( m_CmdList );
+	}
+
 	// zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
 	// Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
 	// then instanced static VOBs. The sky is a fog-colored fill so the horizon dissolves into the
@@ -2547,13 +2599,16 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	}
 	g_FrameVobs.clear(); g_FrameLights.clear(); g_FrameMobs.clear();
 	Engine::GAPI->CollectVisibleVobs( g_FrameVobs, g_FrameLights, g_FrameMobs,
-		EGothicCullFlags::CullAll, EBspTreeCollectFlags::COLLECT_ALL_MUTATE, m_GpuVobCullActive );
+		EGothicCullFlags::CullAll, EBspTreeCollectFlags::COLLECT_ALL_MUTATE, m_GpuVobCullActive,
+		m_GpuSceneActive, m_GpuSceneActive ? &m_GpuScene->CpuVobs() : nullptr );
 	BuildFrameLightBuffer();
 	// Snapshot ALL opaque instanced geometry ONCE, before the depth prepass + cull, so every geometry pass draws
 	// from one shared upload: VOB instances (g_FrameVobUploads), then skeletal base/attachment CBs + instances
 	// (g_FrameSkelDraws/g_FrameAttachDraws — PrepareFrameSkeletals also runs the once/frame animation update, so
 	// it MUST run exactly once). Both skeletal lists (animated + static mobs) are prepared here up front.
 	UploadFrameVobInstances();
+	// After the arena flush at the top of UploadFrameVobInstances: templates need resident sub-meshes.
+	if ( m_GpuSceneActive ) m_GpuScene->PrepareDraws( m_CmdList );
 	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear(); g_FrameMorphAttachMeshes.clear();
 	BeginSkinningFrame();        // posed-vertex reservations start from zero; grows the streams if last frame ran out
 	g_SkelUploadCache.clear();   // per-vob CB/attachment upload cache — rebuilt fresh each frame
@@ -2564,7 +2619,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// plain drop — D3D11 does not reroute them either.
 	const zCVob* skeletalFocusVob = ComputeSkeletalFocusVob();
 	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), nullptr, -1, nullptr, 0.0f, 1, true, skeletalFocusVob );
-	PrepareFrameSkeletals( g_FrameMobs, nullptr, -1, nullptr, 0.0f, 1, false, skeletalFocusVob );
+	PrepareFrameSkeletals( g_FrameMobs, nullptr, -1, nullptr, 0.0f, 1, false, skeletalFocusVob, m_GpuSceneActive );
 	// Upload what those two just met for the first time (and what last frame's shadow passes met), so new
 	// NPCs draw this frame. Before the cascade jobs launch, which read the arenas lock-free.
 	m_SkelArena->Flush( this );
@@ -2630,6 +2685,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// per-material bindless-index resolution + water peel-out. Both the depth prepass and the color pass draw
 	// from it, so the BSP walk happens once (was per-pass) and neither pass issues per-material CPU draw calls.
 	BuildWorldDrawCommands();
+	if ( m_GpuWorldActive ) CullGpuWorldMain();
 	// Build the instanced-VOB ExecuteIndirect command set ONCE (P2.12) from the shared g_FrameVobUploads snapshot,
 	// resolving each material's full PBR bindless indices (diffuse+normal+ORM) — the depth prepass ignores the extra
 	// two, so both the prepass and the color pass ExecuteIndirect over this same buffer (the per-material CacheIn +
@@ -2646,6 +2702,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	m_VobStats.OpaqueCommands = m_VobOpaqueDrawCount;
 	m_VobStats.CullVisuals = m_VobCullVisualCount;
 	m_VobStats.GpuCullActive = m_GpuVobCullActive;
+	m_VobStats.SceneActive = m_GpuSceneActive;
+	m_VobStats.SceneCasters = m_ShadowMap.SceneCasters();
+	m_VobStats.SceneInstances = m_GpuSceneActive ? m_GpuScene->SlotCount() : 0u;
+	m_VobStats.SceneVisuals = m_GpuSceneActive ? m_GpuScene->VisualCount() : 0u;
+	m_VobStats.SceneReadyVisuals = m_GpuSceneActive ? m_GpuScene->ReadyVisualCount() : 0u;
+	m_VobStats.SceneTemplates = m_GpuSceneActive ? m_GpuScene->TemplateCount() : 0u;
+	m_VobStats.SceneCpuVobs = m_GpuSceneActive ? static_cast<UINT>( m_GpuScene->CpuVobs().size() ) : 0u;
 	{
 		UINT inst = 0;
 		for ( const FrameVobUpload& u : g_FrameVobUploads ) inst += u.numInstances;
@@ -3174,6 +3237,83 @@ namespace {
     }
 }
 
+D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const MeshKey& key, const std::string& visualName,
+    bool cacheIn, bool resolveMaps ) const {
+    VobMaterial m{ m_BlackTexture->GetSrvSlot(), 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), true, false, false };
+    zCTexture* tex = key.Material->GetAniTexture();
+    // cacheIn=false: a pure GetCacheState read, safe on a worker thread (CacheIn mutates Gothic's resource manager).
+    const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
+                                         : ( tex->GetCacheState() == zRES_CACHED_IN ) );
+    if ( cached ) {
+        if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+            if ( GfxTexture* gfx = s->GetEngineTexture() ) {
+                D3D12Texture* d = D3D12Texture::From( gfx );
+                if ( d->HasSRV() ) m.Diffuse = d->GetSrvSlot();
+            }
+            if ( resolveMaps ) {
+                if ( GfxTexture* n = s->GetNormalmap() ) { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) m.Normal = d->GetSrvSlot(); }
+                if ( GfxTexture* o = s->GetFxMap() )     { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) m.Orm = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
+            }
+        }
+    }
+    // Resident means an SRV to sample, not just "cached in": the black fallback is no texture at all.
+    m.TextureReady = !tex || m.Diffuse != m_BlackTexture->GetSrvSlot();
+    const int alphaFunc = key.Material ? key.Material->GetAlphaFunc() : zMAT_ALPHA_FUNC_NONE;
+    m.Blended = alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD;
+    m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || ( key.Material && key.Material->HasAlphaTest() );
+    if ( m.AlphaTested )
+        m.Orm |= IsThinTwoSidedPlant( visualName ) ? kBacklitThin : kBacklitFoliage;
+    return m;
+}
+
+void D3D12GraphicsEngine::CullGpuWorldMain() {
+    // Gothic's own camera frustum, which the CPU path tests meshes against (BuildWorldDrawCommands' playerFrustum).
+    D3D12GpuWorld::View view{};
+    view.Active = true;
+    if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+        const XMMATRIX viewProj = XMMatrixMultiply( XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoView ) ),
+            XMLoadFloat4x4( &cam->trafoProjection ) );
+        XMStoreFloat4x4( &view.CullViewProj, XMMatrixTranspose( viewProj ) );
+    } else {
+        view.NoFrustum = true;
+    }
+    // On failure nothing draws the world this frame: its CPU command set was never built.
+    m_GpuWorldActive = m_GpuWorld->Cull( m_CmdList, &view, D3D12GpuWorld::kViewMain, 1 );
+}
+
+D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(const MeshKey& key, bool cacheIn ) const {
+    // normal 0xFFFFFFFF = none (the PS skips the perturb), ORM = the 1x1 default when the material has no _FX.
+    WorldMaterial m{ 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), m_BlackTexture->GetSrvSlot(),
+        key.Info ? key.Info->buffer.NormalmapStrength : 1.0f, false, true };
+    zCTexture* tex = key.Material->GetAniTexture();
+    // CacheIn also loads the normal/ORM side textures; cacheIn=false only reads the state.
+    const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
+                                         : ( tex->GetCacheState() == zRES_CACHED_IN ) );
+    if ( cached ) {
+        if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+            if ( GfxTexture* gfx = s->GetEngineTexture() ) { D3D12Texture* d = D3D12Texture::From( gfx ); if ( d->HasSRV() ) m.Diffuse = d->GetSrvSlot(); }
+            if ( GfxTexture* n = s->GetNormalmap() )       { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) m.Normal = d->GetSrvSlot(); }
+            if ( GfxTexture* o = s->GetFxMap() )           { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) m.Orm = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
+        }
+    }
+    // Resident means an SRV to sample, not just "cached in": the black fallback is no texture at all.
+    m.TextureReady = !tex || m.Diffuse != m_BlackTexture->GetSrvSlot();
+    // Same predicate D3D11 uses to pick between PS_DiffuseAlphaTestShadows and no pixel shader at all in its
+    // Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
+    m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || key.Material->HasAlphaTest();
+    if ( m.AlphaTested ) m.Orm |= kBacklitFoliage;
+    return m;
+}
+
+void D3D12GraphicsEngine::WetNormalFallback( uint32_t& slot, float& strength ) const {
+    // Mirrors D3D11GraphicsEngine::BindTextureNRFX: a material with no normalmap still gets a wet look while it
+    // rains, perturbed by the distortion noise at a much weaker strength than a real normalmap.
+    slot = UINT32_MAX;
+    strength = kWetDistortionNormalStrength;
+    if ( m_DistortionTexture && m_DistortionTexture->HasSRV() && Engine::GAPI->GetSceneWetness() > 1e-6f )
+        slot = m_DistortionTexture->GetSrvSlot();
+}
+
 UINT D3D12GraphicsEngine::CoalesceWorldDepthCommands(
     std::vector<WorldDrawCommand>& opaque, WorldDrawCommand* out, UINT outCapacity ) {
     // Draw-call merge for the depth-only world submits. Every command indexes the SAME wrapped world VB/IB,
@@ -3230,9 +3370,9 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     static std::vector<WorldMeshSectionInfo*> sections;
     sections.clear();
-    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
+    if ( !m_GpuWorldActive ) Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
 
-    WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
+    WorldDrawCommand* cmds= reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
     UINT count = 0;
 
     // Alpha-test partition (see m_WorldOpaqueDrawCount): opaque materials go straight into the arg ring, the
@@ -3249,6 +3389,9 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     // Camera position for the alpha-blended peel's painter-order sort key (see the branch below).
     const XMVECTOR transparencyCamPos = Engine::GAPI->GetCameraPositionXM();
+    uint32_t wetSlot;
+    float wetStrength;
+    WetNormalFallback( wetSlot, wetStrength );
     
     Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
     if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
@@ -3260,53 +3403,80 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
         );
     }
 
+    // Water, portals, foam and blended surfaces go to their own passes; true when the mesh was one of them.
+    auto peel = [&]( WorldMeshSectionInfo* section, const MeshKey& meshKey, WorldMeshInfo* mesh ) -> bool {
+        // Sort key for every transparency bucket below: closest point on the mesh's own bbox, not
+        // its center (see ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
+        auto transparencyDistanceSq = [&]() -> float {
+            const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
+            const XMVECTOR boundsMin = XMLoadFloat3( &bounds->Min );
+            const XMVECTOR boundsMax = XMLoadFloat3( &bounds->Max );
+            const XMVECTOR closestPoint = XMVectorClamp( transparencyCamPos, boundsMin, boundsMax );
+            float distanceSq = 0.0f;
+            XMStoreFloat( &distanceSq, XMVector3LengthSq( closestPoint - transparencyCamPos ) );
+            return distanceSq;
+        };
+
+        // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque
+        // command set. Forest portals and waterfall foam get their own sorted lists for the same reason,
+        // each drawn with its own pixel shader (D3D11: FrameTransparencyMeshesPortal / ...Waterfall).
+        if ( meshKey.Info ) {
+            if ( meshKey.Info->IsWater() ) {
+                g_FrameWaterSurfaces[meshKey.Info->MaterialType == MaterialInfo::MT_Ocean][meshKey.Material->GetAniTexture()].push_back( mesh );
+                return true;
+            } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_Portal ) {
+                g_FrameWorldTransparencyPortal.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
+                return true;
+            } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
+                g_FrameWorldTransparencyFoam.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
+                return true;
+            }
+        }
+
+        // Alpha-blended materials (ice, glass, magic barriers) are peeled out of the opaque set the same
+        // way water is — they need the material's own blend mode, back-to-front order and no depth write,
+        // which one ExecuteIndirect over the opaque PSO cannot express. Mirrors D3D11's DrawWorldMesh
+        // "Check for alphablending" branch feeding FrameTransparencyMeshes; drawn by
+        // DrawWorldTransparencyMeshes (D3D12Transparency.cpp). Peeled from the DEPTH PREPASS too (both
+        // passes share this command set) — same as D3D11, whose prepass `isSkipped` filter drops them.
+        if ( IsWorldMeshAlphaBlended( meshKey.Material ) ) {
+            g_FrameWorldTransparency.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
+            return true;
+        }
+        return false;
+    };
+
+    if ( m_GpuWorldActive ) {
+        // The GPU lists the rest (CullGpuWorldMain). Same section range as CollectVisibleSections' main view.
+        const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        const bool gridRadius = !rs.DrawSectionIntersections
+            && !( rs.DebugSettings.FeatureSet.UseWorldSectionBVH && rs.DebugSettings.Culling.CullBspSections );
+        const float radius = rs.SectionDrawRadius * WORLD_SECTION_SIZE;
+        const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+        const INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
+        for ( const D3D12GpuWorld::Special& sp : m_GpuWorld->Specials() ) {
+            const zTBBox3D& box = sp.Section->BoundingBox;
+            if ( gridRadius ) {
+                if ( abs( sp.GridX - camSection.x ) >= rs.SectionDrawRadius || abs( sp.GridY - camSection.y ) >= rs.SectionDrawRadius ) continue;
+            } else if ( Toolbox::ComputePointAABBDistanceSq( camPos, box.Min, box.Max ) >= radius * radius ) {
+                continue;
+            }
+            if ( sp.Mesh->HasBoundingBox ? !Engine::GAPI->IsWorldMeshVisibleInFrustum( sp.Mesh, playerFrustum )
+                                         : !playerFrustum.Intersects( box ) ) continue;
+            peel( sp.Section, *sp.Key, sp.Mesh );
+        }
+        return;
+    }
+
     for ( WorldMeshSectionInfo* section : sections ) {
         if ( !section ) continue;
         for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
             if ( !mesh || mesh->Indices.empty() ) continue;
-            
+
             if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, playerFrustum ) ) {
                 continue;
-            }            
-
-            // Sort key for every transparency bucket below: closest point on the mesh's own bbox, not
-            // its center (see ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
-            auto transparencyDistanceSq = [&]() -> float {
-                const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
-                const XMVECTOR boundsMin = XMLoadFloat3( &bounds->Min );
-                const XMVECTOR boundsMax = XMLoadFloat3( &bounds->Max );
-                const XMVECTOR closestPoint = XMVectorClamp( transparencyCamPos, boundsMin, boundsMax );
-                float distanceSq = 0.0f;
-                XMStoreFloat( &distanceSq, XMVector3LengthSq( closestPoint - transparencyCamPos ) );
-                return distanceSq;
-            };
-
-            // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque
-            // command set. Forest portals and waterfall foam get their own sorted lists for the same reason,
-            // each drawn with its own pixel shader (D3D11: FrameTransparencyMeshesPortal / ...Waterfall).
-            if ( meshKey.Info) {
-                if ( meshKey.Info->IsWater() ) {
-                    g_FrameWaterSurfaces[meshKey.Info->MaterialType == MaterialInfo::MT_Ocean][meshKey.Material->GetAniTexture()].push_back( mesh );
-                    continue;
-                } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_Portal ) {
-                    g_FrameWorldTransparencyPortal.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
-                    continue;
-                } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
-                    g_FrameWorldTransparencyFoam.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
-                    continue;
-                }
             }
-
-            // Alpha-blended materials (ice, glass, magic barriers) are peeled out of the opaque set the same
-            // way water is — they need the material's own blend mode, back-to-front order and no depth write,
-            // which one ExecuteIndirect over the opaque PSO cannot express. Mirrors D3D11's DrawWorldMesh
-            // "Check for alphablending" branch feeding FrameTransparencyMeshes; drawn by
-            // DrawWorldTransparencyMeshes (D3D12Transparency.cpp). Peeled from the DEPTH PREPASS too (both
-            // passes share this command set) — same as D3D11, whose prepass `isSkipped` filter drops them.
-            if ( IsWorldMeshAlphaBlended( meshKey.Material ) ) {
-                g_FrameWorldTransparency.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
-                continue;
-            }
+            if ( peel( section, meshKey, mesh ) ) continue;
             if ( count + alphaCmds.size() >= kMaxWorldDrawCommands ) {
                 if ( !m_WorldDrawArgsOverflowLogged ) {
                     Logging::Wrn( "D3D12: world draw-command ring overflow ({} draws/frame); some world materials dropped this frame.",
@@ -3316,53 +3486,19 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 break;
             }
 
-            // Resolve this material's bindless SRV heap indices — diffuse (CacheIn triggers load + its normal/ORM
-            // side-loads), normal (0xFFFFFFFF = none → PS skips perturb), ORM (1x1 default when the material has no _FX).
-            zCTexture* tex = meshKey.Material->GetAniTexture();
-            uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
-            uint32_t normalIdx  = 0xFFFFFFFFu;
-            uint32_t ormIdx     = GetDefaultOrmSrvSlot();
-            float normalStrength = 1.0f;
-
-            if (auto info = meshKey.Info) {
-                normalStrength = info->buffer.NormalmapStrength;
-            }
-            
-            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = s->GetEngineTexture() ) {
-                        D3D12Texture* d = D3D12Texture::From( gfx );
-                        if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
-                    }
-                    if ( GfxTexture* n = s->GetNormalmap() ) {
-                        D3D12Texture* d = D3D12Texture::From( n );
-                        if ( d->HasSRV() ) normalIdx = d->GetSrvSlot();
-                    }
-                    if ( GfxTexture* o = s->GetFxMap() ) {
-                        D3D12Texture* d = D3D12Texture::From( o );
-                        if ( d->HasSRV() ) ormIdx = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() );
-                    }
-                }
-            }
-            // Wet-ground fallback (mirrors D3D11GraphicsEngine::BindTextureNRFX): a material with no normalmap
-            // still gets a wet/specular look while it's raining, by perturbing with the same distortion noise
-            // texture the D3D11 backend uses, at a much weaker strength than a real normalmap.
-            if ( normalIdx == 0xFFFFFFFFu && m_DistortionTexture && m_DistortionTexture->HasSRV()
-                && Engine::GAPI->GetSceneWetness() > 1e-6f ) {
-                normalIdx = m_DistortionTexture->GetSrvSlot();
-                normalStrength = kWetDistortionNormalStrength;
-            }
-
-            // Same predicate D3D11 uses to pick between PS_DiffuseAlphaTestShadows and no pixel shader at all
-            // in its Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
-            const bool alphaTested = ( tex && tex->HasAlphaChannel() )
-                || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
+            // Diffuse (CacheIn triggers the load and its normal/ORM side-loads), normal and ORM.
+            const WorldMaterial mat = ResolveWorldMaterial( meshKey, true );
+            const bool alphaTested = mat.AlphaTested;
 
             WorldDrawCommand c{};
-            c.MatNormalIndex     = normalIdx;
-            c.MatOrmIndex        = ormIdx | ( alphaTested ? kBacklitFoliage : 0u );
-            c.MatDiffuseIndex    = diffuseIdx;
-            c.MatNormalStrength  = normalStrength;
+            c.MatNormalIndex     = mat.Normal;
+            c.MatOrmIndex        = mat.Orm;
+            c.MatDiffuseIndex    = mat.Diffuse;
+            c.MatNormalStrength  = mat.NormalStrength;
+            if ( c.MatNormalIndex == 0xFFFFFFFFu && wetSlot != UINT32_MAX ) {
+                c.MatNormalIndex = wetSlot;
+                c.MatNormalStrength = wetStrength;
+            }
             c.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
             c.Draw.InstanceCount = 1;
             c.Draw.StartIndexLocation = mesh->BaseIndexLocation;
@@ -3552,7 +3688,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
 }
 
 
-bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes ) {
+bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes,
+    UINT instanceStride ) {
     if ( !m_VobArena->Ready() || !instances || instanceBytes == 0 ) return false;
 
     // The whole buffer is bound once: a VOB command addresses its sub-mesh through
@@ -3561,7 +3698,7 @@ bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* 
     const D3D12_VERTEX_BUFFER_VIEW views[2] = {
         { m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(),
           D3D12VobArena::VertexStride() },
-        { instances->GetGPUVirtualAddress(), instanceBytes, VobInstanceStride() },
+        { instances->GetGPUVirtualAddress(), instanceBytes, instanceStride ? instanceStride : VobInstanceStride() },
     };
     const D3D12_INDEX_BUFFER_VIEW ibv = {
         m_VobArena->GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetIndexBytes(), DXGI_FORMAT_R16_UINT };
@@ -3657,8 +3794,6 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         }
         return count;
         };
-    const uint32_t whiteSlot   = m_BlackTexture->GetSrvSlot();
-    const uint32_t defaultOrm  = GetDefaultOrmSrvSlot();
     // Resolved once per built buffer: the cascades run this on worker threads, so keep it a single read.
     const int firstLodCascade = GetFirstLodShadowCascade();
     // Attribute the triangle stat to the main-view build only (resolveMaps): the shadow cascades build the same
@@ -3717,27 +3852,11 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         float alphaDistanceSq = -1.0f;
 
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-            zCTexture* tex = meshKey.Material->GetAniTexture();
-            uint32_t diffuseIdx = whiteSlot;
-            uint32_t normalIdx  = 0xFFFFFFFFu;
-            uint32_t ormIdx     = defaultOrm;
-            // cacheIn=false (cascade casters): a pure GetCacheState read, so this build is safe on a worker
-            // thread — CacheIn mutates Gothic's resource manager. See the declaration for why the resulting
-            // one-frame inaccuracy is invisible in a shadow pass.
-            const bool texReady = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
-                                                   : ( tex->GetCacheState() == zRES_CACHED_IN ) );
-            if ( texReady ) {
-                if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = s->GetEngineTexture() ) {
-                        D3D12Texture* d = D3D12Texture::From( gfx );
-                        if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
-                    }
-                    if ( resolveMaps ) {
-                        if ( GfxTexture* n = s->GetNormalmap() ) { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) normalIdx = d->GetSrvSlot(); }
-                        if ( GfxTexture* o = s->GetFxMap() )     { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) ormIdx    = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
-                    }
-                }
-            }
+            // cacheIn=false (cascade casters) keeps this safe on a worker thread; see ResolveVobMaterial.
+            const VobMaterial mat = ResolveVobMaterial( meshKey, visual->VisualName, cacheIn, resolveMaps );
+            const uint32_t diffuseIdx = mat.Diffuse;
+            const uint32_t normalIdx  = mat.Normal;
+            const uint32_t ormIdx     = mat.Orm;
 
             // Blended VOB materials must never land in the opaque command set: its PSO alpha-CLIPS at 0.5,
             // writes depth and forces alpha 1 — which renders a spider web as a solid slab. D3D11 peels exactly
@@ -3745,8 +3864,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             // unlit afterwards (DrawFrameAlphaMeshes); g_FrameVobAlpha + DrawVobAlphaMeshes are that pass.
             // Main view only: the shadow cascades and the rain map keep alpha-clipping them, as D3D11 does.
             const int alphaFunc = meshKey.Material ? meshKey.Material->GetAlphaFunc() : zMAT_ALPHA_FUNC_NONE;
-            const bool blended = peelBlended
-                && ( alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD );
+            const bool blended = peelBlended && mat.Blended;
 
             // The caster PS alpha-clips against this material's diffuse, and the SHADOW index buffer is
             // position-welded — which merges wedges that share a position but not a UV. Feeding a leaf card
@@ -3756,10 +3874,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             // The LOD buffer is no longer welded (see OptimizeLodIndices) so its UVs are correct, but
             // alpha-tested materials stay excluded from it too: an edge collapse deletes triangles, and on a
             // cutout that means chunks of the silhouette disappearing rather than getting coarser.
-            const bool alphaTested = ( tex && tex->HasAlphaChannel() )
-                || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
-            if ( alphaTested )
-                ormIdx |= IsThinTwoSidedPlant( visual->VisualName ) ? kBacklitThin : kBacklitFoliage;
+            const bool alphaTested = mat.AlphaTested;   // the backlit class rides in mat.Orm
 
             for ( MeshInfo* mi : meshList ) {
                 if ( !mi || mi->Indices.empty() ) continue;
@@ -4297,6 +4412,13 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // BuildWorldDrawCommands filled (same opaque draw set as the color pass; water already peeled). Each command
     // sets the b6 diffuse index (PSClip alpha-clips bindless) then draws its material's index range. Replaces the
     // per-material descriptor-table binds + DrawIndexedInstanced calls (the CPU cost this optimization targets).
+    if ( m_GpuWorldActive ) {
+        if ( !m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) return;
+        m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
+        if ( splitAlpha ) m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
+        m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+        return;
+    }
     if ( m_WorldDrawCount == 0 ) return;
     if ( !splitAlpha ) {
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
@@ -4490,6 +4612,13 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     // command sets this material's b6 { normal, orm, diffuse } bindless indices then draws its index range — so
     // the whole opaque world is one API call with zero per-draw descriptor binds (the CPU cost this targets).
     // Frame-constant root args (b0 ViewProj, b1 fog, lights, CSM, point-shadow cubes) are already set above.
+    if ( m_GpuWorldActive ) {
+        if ( m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) {
+            m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
+            m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+        }
+        return XR_SUCCESS;
+    }
     if ( m_WorldDrawCount == 0 ) return XR_SUCCESS;
     m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
         m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -4705,6 +4834,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
                 rec.BBoxMax = visual->BBox.Max;
                 rec.InstanceBase = instOffset / kInstStride;
                 rec.InstanceCount = numInstances;
+                rec.SceneFlags = 0;
                 // No split until BuildVobDrawCommands confirms the far bucket has commands to draw it;
                 // anything else would strand instances behind a bucket nothing draws.
                 rec.SplitMode = kSplitModeNone;
@@ -4739,7 +4869,9 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
         || !m_VobIndirectCmdSig || !m_DepthBuffer )
         return;
     Rhi::Resource* drawArgs = GetVobDrawArgsBuffer();
-    if ( m_VobDrawCount == 0 || !drawArgs ) return;
+    const bool cpuDraws = m_VobDrawCount > 0 && drawArgs;
+    const bool sceneDraws = m_GpuSceneActive && m_GpuScene->ArgsDrawable;
+    if ( !cpuDraws && !sceneDraws ) return;
 
     DX_ZONE( m_CmdList.Get(), "Depth Prepass (vobs)" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (vobs)" );
@@ -4777,7 +4909,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), m_VobInstanceBufferCapacity ) )
+    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws() ) )
         return;
 
     // One GPU-driven submit over the shared command set BuildVobDrawCommands filled (same set the color pass draws).
@@ -4788,22 +4920,26 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     if ( !splitAlpha ) {
         // Motion-G-buffer prepass: everything draws, including the far alpha-tested run — omitting it leaves
         // distant cutout pixels with no motion vector and no normal (TAA ghosting, wrong XeGTAO normals).
-        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        if ( cpuDraws ) m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        DrawGpuSceneVobs( false );
+        DrawGpuSceneVobs( true );
         return;
     }
     // drawArgs may be the GPU-culled DEFAULT copy, but CSPatchArgs only rewrites InstanceCount in place, so
     // the opaque/alpha-tested partition the CPU build laid out survives the cull. See D3D12Cull.cpp.
-    if ( m_VobOpaqueDrawCount > 0 ) {
+    if ( cpuDraws && m_VobOpaqueDrawCount > 0 ) {
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobOpaqueDrawCount, drawArgs, 0, nullptr, 0 );
     }
+    DrawGpuSceneVobs( false );
     // The alpha-tested run, whole — no distance trim. Leaving alpha-tested surfaces out of the prepass lets
     // grass and other later geometry draw on top of them.
-    const UINT alphaCount = m_VobDrawCount - m_VobOpaqueDrawCount;
+    const UINT alphaCount = cpuDraws ? m_VobDrawCount - m_VobOpaqueDrawCount : 0u;
+    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
     if ( alphaCount > 0 ) {
-        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), alphaCount, drawArgs,
             static_cast<UINT64>( m_VobOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
     }
+    DrawGpuSceneVobs( true );
 }
 
 
@@ -4816,7 +4952,8 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     if ( !rs.RendererSettings.DrawVOBs )
         return XR_SUCCESS;
     Rhi::Resource* drawArgs = GetVobDrawArgsBuffer();
-    if ( m_VobDrawCount == 0 || !drawArgs )
+    const bool cpuDraws = m_VobDrawCount > 0 && drawArgs;
+    if ( !cpuDraws && !( m_GpuSceneActive && m_GpuScene->ArgsDrawable ) )
         return XR_SUCCESS;
 
     // Visible VOBs/lights/mobs were already collected once in OnStartWorldRendering (g_FrameVobs/Lights/Mobs);
@@ -4853,7 +4990,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), m_VobInstanceBufferCapacity ) )
+    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws() ) )
         return XR_SUCCESS;
 
     static_assert( sizeof( VS_ExConstantBuffer_Wind ) == 48, "WindCB (b4) layout must match Vob.hlsl's WindCB" );
@@ -4865,7 +5002,9 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
         // instance VBVs + IBV, b6 { normal, orm, diffuse } bindless indices (PSMainBindless samples all three),
         // b4 per-visual min/max wind, then DrawIndexedInstanced. Replaces the per-mesh table/BindMaterialMaps/
         // IASetVertexBuffers/DrawIndexedInstanced calls that dominated this CPU-bound pass.
-        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        if ( cpuDraws ) m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        DrawGpuSceneVobs( false );
+        DrawGpuSceneVobs( true );
     }
 
     // Static skeletal MOBs (g_FrameMobs) are now prepared up front (PrepareFrameSkeletals) and drawn by
@@ -4879,8 +5018,21 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 }
 
 
+float4 D3D12GraphicsEngine::SkeletalGroundLight( zCVob* vob ) {
+    // D3D11's DrawSkeletalMeshVobs modelColor; sampled per vob, not per vertex.
+    if ( vob->IsIndoorVob() ) return DEFAULT_LIGHTMAP_POLY_COLOR_F;
+    if ( zCPolygon* groundPoly = vob->GetGroundPoly() ) {
+        float3 pos = vob->GetPositionWorld();
+        const float3 lightStat = groundPoly->GetLightStatAtPos( pos );
+        return float4( lightStat.z / 255.0f, lightStat.y / 255.0f, lightStat.x / 255.0f, 1.0f );
+    }
+    return float4( 1.0f, 1.0f, 1.0f, 1.0f );
+}
+
+
 void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum, int shadowCascade,
-    const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount, bool collectGhosts, const zCVob* playerFocusVob ) {
+    const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount, bool collectGhosts, const zCVob* playerFocusVob,
+    bool skipSceneMobs ) {
     // Run each candidate skeletal vob's once-per-frame animation update, upload its instance + bone CBs and
     // its attachments' VOB-instance data ONCE (cached in g_SkelUploadCache — the pose is view-independent),
     // and record the resulting GPU addresses into the caller's list: the main view's g_FrameSkelDraws/
@@ -4921,6 +5073,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 
     for ( SkeletalVobInfo* vi : vobs ) {
         if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
+        if ( skipSceneMobs && vi->InGpuScene ) continue;   // drawn from the GPU scene's table
         if ( !vi->Vob->GetShowVisual() ) continue;
 
         // Ghost vobs (invisible-potion NPCs, fading spawns, spirits) never join the regular skinned draw:
@@ -5026,7 +5179,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
                     zCTexture* matTex = mat ? mat->GetAniTexture() : nullptr;
                     g_SkelMatSlots[g_SkelMatSlotCount++] = { ResolveShadowDiffuseSlot( matTex ),
-                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ) };
+                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ), matTex };
                 }
                 entry.matCount = static_cast<uint32_t>( numMats );
             } else if ( !g_SkelMatSlotsOverflowLogged ) {
@@ -5045,21 +5198,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 
             const XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
-            // Baked ground/ambient light for this vob (mirrors D3D11's DrawSkeletalMeshVobs non-shadow-branch
-            // modelColor: DEFAULT_LIGHTMAP_POLY_COLOR indoors, else the ground polygon's lightStat at the vob's
-            // position). A hardcoded white here (as this used to be, "first-light" placeholder) makes vertLighting
-            // (i.col.g) == 1 always, which zeroes out ShadowAOStrength/WorldAOStrength's lerp(1.0, vertLighting,
-            // strength) to a no-op regardless of the slider — skeletal meshes/attachments then can't darken
-            // indoors like world/VOB geometry does. Sampled once per vob per frame (one polygon lookup), not
-            // per-vertex.
-            float4 groundLight( 1.0f, 1.0f, 1.0f, 1.0f );
-            if ( vi->Vob->IsIndoorVob() ) {
-                groundLight = DEFAULT_LIGHTMAP_POLY_COLOR_F;
-            } else if ( zCPolygon* groundPoly = vi->Vob->GetGroundPoly() ) {
-                float3 vobPos = vi->Vob->GetPositionWorld();
-                float3 lightStat = groundPoly->GetLightStatAtPos( vobPos );
-                groundLight = float4( lightStat.z / 255.0f, lightStat.y / 255.0f, lightStat.x / 255.0f, 1.0f );
-            }
+            // Once per vob per frame (one polygon lookup); it is what darkens skeletal meshes indoors (vertLighting).
+            const float4 groundLight = SkeletalGroundLight( vi->Vob );
 
             // First-person hands: when the player model is set to hands-only (Gothic's own first-person
             // view mode), the base skinned mesh (the whole body) must NOT draw, and node attachments are

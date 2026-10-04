@@ -858,6 +858,12 @@
     <ClInclude Include="FloatingVobs.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12GpuScene.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12GpuWorld.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1199,6 +1205,12 @@
     </ClCompile>
     <ClCompile Include="FloatingVobs.cpp">
       <Filter>Engine\GAPI</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12GpuScene.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12GpuWorld.cpp">
+      <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>

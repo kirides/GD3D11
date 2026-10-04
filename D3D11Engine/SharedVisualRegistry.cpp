@@ -40,6 +40,11 @@ MeshVisualInfo* SharedVisualRegistry::Acquire( const void* key, bool& outNeedsFi
     return mvi;
 }
 
+void SharedVisualRegistry::AddRef( MeshVisualInfo* mvi ) {
+    std::scoped_lock lock( m_mutex );
+    mvi->SharedRefs++;
+}
+
 void SharedVisualRegistry::Release( MeshVisualInfo* mvi ) {
     if ( !mvi ) {
         return;

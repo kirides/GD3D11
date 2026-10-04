@@ -24,6 +24,7 @@
 #include "D3D12AliasedTextureArena.h"
 
 struct RenderBucket;
+struct MeshKey;
 class D3D12LineRenderer;
 struct GothicBlendStateInfo;
 struct FrameVobUpload;
@@ -43,6 +44,10 @@ class zCVobLight;
     D3D11 remains the default backend and the fallback: if device or swapchain creation fails,
     Engine::CreateGraphicsEngine keeps D3D11. */
 class D3D12VobArena;
+class D3D12GpuScene;
+struct GpuSceneCasterView;
+struct GpuScenePointView;
+class D3D12GpuWorld;
 class D3D12MeshArena;
 class D3D12RayTracing;
 struct FrameSkelDraw;
@@ -61,6 +66,8 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     // Same deal: the VOB mega-buffer arena needs the allocator + the fence-deferred cleanup to swap its
     // buffers out from under frames that may still be reading them.
     friend class D3D12VobArena;
+    friend class D3D12GpuScene;
+    friend class D3D12GpuWorld;
     friend class D3D12MeshArena;
     // The ray-traced scene builds over the arenas, the posed skinning streams and the frame's draw lists.
     friend class D3D12RayTracing;
@@ -260,7 +267,9 @@ public:
     void OnMeshInfoDestroyed( MeshInfo* mesh ) override;
     void OnSkeletalMeshInfoDestroyed( SkeletalMeshInfo* mesh ) override;
     void OnLoadWorld() override;
-    void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
+    void OnVobsReset() override;
+    void OnWorldMeshReset() override;
+void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;  // same, for a skinned item visual
     D3D12MA::Allocator* GetAllocator() const { return D3D12Rhi::NativeAllocator( m_Rhi.Get() ); }
 
@@ -377,9 +386,12 @@ private:
     // D3D12 stand-in for the reroute D3D11 does in GothicAPI::DrawWorldMeshNaive (:1394), which this backend
     // never calls. Shadow callers must leave it false: ghosts cast no shadows on either backend.
     // playerFocusVob: the interact/melee-focus highlight vob (see ComputeSkeletalFocusVob in D3D12Scene.cpp).
+    // skipSceneMobs: leave out MOBs the GPU scene draws as snapshots (SkeletalVobInfo::InGpuScene) in this view.
     void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum = nullptr, int shadowCascade = -1,
         const DirectX::XMFLOAT3* sphereCenter = nullptr, float sphereRange = 0.0f, UINT cascadeCount = 1,
-        bool collectGhosts = false, const zCVob* playerFocusVob = nullptr );
+        bool collectGhosts = false, const zCVob* playerFocusVob = nullptr, bool skipSceneMobs = false );
+    /** Baked light under a skeletal vob: the default lightmap colour indoors, else the ground polygon's lightStat. */
+    static float4 SkeletalGroundLight( zCVob* vob );
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
     void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
     // Turn this frame's g_FrameSkelDraws/g_FrameAttachDraws into the two main-view ExecuteIndirect argument
@@ -856,6 +868,27 @@ private:
     // ExecuteIndirect. Built ONCE per frame and consumed by both the depth prepass and the color pass; the
     // CSM cascades and rain shadowmap build their own sets over the same arena. Arg-member order MUST match
     // the command signature's pArgumentDescs order (b6 consts, b4 consts, draw).
+    // A static VOB material's bindless slots and draw class, shared by BuildVobDrawCommands and D3D12GpuScene.
+    struct VobMaterial {
+        uint32_t Diffuse, Normal, Orm;   // Orm carries the backlit class
+        bool     TextureReady;           // no texture, or it is cached in
+        bool     AlphaTested;
+        bool     Blended;                // BLEND/ADD: DrawVobAlphaMeshes draws it, never the opaque set
+    };
+    VobMaterial ResolveVobMaterial( const MeshKey& key, const std::string& visualName, bool cacheIn, bool resolveMaps ) const;
+    struct WorldMaterial {
+        uint32_t Normal, Orm, Diffuse;   // Orm carries the backlit class
+        float    NormalStrength;
+        bool     AlphaTested;
+        bool     TextureReady;           // no texture, or it is cached in
+    };
+    // A world mesh material's bindless slots, without the wet-ground normal fallback (WetNormalFallback).
+    WorldMaterial ResolveWorldMaterial( const MeshKey& key, bool cacheIn ) const;
+    // While it rains, materials without a normal map perturb with this slot and strength; UINT32_MAX = dry.
+    void WetNormalFallback( uint32_t& slot, float& strength ) const;
+    // The main view's GPU world cull, before the depth prepass.
+    void CullGpuWorldMain();
+
     struct VobDrawCommand {                          // 48 bytes; all members 4-byte, no GPUVA alignment to keep
         uint32_t MatNormalIndex;                     // @0  b6.x  (0xFFFFFFFF = no normal map)
         uint32_t MatOrmIndex;                        // @4  b6.y  (default ORM slot when no _FX)
@@ -885,6 +918,12 @@ private:
     // (which fires per vob during world load, so the world is resident before the first frame) and flushed
     // once per frame at the top of UploadFrameVobInstances.
     std::unique_ptr<D3D12VobArena> m_VobArena;
+    // Static VOBs as a persistent GPU table (D3D12GpuScene.h); active per frame when [Debug] GpuScene is on.
+    std::unique_ptr<D3D12GpuScene> m_GpuScene;
+    bool m_GpuSceneActive = false;
+    // World mesh culled per view on the GPU (D3D12GpuWorld.cpp); decided once per frame in OnStartWorldRendering.
+    std::unique_ptr<D3D12GpuWorld> m_GpuWorld;
+    bool m_GpuWorldActive = false;
     // Skinned bodies (ExSkelVertexStruct) and node attachments (ExVertexStruct), requested by
     // PrepareFrameSkeletals and flushed right after the main view's prepare. See D3D12MeshArena.h.
     std::unique_ptr<D3D12MeshArena> m_SkelArena;
@@ -911,8 +950,8 @@ private:
         stream, and `instances` (the per-instance VobInstanceInfo stream this pass draws from — the raw
         upload ring for the shadow/rain passes, the GPU-compacted buffer for a culled main view) on slot 1.
         Returns false when the arena holds nothing, in which case the caller must not submit: its commands
-        would index a buffer that doesn't exist. */
-    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes );
+        would index a buffer that doesn't exist. instanceStride 0 = VobInstanceStride(). */
+    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes, UINT instanceStride = 0 );
     Microsoft::WRL::ComPtr<Rhi::Resource> m_VobDrawArgs[kBackBufferMax];   // main-view (prepass+color share it)
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
@@ -931,6 +970,9 @@ public:
         UINT SplitNone;       // visuals per SplitMode - if these are all in SplitNone, the LOD slider
         UINT SplitLod;        // cannot be doing anything, whatever it is set to
         bool GpuCullActive;   // which of the two paths produced the split (compute vs the CPU upload)
+        bool SceneActive;     // GPU scene: static VOBs drawn from the persistent table
+        bool SceneCasters;    // ...and the shadow cascades' static casters too
+        UINT SceneInstances, SceneVisuals, SceneReadyVisuals, SceneTemplates, SceneCpuVobs;
     };
     const VobFrameStats& GetVobFrameStats() const { return m_VobStats; }
 private:
@@ -1067,6 +1109,7 @@ private:
         // BuildVobDrawCommands, not here: only the command build knows whether the far bucket actually has
         // commands to draw it, and splitting without them strands those instances (see VobCull.hlsl).
         UINT              SplitMode;
+        UINT              SceneFlags = 0;    // GPU scene: VobCull.hlsl's SCENE_VISUAL_*; 0 for the ring
     };
     // No split: every surviving instance lands in the near run.
     static constexpr UINT kSplitModeNone  = 0;
@@ -1087,6 +1130,7 @@ private:
     // Single-instance GPU-side buffers: the direct queue is in-order, so frame N's draws are consumed before
     // frame N+1's cull writes — no per-frame-in-flight copies needed (and none of the 32-bit VA cost).
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobCulledInstances;   // DEFAULT UAV, mirrors the instance ring layout
+    UINT64 m_VobCulledInstancesBytes = 0;   // the ring's size, plus the GPU scene's region behind it
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobVisibleCounts;     // DEFAULT UAV, uint[kMaxCullVisuals]
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobDrawArgsGpu;       // DEFAULT, the patched ExecuteIndirect args
     bool m_VobCullReady = false;
@@ -1106,6 +1150,27 @@ private:
     // per-frame CPU-written UPLOAD ring.
     Rhi::Resource* GetVobDrawArgsBuffer() const;
     Rhi::Resource* GetVobInstanceBufferForDraws() const;
+    UINT GetVobInstanceBytesForDraws() const;
+    // Grows the compacted instance buffer (GPU scene region behind the ring); false if the allocation failed.
+    bool EnsureCulledInstanceCapacity( UINT64 bytes );
+    // The scene's cull + command build, inside CullVobsGPU; `cb` is CullVobsGPU's VobCullCB.
+    void CullGpuScene( const void* cb );
+    uint32_t m_GpuSceneFocusSlot = 0xFFFFFFFFu;   // table slot of the player's focus vob, this frame
+    // The scene's first instance in the compacted buffer, in elements at the current instance stride.
+    UINT GpuSceneOutputOffset() const;
+    // Both VOB passes: the scene's opaque or alpha-tested list, with its GPU-written count.
+    void DrawGpuSceneVobs( bool alphaTested );
+    // Main thread, before the cascade jobs record: culls the scene's static casters into every active view and
+    // builds their lists on m_CmdList. False = nothing recorded; the cascades then walk the leaves themselves.
+    bool CullGpuSceneCasters( const GpuSceneCasterView* views, UINT first, UINT count );
+    // A cascade's scene casters (its opaque or alpha-tested list); any thread, into that cascade's list.
+    void DrawGpuSceneCasters( D3D12CmdList& cmdList, UINT view, bool alphaTested ) const;
+    // Main thread, in the point-shadow prepare: culls the scene's static casters into each baking light's sphere
+    // and builds their cube commands on m_CmdList. False = nothing recorded; those bakes gather on the CPU.
+    // View c reports what it left out at reportBase + c * reportStride (D3D12PointShadows' bake report).
+    bool CullGpuScenePoints( const GpuScenePointView* views, UINT count, D3D12_GPU_VIRTUAL_ADDRESS reportBase, UINT64 reportStride );
+    // A point view's cube commands through `sig` (D3D12PointShadows' caster signature); any thread.
+    void DrawGpuScenePoints( D3D12CmdList& cmdList, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const;
 
     // ---- GPU morph fold (D3D12MorphFold.cpp + MorphGpu.h + Shaders/D3D12/MorphFold.hlsl) ----
     // Morph attachments (NPC heads, bow/crossbow draw meshes) fold their blend shapes in a compute pass that
@@ -1970,7 +2035,10 @@ private:
     uint8_t* m_RainVobDrawArgsPtr[kBackBufferMax] = {};
     UINT     m_RainVobDrawCount = 0;   // built by PrepareRainShadowmap, consumed by RecordRainShadowmap
     UINT     m_RainVobOpaqueDrawCount = 0;   // alpha-test partition — see m_WorldOpaqueDrawCount
-    // Bucket-per-visual collection target; grown by OnAddVob and reset by OnLoadWorld alongside the
+    // The GPU scene / GPU world culled this frame's static VOB / world casters into their rain view.
+    bool     m_RainSceneCasters = false;
+    bool     m_RainWorldGpu = false;
+// Bucket-per-visual collection target; grown by OnAddVob and reset by OnLoadWorld alongside the
     // main-view / per-cascade views, since the bucket index IS the visual index.
     RenderView m_RainShadowVobs;
     bool CreateRainShadowResources();   // one-time (or on-demand retry) DSV/SRV + resource creation

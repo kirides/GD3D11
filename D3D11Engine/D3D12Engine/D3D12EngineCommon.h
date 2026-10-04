@@ -135,6 +135,7 @@ extern std::vector<VobInfo*> g_FrameVobs;
 struct SkelMatSlot {
     UINT slot;
     bool alphaTested;
+    zCTexture* tex;   // null: no texture. Not null with the black slot: not resident yet
 };
 inline constexpr uint32_t kMaxSkelMatSlots = 8192;
 extern std::array<SkelMatSlot, kMaxSkelMatSlots> g_SkelMatSlots;

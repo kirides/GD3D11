@@ -521,6 +521,10 @@ static const char* PointLightRebakeCauseHelp( EPointLightRebakeCause c ) {
                                    "(Config::LowStaticRendersPerFrame) postponed to a later frame, so it is excluded\n"
                                    "from the total above. A steady rate means the queue of wanted bakes is longer\n"
                                    "than the budget drains - look at which cause above is filling it.";
+    case PLR_TEXTURES_LOADED: return "The previous bake left casters out because their textures were not resident\n"
+                                   "(a cached cube must not hold a caster drawn with a fallback texture: an\n"
+                                   "alpha-tested one would stay solid). Once they all loaded, the light re-baked.\n"
+                                   "Expected after loads and when walking into new areas, then zero.";
     default:                return "";
     }
 }
@@ -2245,10 +2249,14 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("GPU VOB culling", &settings.GpuVobCulling );
                 ImGui::SetItemTooltip("Collect static VOBs distance-only on the CPU and frustum-cull them in a compute shader instead. Off = the classic CPU per-VOB frustum test");
                 
-                ImGui::BeginDisabled( !settings.GpuVobCulling );
+                ImGui::BeginDisabled( !settings.GpuVobCulling && !settings.GpuScene );
                 ImGui::Checkbox("GPU occlusion culling", &settings.GpuVobOcclusionCulling );
                 ImGui::SetItemTooltip("Additionally reject VOB instances hidden behind the world mesh, using a Hi-Z pyramid built from the world depth prepass");
                 ImGui::EndDisabled();
+                ImGui::Checkbox("GPU scene (static VOBs)", &settings.GpuScene );
+                ImGui::SetItemTooltip("Static VOBs live in a persistent GPU table: the main view culls them and builds their draw commands\non the GPU instead of walking the BSP leaves every frame. Implies GPU VOB culling");
+                ImGui::Checkbox("GPU world mesh", &settings.GpuWorld );
+                ImGui::SetItemTooltip("Cull the world mesh's 128-triangle clusters per view on the GPU, which also writes its draw commands.\nWater, portals and blended surfaces stay on the CPU");
 
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
@@ -2452,6 +2460,14 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 addRowUInt( "VOB Visuals", vs.CullVisuals );
                 addRowLabel( "VOB Splits none/lod" );
                 ImGui::Text( "%u / %u", vs.SplitNone, vs.SplitLod );
+                addRowLabel( "GPU scene" );
+                if ( vs.SceneActive ) {
+                    ImGui::Text( "%u inst, %u/%u visuals ready, %u templates, %u on CPU, casters %s", vs.SceneInstances,
+                        vs.SceneReadyVisuals, vs.SceneVisuals, vs.SceneTemplates, vs.SceneCpuVobs,
+                        vs.SceneCasters ? "GPU" : "CPU" );
+                } else {
+                    ImGui::Text( "off" );
+                }
             }
             addRowFloat( "FarPlane", rendererInfo.FarPlane, "%.0f" );
             addRowFloat( "NearPlane", rendererInfo.NearPlane, "%.0f" );

@@ -108,6 +108,7 @@ public:
 
     bool IsPassReady() const { return m_PassReady; }
     bool IsSunUp() const { return m_SunUp; }
+    bool SceneCasters() const { return m_SceneCasters; }
     // False for a cascade that is being re-used from an earlier frame this frame (lazy update, see
     // m_ShouldUpdateCascade). Such a cascade is neither culled, built nor recorded — its slice keeps the depth
     // it already holds and its matrices stay frozen so the lit pass keeps sampling it correctly.
@@ -182,6 +183,8 @@ private:
 
     DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
     Frustum             m_CascadeFrustum[kShadowCascades] = {};
+    // m_CascadeFrustum's box as a matrix onto the unit cube, for the GPU scene's caster cull (transposed like ViewProj)
+    DirectX::XMFLOAT4X4 m_CascadeCullViewProj[kShadowCascades] = {};
     float               m_CascadeTexelWorld[kShadowCascades] = {};  // world units / shadow texel (sampling normal bias)
 
     DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };
@@ -240,6 +243,13 @@ private:
     // longer draws. Latched one frame late: written by the cascade's own job, read after WaitCascadeJobs.
     bool m_CascadeHasAnimatedCaster[kShadowCascades] = {};
     bool m_CascadeMatricesValid = false;                // first frame (and after a Resize) nothing may be frozen
+    // The GPU scene culled its static casters into this frame's cascades (Prepare), so the cascade jobs skip the
+    // leaves' static lists and draw the scene's lists instead. Resolved before the jobs launch.
+    bool m_SceneCasters = false;
+    // The GPU world culled its casters into this frame's cascades (D3D12GpuWorld views 1..3), so Phase A builds no
+    // CPU world caster set. Resolved before the jobs launch.
+    bool m_WorldGpu = false;
+bool m_SceneAnimatedCaster[kShadowCascades] = {};   // a scene caster with a live morph channel, per cascade
 
     bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read
     bool m_RecordedInJob = false;    // this frame's jobs also RECORDED (not just culled/built) — see RecordedInJob()

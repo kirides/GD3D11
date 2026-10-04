@@ -24,6 +24,9 @@ public:
         worker is still building it and Ready is false. */
     MeshVisualInfo* Acquire( const void* key, bool& outNeedsFill );
 
+    /** One more reference to a visual already held, for a holder other than a NodeAttachments slot. */
+    void AddRef( MeshVisualInfo* mvi );
+
     /** Drops one reference. Destroys the visual (and unregisters it) when the last one goes. */
     void Release( MeshVisualInfo* mvi );
 

@@ -30,9 +30,13 @@ using Microsoft::WRL::ComPtr;
 #include "../WorldMeshSection.h"
 #include "D3D12VobArena.h"
 #include "D3D12MeshArena.h"
+#include "D3D12GpuScene.h"
+#include "D3D12GpuWorld.h"
 
 static_assert( D3D12ShadowMap::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
     "D3D12ShadowMap's per-frame ring array bound must match the engine's" );
+static_assert( kShadowCascades <= D3D12GpuScene::kCasterViewRain, "the GPU scene has a caster region per cascade" );
+static_assert( kShadowCascades + 1 <= D3D12GpuWorld::kViewRain, "the GPU world has a view per cascade after the main one" );
 
 void D3D12ShadowMap::Attach( D3D12GraphicsEngine& engine ) {
     m_E = &engine;
@@ -80,6 +84,15 @@ namespace {
     struct ShadowGrassCBData { float Time; float WindStrength; float HeroAffectStrength; float _pad0; XMFLOAT3 PlayerPosWS; float _pad1; };
     static_assert( sizeof( ShadowGrassCBData ) == 8 * sizeof( float ), "Grass.RootSig param 3 pushes 8 root constants" );
     ShadowGrassCBData g_GrassCB = {};
+
+    // A cascade's static-VOB caster radii from the camera; shared by the leaf walk and the GPU scene's cull.
+    struct CasterRadii { float Outdoor; float Small; };
+    CasterRadii GetCasterRadii( UINT cascade ) {
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        const float shadowDistance = 8000 + (12000.0f * std::max( 0.1f, rs.WorldShadowRangeScale ));
+        // The last cascade gets no small casters.
+        return { std::max( 20000.0f, shadowDistance ), cascade == 2 ? 0.0f : std::max( 18000.0f, shadowDistance ) };
+    }
 }
 
 
@@ -703,6 +716,14 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 			Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
 			Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
 			Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide );
+
+		// The same box for the GPU scene's caster cull. BuildOrthographic's parameters are (sides, front, back),
+		// which the call above fills with ExtendBack, ExtendFront, ExtendSide.
+		const auto& ext = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades;
+		const float cullHalf = cascadeSize * 0.5f + ext.ExtendBack;
+		const XMMATRIX cullProj = XMMatrixOrthographicOffCenterLH( -cullHalf, cullHalf, -cullHalf, cullHalf,
+			cullNear - ext.ExtendSide, orthoFar + ext.ExtendFront );
+		XMStoreFloat4x4( &m_CascadeCullViewProj[c], XMMatrixTranspose( XMMatrixMultiply( lightView, cullProj ) ) );
 	}
 }
 
@@ -805,7 +826,10 @@ void D3D12ShadowMap::Prepare() {
 	// ExecuteCommandLists and a GPU hang in the shadow draws — plus the cascades got drawn twice, once inline and
 	// once from the stale list. Previous-frame jobs are all joined by now (FinishShadowPasses), so this is safe.
 	for ( UINT c = 0; c < kShadowCascades; ++c ) m_E->m_ShadowListRecorded[c] = false;
-	if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_Pipelines.World.RootSig )
+	m_SceneCasters = false;
+	m_WorldGpu = false;
+	for ( bool& a : m_SceneAnimatedCaster ) a = false;
+if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_Pipelines.World.RootSig )
 		return;
 
 	// NOTE: no function-scope DX_ZONE here — the MT path closes and resubmits m_CmdList mid-frame, which would
@@ -857,8 +881,15 @@ void D3D12ShadowMap::Prepare() {
 	const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource()
 		&& (ib->GetSizeInBytes() / sizeof( uint32_t )) > 0;
 
+	// GPU world: the cascades' world casters are culled and listed on the GPU, recorded here ahead of the jobs.
+	if ( haveWorld && castersNeeded && m_E->m_GpuWorldActive ) {
+		D3D12GpuWorld::View views[kShadowCascades] = {};
+		for ( UINT c = 0; c < kShadowCascades; ++c ) views[c] = { m_CascadeCullViewProj[c], m_ShouldUpdateCascade[c], false };
+		m_WorldGpu = m_E->m_GpuWorld->Cull( m_E->m_CmdList, views, 1, kShadowCascades );
+	}
+
 	g_WorldCasters.clear();
-	if ( haveWorld && castersNeeded ) {
+	if ( haveWorld && castersNeeded && !m_WorldGpu ) {
 		const Frustum& unionShadowFrustum = m_CascadeFrustum[kShadowCascades - 1];
 		static std::vector<WorldMeshSectionInfo*> shadowSections;
 		shadowSections.clear();
@@ -932,19 +963,28 @@ void D3D12ShadowMap::Prepare() {
 		return;
 	}
 
-	// Skeletal shadow casters (parity with D3D11's Shadows::DrawSkeletalMeshes): cull the FULL registered
-	// skeletal-vob list against the cascade frusta, not the player's view frustum — a caster invisible to the
-	// player can still cast a visible shadow. This is the ONE part of the cascade preparation that mutates
-	// Gothic state (the once/frame animation update, texani, morph meshes) and writes the shared skeletal CB
-	// ring, so it has to be a single MAIN-THREAD pass and cannot move into the per-cascade jobs launched below.
-	// It therefore runs HERE, ahead of them, rather than in a join step the cascades would have to wait on.
-	// Restricted to the near cascades (kSkeletalShadowCascades) — the far slices then have empty lists and
-	// RecordCascade skips its per-mesh skeletal/attachment loops for them entirely.
-	// Safe at this point in the frame: the main view already populated g_SkelUploadCache (PrepareFrameSkeletals
-	// in OnStartWorldRendering), so the per-vob uploads this walk needs are cached rather than redone.
+	// Static VOB casters from the GPU scene: culled and listed on m_CmdList, which reaches the queue ahead of the
+	// cascade lists. Decided here, before the jobs launch, since they read m_SceneCasters.
+	if ( m_E->m_GpuSceneActive && rsA.DrawVOBs ) {
+		GpuSceneCasterView views[kShadowCascades] = {};
+		const int firstLod = D3D12GraphicsEngine::GetFirstLodShadowCascade();
+		const float minTexels = rsA.DebugSettings.ShadowCascades.CasterMinTexels;
+		for ( UINT c = 0; c < kShadowCascades; ++c ) {
+			const CasterRadii radii = GetCasterRadii( c );
+			// MOB snapshots cast where the CPU skeletal casters would: the near cascades, within the skeletal radius.
+			const float mobRadius = c < kSkeletalShadowCascades ? rsA.SkeletalMeshDrawRadius : 0.0f;
+			views[c] = { m_CascadeCullViewProj[c], minTexels > 0.0f ? m_CascadeTexelWorld[c] * minTexels : 0.0f,
+				radii.Outdoor, radii.Small, mobRadius, static_cast<int>( c ) >= firstLod, m_ShouldUpdateCascade[c] };
+			m_SceneAnimatedCaster[c] = views[c].Active && m_E->m_GpuScene->AnyAnimatedCasterIn( m_CascadeFrustum[c] );
+		}
+		m_SceneCasters = m_E->CullGpuSceneCasters( views, 0, kShadowCascades );
+	}
+
+	// Skeletal casters: the whole registered list against the near cascades' frusta, on the main thread since it
+	// mutates Gothic state, ahead of the jobs. MOB snapshots the scene's casters hold are left out.
 	for ( UINT c = 0; c < kShadowCascades; ++c ) { SkelDraws[c].clear(); AttachDraws[c].clear(); }
 	m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f,
-		kSkeletalShadowCascades );
+		kSkeletalShadowCascades, false, nullptr, m_SceneCasters );
 
 	// --- Phase B+C+D: per-cascade cull -> build -> record — LAUNCHED HERE, JOINED IN FinishShadowPasses ----
 	// Mirrors D3D11ShadowMap: PrepareRender() enqueues one CollectVisibleVobs job per cascade on the WORKER
@@ -1041,7 +1081,7 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	const UINT c = cascade;
 	const UINT frame = m_E->m_FrameIndex;
 	m_VobDrawCount[c] = 0;
-	m_CascadeHasAnimatedCaster[c] = false;
+	m_CascadeHasAnimatedCaster[c] = m_SceneAnimatedCaster[c];
 	m_SkelDrawCount[c] = 0;
 	m_AttachDrawCount[c] = 0;
 	if ( !m_SunUp ) return;
@@ -1256,7 +1296,7 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 	// --- Instanced VOBs: collect this cascade's visible set. The instance-ring upload + indirect-arg build
 	// happen serially in Phase C (they share m_VobInstanceBufferOffset and CacheIn textures). ---
 	const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
-	const float shadowDistance = 8000 + (12000.0f * std::max( 0.1f, rs.WorldShadowRangeScale ));
+	const CasterRadii radii = GetCasterRadii( c );
 
 	// thread_local, not plain locals: these scratch lists would otherwise re-allocate every cascade every frame.
 	// (CollectMobs is false below so cascadeMobs stays empty; nopTransparency does receive the alpha-blended
@@ -1274,10 +1314,8 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 	ctx.frustum = frustum;
 	ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
 	ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
-	ctx.drawDistances.OutdoorVobs = std::max( 20000.0f, shadowDistance );
-	ctx.drawDistances.OutdoorVobsSmall = (c == 2) 
-        ? 0.0f // last cascade gets nothing
-        : std::max( 18000.0f, shadowDistance );
+	ctx.drawDistances.OutdoorVobs = radii.Outdoor;
+	ctx.drawDistances.OutdoorVobsSmall = radii.Small;
     ctx.drawDistances.IndoorVobs = 0.0f; // why would we WANT to include Indoor vobs in the shadows?
 	ctx.drawDistances.VisualFX = 0.0f;
 	ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
@@ -1302,6 +1340,10 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 	ctx.drawFlags.CollectIndoorVobs = false;
 	ctx.drawFlags.CollectMobs = false;
 	ctx.drawFlags.CollectLights = false;
+	// The scene's static casters were culled on the GPU; only its CPU-path list joins the dynamic vobs here.
+	// That list only changes on the main thread before the jobs launch.
+	ctx.drawFlags.SkipStaticVobs = m_SceneCasters;
+	ctx.extraVobs = m_SceneCasters ? &m_E->m_GpuScene->CpuVobs() : nullptr;
 
 	Engine::GAPI->CollectVisibleVobs( ctx ); // uses rendercontext and does not mutate objects.
 
@@ -1372,7 +1414,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
 
 	// --- World mesh (root sig: m_Pipelines.World.RootSig; b0 = cascade view-proj; b6 bindless material) ---
-	if ( m_WorldDrawCount[c] > 0 && vb && ib && m_WorldDrawArgs[c][frame] ) {
+	const bool gpuWorld = m_WorldGpu && m_E->m_GpuWorld->Drawable( c + 1 );
+	if ( ( gpuWorld || ( m_WorldDrawCount[c] > 0 && m_WorldDrawArgs[c][frame] ) ) && vb && ib ) {
 		DX_ZONE( cmdList.Get(), "World Mesh" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
 
@@ -1389,7 +1432,11 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		cmdList->IASetVertexBuffers( 0, 1, &vbv );
 		cmdList->IASetIndexBuffer( &ibv );
 
-		if ( !splitAlpha ) {
+		if ( gpuWorld ) {
+			m_E->m_GpuWorld->Draw( cmdList, c + 1, false );
+			if ( splitAlpha ) cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
+			m_E->m_GpuWorld->Draw( cmdList, c + 1, true );
+		} else if ( !splitAlpha ) {
 			cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldDrawCount[c],
 				m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
 		} else {
@@ -1447,6 +1494,24 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 					static_cast<UINT64>( m_VobOpaqueDrawCount[c] ) * sizeof( D3D12GraphicsEngine::VobDrawCommand ),
 					nullptr, 0 );
 			}
+		}
+	}
+
+	// --- GPU scene static casters: the lists Prepare's GPU cull generated for this cascade, GPU-counted ---
+	if ( m_SceneCasters && m_CasterVobIndirectPSO && m_E->m_VobIndirectCmdSig && m_E->m_VobArena->Ready() ) {
+		DX_ZONE( cmdList.Get(), "Scene Vobs" );
+		TracyD3D12ZoneCGX( cmdList.Get(), "Scene Vobs" );
+		const D3D12GpuScene& scene = *m_E->m_GpuScene;
+		const bool splitAlpha = m_CasterVobIndirectNoAlphaPSO != nullptr;
+		cmdList->SetPipelineState( splitAlpha ? m_CasterVobIndirectNoAlphaPSO.Get() : m_CasterVobIndirectPSO.Get() );
+		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
+		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );
+		if ( m_E->BindVobArenaIA( cmdList, scene.CasterInstances(), scene.CasterInstanceBytes(),
+			D3D12GpuScene::kCasterInstanceStride ) ) {
+			m_E->DrawGpuSceneCasters( cmdList, c, false );
+			if ( splitAlpha ) cmdList->SetPipelineState( m_CasterVobIndirectPSO.Get() );
+			m_E->DrawGpuSceneCasters( cmdList, c, true );
 		}
 	}
 

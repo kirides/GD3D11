@@ -17,7 +17,8 @@ struct MeshInfo;
     buffers), the static VOBs within reach (one cached BLAS per visual over the VOB arena), node attachments (one
     cached BLAS per mesh over the attachment arena) and the main view's NPCs (rebuilt per frame from the posed
     skinning streams). Cached BLASes are compacted once their size is read back and live in suballocated pools,
-    so a small prop costs its bytes rather than a 64 KB placement.
+    so a small prop costs its bytes rather than a 64 KB placement. With the GPU scene active, its static VOBs and
+    MOB snapshots are appended on the GPU (RtSceneInstances.hlsl) and request their BLASes by readback.
 
     Main thread only. The scene is built at most once per frame by whichever pass asks first. */
 class D3D12RayTracing {

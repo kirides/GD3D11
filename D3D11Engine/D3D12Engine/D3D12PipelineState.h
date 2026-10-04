@@ -504,6 +504,34 @@ public:
         Microsoft::WRL::ComPtr<Rhi::RootSignature> PatchRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            PatchCsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> PatchPSO;
+        // GPU scene (D3D12GpuScene): CSCull over the persistent table, then CSBuildArgs generates the commands.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullSceneCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullScenePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullSceneNoMotionCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullSceneNoMotionPSO;
+        Microsoft::WRL::ComPtr<Rhi::RootSignature> SceneArgsRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SceneArgsCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneArgsPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SceneClearCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneClearPSO;
+        // Shadow-cascade casters from the same table: CSCull (VOB_SHADOW), then CSBuildCasterArgs.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullCasterCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullCasterPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SceneCasterArgsCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneCasterArgsPSO;
+        // Point-light bakes from the same table: CSCullSphere (+ its counter clear), then CSBuildCubeArgs.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullSphereCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullSpherePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobSphereClearCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobSphereClearPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SceneCubeArgsCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneCubeArgsPSO;
+        // GPU world mesh (D3D12GpuWorld): b0 31 consts, t0-t3 root SRVs, u0-u2 root UAVs.
+        Microsoft::WRL::ComPtr<Rhi::RootSignature> WorldCullRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            WorldCullCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> WorldCullPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            WorldClearCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> WorldClearPSO;
     };
 
     // Debug/editor lines (D3D12LineRenderer): one root sig (b0 ViewProj, b1 viewport) + one VS/PS set,
@@ -604,6 +632,7 @@ public:
     bool CreateWaterSkyAverage();   // single-group sky average compute (b0 8 consts, bindless)
     bool CreateWaterRT();     // ray-traced water reflections (RayQuery compute); no-op without Caps::RayQuery
     bool CreateRtShadows();   // ray-traced sun + point-light shadow mask (RayQuery compute); no-op without Caps::RayQuery
+    bool CreateRtScene();     // GPU scene -> TLAS instances (RtSceneInstances.hlsl); no-op without Caps::RayQuery
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
     bool CreatePreviewSkeletal();   // same, for a skinned item visual (adds b2 bone palette)
@@ -642,6 +671,7 @@ public:
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
     bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
+    bool CreateWorldCull();   // GPU world-mesh cluster cull (WorldCull.hlsl); non-fatal
     bool CreateMorphFold();   // GPU morph-mesh fold compute (b0 8 consts, t0-t2 root SRVs, u0 root UAV)
     bool CreateSkinning();    // compute skinning (b0 4 consts, t0-t3 root SRVs, u0-u1 root UAVs)
     bool CreateLines();       // debug/editor line lists (world-space depth-tested + screen-space xyzrhw)
@@ -684,6 +714,9 @@ public:
     ComputePipeline  WaterRT;           // Shaders/D3D12/WaterRT.hlsl (optional, ray-query devices only)
     ComputePipeline  RtShadows;         // Shaders/D3D12/RtShadows.hlsl (optional, ray-query devices only)
     ComputePipeline  RtShadowFilter;    // RtShadows.hlsl:CSFilter, same root signature; blurs the "Smooth" modes
+    ComputePipeline  RtSceneClear;      // RtSceneInstances.hlsl, one root signature for the three
+    ComputePipeline  RtSceneInstances;
+    ComputePipeline  RtSceneTail;
     ComputePipeline  LightCull;
     ComputePipeline  LumReduce;   // dynamic exposure, level 1: scene color -> per-group partial luminance sums
     ComputePipeline  LumAdapt;    // dynamic exposure, level 2: reduce partials + temporal-adapt -> Tonemap's exposure

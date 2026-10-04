@@ -8,9 +8,8 @@
 //                 surviving count for that command's visual (0 == the whole visual was culled).
 //
 // Both the depth prepass and the lit color pass ExecuteIndirect over the same patched argument buffer, so one
-// cull serves both. The CSM shadow cascades are NOT culled here — they keep their own CPU cull against their
-// own frustum (a caster invisible to the player still casts into view), and they draw from the uncompacted
-// per-frame instance ring.
+// cull serves both. The CSM cascades cull only the GPU scene's static casters here (VOB_SHADOW); their other
+// casters keep the CPU cull and draw from the uncompacted per-frame instance ring.
 //
 // Everything is bound through root descriptors / root constants (no descriptor tables); the Hi-Z pyramid is
 // the one texture and it comes in bindlessly (SM6.6 ResourceDescriptorHeap) as a full-mip-chain SRV.
@@ -28,7 +27,10 @@ struct VobCullVisual
     // strands those instances and they vanish from the main view — which is why the CPU only raises this
     // once it has emitted the far commands.
     uint   SplitMode;
+    uint   SceneFlags;      // GPU scene: SCENE_VISUAL_*; 0 for ring records
 };
+#define SCENE_VISUAL_SMALL  1u   // outdoor instances use SmallRadius instead of OutdoorRadius
+#define SCENE_VISUAL_MOB    2u   // a leaf MOB's node mesh: MobRadius
 #define VOB_SPLIT_NONE  0u
 #define VOB_SPLIT_LOD   1u
 
@@ -47,6 +49,20 @@ struct VobInstanceGpu
 #endif
 };
 
+// GPU scene (D3D12GpuScene): the persistent table holds static instances without a previous transform, and
+// flags in GPSlot that only the cull reads.
+struct SceneInstanceGpu
+{
+    float4 World0, World1, World2;
+    uint   Color;
+    float  WindStrength;
+    float  CanBeAffectedByPlayer;
+    uint   GPSlot;
+};
+#define SCENE_GPSLOT_FOCUS   0x80000000u   // Vob.hlsl's focus highlight
+#define SCENE_GPSLOT_HIDDEN  0x20000000u   // not drawn (hidden, or handed to the CPU path)
+#define SCENE_GPSLOT_INDOOR  0x10000000u   // IndoorRadius instead of the visual's DrawRadius
+
 //--------------------------------------------------------------------------------------
 // Pass 1 — cull + compact
 //--------------------------------------------------------------------------------------
@@ -62,12 +78,23 @@ cbuffer VobCullCB : register( b0 )
     // 0 = no LOD split. Bucketing must be per INSTANCE: Gothic reuses a few hundred visuals map-wide, so a
     // per-visual decision would let one nearby barrel force full detail on every barrel in the world.
     float    LodDistance;       // @88
-    uint     _cullPad0;         // @92  explicit: HLSL won't let the float3 straddle 16 B, and the C++ mirror
-    float3   CullCamPosWS;      // @96  must match field-for-field (its static_assert only checks size)
-};                              // -> 108 B == 27 root constants
+    float    MinMeshSize;       // @92  GPU scene casters: visuals with a smaller bbox diagonal are skipped
+    float3   CullCamPosWS;      // @96
+    uint     OutputOffset;      // @108 added to InstanceBase for the output element; 0 for the ring
+    float    IndoorRadius;      // @112 GPU scene draw distances (pivot to camera)
+    float    OutdoorRadius;     // @116
+    float    SmallRadius;       // @120
+    uint     FocusSlot;         // @124 GPU scene: table index of the focused vob, 0xFFFFFFFF = none
+    float    MobRadius;         // @128 GPU scene: MOB snapshots, 0 = none in this view
+    float3   CullPad;
+};                              // -> 144 B == 36 root constants
 
 StructuredBuffer<VobCullVisual>    Visuals       : register( t0 );
+#if VOB_SCENE
+StructuredBuffer<SceneInstanceGpu> InInstances   : register( t1 );
+#else
 StructuredBuffer<VobInstanceGpu>   InInstances   : register( t1 );
+#endif
 RWStructuredBuffer<VobInstanceGpu> OutInstances  : register( u0 );
 RWStructuredBuffer<uint>           VisibleCounts : register( u1 );
 
@@ -77,6 +104,67 @@ float3x4 BuildWorldMatrix( VobInstanceGpu inst )
     return float3x4( inst.World0, inst.World1, inst.World2 );
 }
 
+#if VOB_SCENE
+// The draw instance for a table entry: no motion of its own, so the previous transform is the current one.
+VobInstanceGpu ExpandSceneInstance( SceneInstanceGpu s, uint tableIndex )
+{
+    VobInstanceGpu o;
+    o.World0 = s.World0; o.World1 = s.World1; o.World2 = s.World2;
+    o.Color = s.Color;
+    o.WindStrength = s.WindStrength;
+    o.CanBeAffectedByPlayer = s.CanBeAffectedByPlayer;
+    o.GPSlot = ( s.GPSlot & ~SCENE_GPSLOT_FOCUS ) | ( tableIndex == FocusSlot ? SCENE_GPSLOT_FOCUS : 0u );
+#if !VOB_NO_MOTION
+    o.PrevWorld0 = s.World0; o.PrevWorld1 = s.World1; o.PrevWorld2 = s.World2;
+#endif
+    return o;
+}
+
+// The draw-distance and hidden tests the CPU leaf walk used to make.
+bool IsSceneInstanceInRange( VobCullVisual v, SceneInstanceGpu s )
+{
+    if ( s.GPSlot & SCENE_GPSLOT_HIDDEN ) return false;
+#if VOB_SHADOW
+    // The cascades' walk: no indoor casters, none smaller than a few of this cascade's texels.
+    if ( s.GPSlot & SCENE_GPSLOT_INDOOR ) return false;
+    if ( length( v.BBoxMax - v.BBoxMin ) < MinMeshSize ) return false;
+#endif
+    const float radius = ( v.SceneFlags & SCENE_VISUAL_MOB ) ? MobRadius
+        : ( s.GPSlot & SCENE_GPSLOT_INDOOR ) ? IndoorRadius
+        : ( v.SceneFlags & SCENE_VISUAL_SMALL ) ? SmallRadius : OutdoorRadius;
+    const float3 pivot = float3( s.World0.w, s.World1.w, s.World2.w );
+    return distance( pivot, CullCamPosWS ) < radius;
+}
+#endif
+
+#if VOB_SHADOW
+// Shadow cascade: CullViewProj maps the cascade's cull box (Frustum::BuildOrthographic) onto x,y in [-1,1],
+// z in [0,1], with w = 1. No occlusion test, the casters may sit outside the player's view.
+bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
+{
+    if ( any( v.BBoxMin > v.BBoxMax ) )
+        return true;
+
+    const float3x4 world = BuildWorldMatrix( inst );
+    bool outNegX = true, outPosX = true, outNegY = true, outPosY = true, outNear = true, outFar = true;
+    [unroll]
+    for ( uint c = 0; c < 8; ++c )
+    {
+        float3 corner = float3(
+            ( c & 1 ) ? v.BBoxMax.x : v.BBoxMin.x,
+            ( c & 2 ) ? v.BBoxMax.y : v.BBoxMin.y,
+            ( c & 4 ) ? v.BBoxMax.z : v.BBoxMin.z );
+        const float3 p = mul( float4( mul( world, float4( corner, 1.0 ) ), 1.0 ), CullViewProj ).xyz;
+        outNegX = outNegX && ( p.x < -1.0 );
+        outPosX = outPosX && ( p.x >  1.0 );
+        outNegY = outNegY && ( p.y < -1.0 );
+        outPosY = outPosY && ( p.y >  1.0 );
+        outNear = outNear && ( p.z <  0.0 );
+        outFar  = outFar  && ( p.z >  1.0 );
+    }
+    return !( outNegX || outPosX || outNegY || outPosY || outNear || outFar );
+}
+#else
 bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
 {
     // A degenerate/uninitialised visual box would collapse to a point and get culled at almost any angle;
@@ -162,6 +250,7 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
     // "any corner in front" bail-out already err on the side of keeping geometry.
     return !( occluderDepth > closestDepth );
 }
+#endif
 
 // One thread group per VISUAL: the group owns that visual's whole instance range, so the compaction counters
 // can live in groupshared memory and only the final counts need a buffer write (no global atomics at all).
@@ -189,13 +278,20 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
         VobCullVisual v = Visuals[visualIdx];
         for ( uint i = gtid; i < v.InstanceCount; i += VOBCULL_GROUP_SIZE )
         {
+#if VOB_SCENE
+            const SceneInstanceGpu sceneInst = InInstances[v.InstanceBase + i];
+            VobInstanceGpu inst = ExpandSceneInstance( sceneInst, v.InstanceBase + i );
+            const bool inRange = IsSceneInstanceInRange( v, sceneInst );
+#else
             VobInstanceGpu inst = InInstances[v.InstanceBase + i];
+            const bool inRange = true;
+#endif
 
             // NOTE: no early-out/continue on visibility -- every lane must reach the wave ops below with the
             // same activity mask, so an invisible instance falls through with both predicates false instead
             // of exiting the loop.
             bool isFar = false;
-            const bool visible = IsInstanceVisible( v, inst );
+            const bool visible = inRange && IsInstanceVisible( v, inst );
             if ( visible )
             {
                 // Bbox centre, not the origin: Gothic vob pivots are often off the mesh entirely (a door's
@@ -218,7 +314,7 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 uint nearBase = 0;
                 if ( WaveIsFirstLane() ) InterlockedAdd( gNearInGroup, nearHits, nearBase );
                 nearBase = WaveReadLaneFirst( nearBase );
-                if ( isNear ) OutInstances[v.InstanceBase + nearBase + WavePrefixCountBits( isNear )] = inst;
+                if ( isNear ) OutInstances[OutputOffset + v.InstanceBase + nearBase + WavePrefixCountBits( isNear )] = inst;
             }
 
             const uint farHits = WaveActiveCountBits( isFarVisible );
@@ -228,7 +324,7 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 if ( WaveIsFirstLane() ) InterlockedAdd( gFarInGroup, farHits, farBase );
                 farBase = WaveReadLaneFirst( farBase );
                 if ( isFarVisible )
-                    OutInstances[v.InstanceBase + v.InstanceCount - 1 - ( farBase + WavePrefixCountBits( isFarVisible ) )] = inst;
+                    OutInstances[OutputOffset + v.InstanceBase + v.InstanceCount - 1 - ( farBase + WavePrefixCountBits( isFarVisible ) )] = inst;
             }
         }
     }
@@ -240,6 +336,89 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
         VisibleCounts[visualIdx * 2u + 1u] = gFarInGroup;
     }
 }
+
+#if VOB_SCENE
+//--------------------------------------------------------------------------------------
+// GPU scene, point-light bake: the table's static casters inside one light's sphere
+//--------------------------------------------------------------------------------------
+// A sphere keeps a few dozen of the table's instances, so they pack tightly into this view's region instead of
+// keeping their table positions. Per visual VisibleCounts holds { count, first element }; the region's fill
+// counter sits behind the visuals at VisibleCounts[VisualCount * 2]. CullCamPosWS is the light, OutdoorRadius
+// its reach, MinMeshSize the caster size per unit of distance, OutputOffset the region and HiZIndex its size.
+#define SphereCapacity HiZIndex
+
+// CollectStaticCastersInSphere's test, on the instance's world box.
+bool IsInSphere( VobCullVisual v, SceneInstanceGpu s )
+{
+    if ( ( s.GPSlot & SCENE_GPSLOT_HIDDEN ) || any( v.BBoxMin > v.BBoxMax ) ) return false;
+    const float3x4 world = float3x4( s.World0, s.World1, s.World2 );
+    const float3 centre = mul( world, float4( ( v.BBoxMin + v.BBoxMax ) * 0.5, 1.0 ) );
+    const float3 halfExtent = mul( abs( (float3x3)world ), ( v.BBoxMax - v.BBoxMin ) * 0.5 );
+    const float3 d = clamp( CullCamPosWS, centre - halfExtent, centre + halfExtent ) - CullCamPosWS;
+    const float distSq = dot( d, d );
+    if ( distSq >= OutdoorRadius * OutdoorRadius ) return false;
+    const float3 diagonal = halfExtent * 2.0;
+    return dot( diagonal, diagonal ) >= distSq * MinMeshSize * MinMeshSize;
+}
+
+groupshared uint gSphereCount;
+groupshared uint gSphereBase;
+groupshared uint gSphereCursor;
+
+[numthreads(VOBCULL_GROUP_SIZE, 1, 1)]
+void CSCullSphere( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
+{
+    const uint visualIdx = gid.x;
+    const VobCullVisual v = Visuals[min( visualIdx, VisualCount - 1u )];
+    const uint instances = visualIdx < VisualCount ? v.InstanceCount : 0u;
+    if ( gtid == 0 ) { gSphereCount = 0; gSphereCursor = 0; }
+    GroupMemoryBarrierWithGroupSync();
+
+    // Count, reserve one run in the region, then write: the run must be contiguous for one draw per sub-mesh.
+    for ( uint i = gtid; i < instances; i += VOBCULL_GROUP_SIZE )
+    {
+        const bool inside = IsInSphere( v, InInstances[v.InstanceBase + i] );
+        const uint hits = WaveActiveCountBits( inside );
+        if ( hits != 0 && WaveIsFirstLane() ) InterlockedAdd( gSphereCount, hits );
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if ( gtid == 0 )
+    {
+        uint count = gSphereCount, base = 0;
+        if ( count != 0 ) InterlockedAdd( VisibleCounts[VisualCount * 2u], count, base );
+        count = base < SphereCapacity ? min( count, SphereCapacity - base ) : 0u;   // full: the rest cast nothing
+        gSphereCount = count;
+        gSphereBase = base;
+        if ( visualIdx < VisualCount )
+        {
+            VisibleCounts[visualIdx * 2u] = count;
+            VisibleCounts[visualIdx * 2u + 1u] = OutputOffset + base;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    for ( uint i = gtid; i < instances; i += VOBCULL_GROUP_SIZE )
+    {
+        const SceneInstanceGpu s = InInstances[v.InstanceBase + i];
+        const bool inside = IsInSphere( v, s );
+        const uint hits = WaveActiveCountBits( inside );
+        if ( hits == 0 ) continue;
+        uint first = 0;
+        if ( WaveIsFirstLane() ) InterlockedAdd( gSphereCursor, hits, first );
+        first = WaveReadLaneFirst( first );
+        const uint slot = first + WavePrefixCountBits( inside );
+        if ( inside && slot < gSphereCount )
+            OutInstances[OutputOffset + gSphereBase + slot] = ExpandSceneInstance( s, v.InstanceBase + i );
+    }
+}
+
+// Zeroes a point view's fill counter ahead of its CSCullSphere.
+[numthreads(1, 1, 1)]
+void CSClearSphere()
+{
+    VisibleCounts[VisualCount * 2u] = 0u;
+}
+#endif
 
 //--------------------------------------------------------------------------------------
 // Pass 2 — patch the indirect argument buffer
@@ -286,4 +465,138 @@ void CSPatchArgs( uint3 DTid : SV_DispatchThreadID )
 
     PatchArgs.Store( base + PatchInstCountOffset, count );
     PatchArgs.Store( base + PatchStartInstOffset, start );
+}
+
+//--------------------------------------------------------------------------------------
+// GPU scene — generate the draw commands of every visual with survivors
+//--------------------------------------------------------------------------------------
+// Mirrors D3D12GpuScene::Template: the VobDrawCommand fields that do not depend on the cull.
+struct SceneTemplate
+{
+    uint  MatNormalIndex;
+    uint  MatOrmIndex;
+    uint  MatDiffuseIndex;
+    float WindMinHeight;
+    float WindMaxHeight;
+    uint  IndexCount;
+    uint  StartIndex;
+    int   BaseVertex;
+    uint  VisualIndex;      // scene record
+    uint  LodBucket;        // caster template: the LOD index count
+    uint  Flags;            // SCENE_TEMPLATE_*
+    uint  CasterLodStart;   // caster template: the first LOD index
+};
+#define SCENE_TEMPLATE_ALPHA   1u   // goes into the alpha-tested list
+#define SCENE_TEMPLATE_READY   2u   // main view: its textures are resolved; not drawn until then
+#define SCENE_TEMPLATE_CASTER  4u   // a shadow-caster template; IndexCount/StartIndex name its near-cascade range
+#define SCENE_TEMPLATE_RESOLVED 8u  // caster: its diffuse is resident (or it has none)
+
+cbuffer SceneArgsCB : register( b0 )
+{
+    uint TemplateCount;
+    uint OpaqueCapacity;    // commands in the opaque list, which starts at command 0
+    uint AlphaCapacity;     // commands in the alpha list, which starts at command OpaqueCapacity
+    uint SceneOutputOffset; // the cull's OutputOffset
+    uint UseLodIndices;     // casters: draw the LOD range (outer cascades)
+    uint FillCounter;       // cube commands: index of CSCullSphere's fill counter in SceneCounts
+    uint InstanceCapacity;  // cube commands: the view's instance region
+};
+
+StructuredBuffer<SceneTemplate> Templates     : register( t0 );
+StructuredBuffer<VobCullVisual> SceneVisuals  : register( t1 );
+StructuredBuffer<uint>          SceneCounts   : register( t2 );
+RWByteAddressBuffer             SceneArgs     : register( u0 );   // VobDrawCommand x (OpaqueCapacity + AlphaCapacity)
+RWByteAddressBuffer             SceneArgCount : register( u1 );   // [0] opaque, [4] alpha: the ExecuteIndirect counts
+// Cube commands only: { count, visual indices } of the casters left out because their texture is not resident.
+RWByteAddressBuffer             BakeReport    : register( u2 );
+
+#define VOB_DRAW_COMMAND_STRIDE 48u
+
+[numthreads(1, 1, 1)]
+void CSClearCounts()
+{
+    SceneArgCount.Store2( 0, uint2( 0, 0 ) );
+}
+
+void AppendSceneCommand( SceneTemplate t, uint indexCount, uint startIndex, uint count, uint start, uint lodBucket )
+{
+    const bool alpha = ( t.Flags & SCENE_TEMPLATE_ALPHA ) != 0u;
+    uint slot;
+    SceneArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
+    if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) ) return;   // the draw clamps the count to capacity
+
+    const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * VOB_DRAW_COMMAND_STRIDE;
+    SceneArgs.Store4( at,      uint4( t.MatNormalIndex, t.MatOrmIndex, t.MatDiffuseIndex, asuint( t.WindMinHeight ) ) );
+    SceneArgs.Store4( at + 16, uint4( asuint( t.WindMaxHeight ), indexCount, count, startIndex ) );
+    SceneArgs.Store4( at + 32, uint4( asuint( t.BaseVertex ), start, t.VisualIndex, lodBucket ) );
+}
+
+[numthreads(64, 1, 1)]
+void CSBuildArgs( uint3 DTid : SV_DispatchThreadID )
+{
+    if ( DTid.x >= TemplateCount ) return;
+    const SceneTemplate t = Templates[DTid.x];
+    if ( ( t.Flags & ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) != SCENE_TEMPLATE_READY ) return;
+    const uint count = SceneCounts[t.VisualIndex * 2u + t.LodBucket];
+    if ( count == 0u ) return;
+
+    // Near packs forward from the output base, far backward from its end (see CSCull).
+    const VobCullVisual v = SceneVisuals[t.VisualIndex];
+    const uint start = SceneOutputOffset + v.InstanceBase + ( t.LodBucket == 0u ? 0u : v.InstanceCount - count );
+    AppendSceneCommand( t, t.IndexCount, t.StartIndex, count, start, t.LodBucket );
+}
+
+// One shadow cascade's caster commands, over the counts its CSCull (VOB_SHADOW) wrote. Casters never split.
+[numthreads(64, 1, 1)]
+void CSBuildCasterArgs( uint3 DTid : SV_DispatchThreadID )
+{
+    if ( DTid.x >= TemplateCount ) return;
+    const SceneTemplate t = Templates[DTid.x];
+    if ( ( t.Flags & ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) != ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) return;
+    const uint count = SceneCounts[t.VisualIndex * 2u];
+    if ( count == 0u ) return;
+
+    const uint start = SceneOutputOffset + SceneVisuals[t.VisualIndex].InstanceBase;
+    AppendSceneCommand( t, UseLodIndices ? t.LodBucket : t.IndexCount,
+        UseLodIndices ? t.CasterLodStart : t.StartIndex, count, start, 0u );
+}
+
+// A point light's cube commands over CSCullSphere's { count, first } pairs, in D3D12PointShadows'
+// PointShadowCasterCommand layout: b1 diffuse + a draw whose instances repeat per cube face.
+#define CUBE_COMMAND_STRIDE 24u
+#define REPORT_CAPACITY 62u        // D3D12PointShadows::kReportCapacity
+#define REPORT_OVERFLOW_WORD 63u   // non-zero: commands (1) or instances (2) were dropped
+
+[numthreads(64, 1, 1)]
+void CSBuildCubeArgs( uint3 DTid : SV_DispatchThreadID )
+{
+    // A cached bake that lost instances to a full region is incomplete; say so once.
+    if ( DTid.x == 0u && SceneCounts[FillCounter] > InstanceCapacity ) BakeReport.InterlockedOr( REPORT_OVERFLOW_WORD * 4u, 2u );
+    if ( DTid.x >= TemplateCount ) return;
+    const SceneTemplate t = Templates[DTid.x];
+    if ( ( t.Flags & ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) != ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) return;
+    const uint count = SceneCounts[t.VisualIndex * 2u];
+    if ( count == 0u ) return;
+
+    // A cube is cached, so a caster whose texture is not resident must not bake with a fallback (an alpha-tested
+    // one would stay solid): leave it out and report its visual.
+    if ( ( t.Flags & SCENE_TEMPLATE_RESOLVED ) == 0u )
+    {
+        uint reported;
+        BakeReport.InterlockedAdd( 0, 1u, reported );
+        if ( reported < REPORT_CAPACITY ) BakeReport.Store( 4u + reported * 4u, t.VisualIndex );
+        return;
+    }
+
+    const bool alpha = ( t.Flags & SCENE_TEMPLATE_ALPHA ) != 0u;
+    uint slot;
+    SceneArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
+    if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) )
+    {
+        BakeReport.InterlockedOr( REPORT_OVERFLOW_WORD * 4u, 1u );
+        return;
+    }
+    const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * CUBE_COMMAND_STRIDE;
+    SceneArgs.Store3( at,      uint3( t.MatDiffuseIndex, t.IndexCount, count * 6u ) );
+    SceneArgs.Store3( at + 12, uint3( t.StartIndex, asuint( t.BaseVertex ), SceneCounts[t.VisualIndex * 2u + 1u] ) );
 }

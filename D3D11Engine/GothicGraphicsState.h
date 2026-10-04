@@ -913,6 +913,8 @@ struct GothicRendererSettings {
         SynchronousMeshExtraction = false;
         GpuVobCulling = false;
         GpuVobOcclusionCulling = false;
+        GpuScene = false;
+        GpuWorld = false;
         UseGpuUploadRings = false;
         EnableVSync = true;
         DoZPrepass = false;
@@ -1227,6 +1229,12 @@ struct GothicRendererSettings {
     // out as its own toggle because it is the part that can wrongly hide geometry.
     bool GpuVobCulling;
     bool GpuVobOcclusionCulling;
+    // D3D12: static VOBs live in a persistent GPU table; the main view culls them and generates their draw
+    // commands on the GPU instead of walking the BSP leaves (GPU_SCENE_PLAN.md). Implies GpuVobCulling.
+    bool GpuScene;
+    // D3D12: the world mesh's clusters are culled per view on the GPU, which also writes its draw commands;
+    // water, portals and blended surfaces stay CPU-collected (GPU_SCENE_PLAN.md).
+    bool GpuWorld;
     // D3D12/Vulkan: the light, skeletal and VOB/shadow instance rings live in CPU-writable VRAM (GPU_UPLOAD /
     // ReBAR) instead of system memory. Read when the rings are created, so it takes effect after a restart.
     bool UseGpuUploadRings;
@@ -1700,6 +1708,7 @@ enum EPointLightRebakeCause {
     PLR_ASIDE_BUFFER,   // legacy composited path: the aside cube was re-allocated or given back
     PLR_NO_CACHE,       // PLS_FULL drops the bake every frame by design - not a fault
     PLR_BUDGET_DEFER,   // a wanted re-bake was postponed by the per-frame light budget
+    PLR_TEXTURES_LOADED,   // the last bake left casters out whose textures were not resident; now they are
     PLR_NUM_CAUSES
 };
 
@@ -1715,6 +1724,7 @@ inline const char* PointLightRebakeCauseName( EPointLightRebakeCause c ) {
     case PLR_ASIDE_BUFFER:  return "Aside cube re-allocated";
     case PLR_NO_CACHE:      return "PLS_FULL (no caching)";
     case PLR_BUDGET_DEFER:  return "Deferred by budget";
+    case PLR_TEXTURES_LOADED: return "Missing textures loaded";
     default:                return "?";
     }
 }

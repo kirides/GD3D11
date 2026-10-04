@@ -259,6 +259,16 @@ void PointLightSlotSelector::DrainPendingVobChanges() {
 }
 
 
+void PointLightSlotSelector::InvalidateStatic( uint32_t slot, EPointLightRebakeCause cause ) {
+    if ( slot >= m_Static.size() ) return;
+    StaticSlot& ss = m_Static[slot];
+    if ( !ss.ownerKey || !ss.valid ) return;
+    ss.valid = false;
+    ss.lastCause = cause;
+    Engine::GAPI->GetRendererState().RendererInfo.NotePointLightRebake( cause );
+}
+
+
 void PointLightSlotSelector::InvalidateStaticForVobAdded( const XMFLOAT3& posWS, float extent ) {
     // A cached static cube is only re-rendered when its light is fresh / moved / resized, never when the
     // geometry around it changes - so a new VOB in range has to say so. The margin mirrors the static-VOB

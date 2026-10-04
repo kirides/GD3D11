@@ -58,13 +58,8 @@ struct RndCullContext {
         so a light the player turns away from doesn't blink out and surrender its shadow cube. 0 = off. */
     float keepLightsWithinRange = 0.0f;
 
-    struct
-    {
-        float OutdoorVobs;
-        float OutdoorVobsSmall;
-        float IndoorVobs;
-        float VisualFX;
-    } drawDistances;
+    /** Static VOBs collected like DynamicallyAddedVobs (the GPU scene's CPU-path list), or null. */
+    const std::vector<VobInfo*>* extraVobs = nullptr;
 
     struct
     {
@@ -72,7 +67,15 @@ struct RndCullContext {
         float OutdoorVobsSmall;
         float IndoorVobs;
         float VisualFX;
-    } drawDistancesSq;
+    } drawDistances{};
+
+    struct
+    {
+        float OutdoorVobs;
+        float OutdoorVobsSmall;
+        float IndoorVobs;
+        float VisualFX;
+    } drawDistancesSq{};
 
     struct
     {
@@ -87,10 +90,12 @@ struct RndCullContext {
         // LIGHTS and skeletal MOBs keep their frustum tests either way — the light buffer is capped and the
         // per-draw skeletal path has no GPU cull yet. Defaults false: D3D11 never sets it.
         bool SkipVobFrustumCull;
+        // D3D12 GPU scene: the leaves' static VOB lists are drawn from a GPU table, so skip them here.
+        bool SkipStaticVobs;
         bool CollectIndoorVobs;
         bool CollectMobs;
         bool CollectLights;
-    } drawFlags;
+    } drawFlags{};   // zeroed: passes set only the flags they care about
 };
 
 enum EBspTreeCollectFlags : unsigned int {
@@ -767,7 +772,10 @@ public:
         EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE,
         // true => distance-only static-VOB collection; the caller frustum/occlusion-culls them itself
         // (D3D12's GPU cull). See RndCullContext::drawFlags.SkipVobFrustumCull.
-        bool skipVobFrustumCull = false );
+        bool skipVobFrustumCull = false,
+        // D3D12 GPU scene: skip the leaves' static VOB lists, collect `extraVobs` instead. See RndCullContext.
+        bool skipStaticVobs = false,
+        const std::vector<VobInfo*>* extraVobs = nullptr );
 
     void CollectVisibleVobs( const RndCullContext& ctx );
 

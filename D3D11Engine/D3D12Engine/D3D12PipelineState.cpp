@@ -2353,6 +2353,39 @@ bool D3D12PipelineState::CreateRtShadows() {
     return true;
 }
 
+bool D3D12PipelineState::CreateRtScene() {
+    Rhi::Device* device = m_Device;
+    RtSceneClear = RtSceneInstances = RtSceneTail = {};
+    if ( !device || !device->GetCaps().RayQuery ) return true;   // nothing to build; the RT scene collects on the CPU
+
+    D3D12RootLayout& rs = Layout( "RtScene" );
+    rs.AddConstants( 0, 12, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 RtSceneCB
+    for ( UINT t = 0; t < 4; ++t )                            // 1-4: t0 Visuals, t1 Table, t2 Templates, t3 VisualRts
+        rs.AddSRV( t, D3D12_SHADER_VISIBILITY_ALL );
+    for ( UINT u = 0; u < 4; ++u )                            // 5-8: u0 InstanceDescs, u1 Instances, u2 Geoms, u3 Feedback
+        rs.AddUAV( u, D3D12_SHADER_VISIBILITY_ALL );
+    if ( !rs.Build( device ) ) return false;
+
+    for ( auto [pipe, entry] : { std::pair{ &RtSceneClear, "CSClear" }, std::pair{ &RtSceneInstances, "CSInstances" },
+              std::pair{ &RtSceneTail, "CSTail" } } ) {
+        pipe->RootSig = rs.RootSig();
+        if ( !m_Shaders->CompileFromFile( "RtSceneInstances.hlsl", entry, Shadermodel_CS, pipe->CsBlob.ReleaseAndGetAddressOf() ) ) {
+            RtSceneClear = RtSceneInstances = RtSceneTail = {};
+            return false;
+        }
+        rs.ValidateShaders( { { pipe->CsBlob.Get(), entry, D3D12_SHADER_VISIBILITY_ALL } } );
+        Rhi::ComputePipelineStateDesc pso = {};
+        pso.pRootSignature = pipe->RootSig.Get();
+        pso.CS = { pipe->CsBlob->GetBufferPointer(), pipe->CsBlob->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, pipe->PSO.ReleaseAndGetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (RT scene, {}).", entry );
+            RtSceneClear = RtSceneInstances = RtSceneTail = {};
+            return false;
+        }
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateWaterRT() {
     Rhi::Device* device = m_Device;
     if ( !device || !device->GetCaps().RayQuery ) return true;   // nothing to build; WaterRT.PSO stays null
@@ -3929,11 +3962,11 @@ bool D3D12PipelineState::CreateCull() {
     if ( !makeComputePSO( "HiZ.hlsl", "CSReduce", hiZRs,
         Cull.HiZReduceCsBlob.ReleaseAndGetAddressOf(), Cull.HiZReducePSO.ReleaseAndGetAddressOf() ) ) return false;
 
-    // --- VOB cull root sig: b0 27 consts (ViewProj + Hi-Z params + LOD bucketing), t0/t1 root SRVs, u0/u1 root UAVs ---
+    // --- VOB cull root sig: b0 36 consts (ViewProj + Hi-Z params + LOD + scene), t0/t1 root SRVs, u0/u1 root UAVs ---
     // The visual records + instance streams are plain structured buffers, so they ride as root descriptors
     // (no heap slots). Only the Hi-Z pyramid is a texture and it comes in bindlessly by heap index.
     D3D12RootLayout& vobCullRs = Layout( "CullVob" );
-    vobCullRs.AddConstants( 0, 27, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobCullCB — float4x4 ViewProj + 11
+    vobCullRs.AddConstants( 0, 36, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobCullCB — float4x4 ViewProj + 20
     // Both inputs are CPU-written once per frame by UploadFrameVobInstances / BuildVobDrawCommands,
     // which complete before this dispatch is recorded and are not touched again this frame.
     vobCullRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Visuals
@@ -3969,7 +4002,86 @@ bool D3D12PipelineState::CreateCull() {
     if ( !makeComputePSO( "VobCull.hlsl", "CSPatchArgs", patchRs,
         Cull.PatchCsBlob.ReleaseAndGetAddressOf(), Cull.PatchPSO.ReleaseAndGetAddressOf() ) ) return false;
 
+    // --- GPU scene: the same cull over the persistent table, then command generation. Non-fatal: the scene
+    // stays off without them. ---
+    const D3D_SHADER_MACRO sceneDefines[] = { { "VOB_SCENE", "1" }, { nullptr, nullptr } };
+    const D3D_SHADER_MACRO sceneNoMotionDefines[] = { { "VOB_SCENE", "1" }, { "VOB_NO_MOTION", "1" }, { nullptr, nullptr } };
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs, Cull.VobCullSceneCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobCullScenePSO.ReleaseAndGetAddressOf(), sceneDefines )
+        || !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs, Cull.VobCullSceneNoMotionCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobCullSceneNoMotionPSO.ReleaseAndGetAddressOf(), sceneNoMotionDefines ) ) {
+        Cull.VobCullScenePSO.Reset();
+        Cull.VobCullSceneNoMotionPSO.Reset();
+        return true;
+    }
+    // Shadow-cascade casters: always the no-motion stride, the caster layouts stop before prevWorld.
+    const D3D_SHADER_MACRO casterDefines[] = { { "VOB_SCENE", "1" }, { "VOB_NO_MOTION", "1" }, { "VOB_SHADOW", "1" }, { nullptr, nullptr } };
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs, Cull.VobCullCasterCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobCullCasterPSO.ReleaseAndGetAddressOf(), casterDefines ) )
+        Cull.VobCullCasterPSO.Reset();
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCullSphere", vobCullRs, Cull.VobCullSphereCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobCullSpherePSO.ReleaseAndGetAddressOf(), sceneNoMotionDefines )
+        || !makeComputePSO( "VobCull.hlsl", "CSClearSphere", vobCullRs, Cull.VobSphereClearCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobSphereClearPSO.ReleaseAndGetAddressOf(), sceneNoMotionDefines ) ) {
+        Cull.VobCullSpherePSO.Reset();
+        Cull.VobSphereClearPSO.Reset();
+    }
+
+    D3D12RootLayout& sceneArgsRs = Layout( "CullSceneArgs" );
+    sceneArgsRs.AddConstants( 0, 7, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SceneArgsCB
+    sceneArgsRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Templates
+    sceneArgsRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 SceneVisuals
+    sceneArgsRs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 SceneCounts
+    sceneArgsRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 4: u0 SceneArgs
+    sceneArgsRs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 5: u1 SceneArgCount
+    sceneArgsRs.AddUAV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 6: u2 BakeReport (cube commands only)
+    if ( !sceneArgsRs.Build( device ) ) return true;
+    Cull.SceneArgsRootSig = sceneArgsRs.RootSig();
+    if ( !makeComputePSO( "VobCull.hlsl", "CSBuildArgs", sceneArgsRs,
+            Cull.SceneArgsCsBlob.ReleaseAndGetAddressOf(), Cull.SceneArgsPSO.ReleaseAndGetAddressOf() )
+        || !makeComputePSO( "VobCull.hlsl", "CSClearCounts", sceneArgsRs,
+            Cull.SceneClearCsBlob.ReleaseAndGetAddressOf(), Cull.SceneClearPSO.ReleaseAndGetAddressOf() ) ) {
+        Cull.SceneArgsPSO.Reset();
+        Cull.SceneClearPSO.Reset();
+    }
+    if ( !makeComputePSO( "VobCull.hlsl", "CSBuildCasterArgs", sceneArgsRs,
+            Cull.SceneCasterArgsCsBlob.ReleaseAndGetAddressOf(), Cull.SceneCasterArgsPSO.ReleaseAndGetAddressOf() ) )
+        Cull.SceneCasterArgsPSO.Reset();
+    if ( !makeComputePSO( "VobCull.hlsl", "CSBuildCubeArgs", sceneArgsRs,
+            Cull.SceneCubeArgsCsBlob.ReleaseAndGetAddressOf(), Cull.SceneCubeArgsPSO.ReleaseAndGetAddressOf() ) )
+        Cull.SceneCubeArgsPSO.Reset();
     return true;
+}
+
+
+bool D3D12PipelineState::CreateWorldCull() {
+    Rhi::Device* device = m_Device;
+    if ( !device ) return false;
+    D3D12RootLayout& rs = Layout( "CullWorld" );
+    rs.AddConstants( 0, 31, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 WorldCullCB
+    for ( UINT t = 0; t < 4; ++t )   // 1-4: t0 Sections, t1 Meshes, t2 Clusters, t3 Materials
+        rs.AddSRV( t, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );
+    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 5: u0 Args
+    rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 6: u1 ArgCount
+    rs.AddUAV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 7: u2 MaterialSeen
+    if ( !rs.Build( device ) ) return false;
+    Cull.WorldCullRootSig = rs.RootSig();
+
+    auto make = [&]( const char* entry, ComPtr<ID3DBlob>& blob, ComPtr<Rhi::PipelineState>& pso ) {
+        if ( !m_Shaders->CompileFromFile( "WorldCull.hlsl", entry, Shadermodel_CS, blob.ReleaseAndGetAddressOf() ) ) return false;
+        rs.ValidateShaders( { { blob.Get(), entry, D3D12_SHADER_VISIBILITY_ALL } } );
+        Rhi::ComputePipelineStateDesc desc = {};
+        desc.pRootSignature = rs.Get();
+        desc.CS = { blob->GetBufferPointer(), blob->GetBufferSize() };
+        if ( SUCCEEDED( device->CreateComputePipelineState( &desc, pso.ReleaseAndGetAddressOf() ) ) ) return true;
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed ({}).", entry );
+        return false;
+        };
+    if ( make( "CSWorldCull", Cull.WorldCullCsBlob, Cull.WorldCullPSO )
+        && make( "CSWorldClear", Cull.WorldClearCsBlob, Cull.WorldClearPSO ) ) return true;
+    Cull.WorldCullPSO.Reset();
+    Cull.WorldClearPSO.Reset();
+    return false;
 }
 
 
@@ -4177,6 +4289,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     runFatal( "Water", &D3D12PipelineState::CreateWater );
     runOptional( "WaterRT", &D3D12PipelineState::CreateWaterRT );
     runOptional( "RtShadows", &D3D12PipelineState::CreateRtShadows );
+    runOptional( "RtScene", &D3D12PipelineState::CreateRtScene );
     runFatal( "Particle", &D3D12PipelineState::CreateParticle );
     Particle.Pipelines.clear();
     runFatal( "Decal", &D3D12PipelineState::CreateDecal );
