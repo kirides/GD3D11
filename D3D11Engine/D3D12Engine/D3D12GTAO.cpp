@@ -258,14 +258,12 @@ void D3D12GraphicsEngine::RenderGTAO() {
     common.ViewMatrix = viewM;
 
     // --- Barriers for the resources that stay OUTSIDE the graph -----------------------------------------------
-    // Depth buffer: DEPTH_WRITE -> shader-read. Normal G-buffer: RENDER_TARGET -> shader-read (still
-    // expected there by FillCameraVelocity later). m_AOMask flips back if a previous run left it
-    // readable. All batched into one TransitionBarriers() call rather than BeginAoDepthRead()'s own
-    // un-batched one; RenderSimpleSSAO (D3D12AO.cpp) still uses that helper directly.
+    // Depth buffer: shader-read, left there for the RT shadow trace. Normal G-buffer: RENDER_TARGET -> shader-read
+    // (still expected there by FillCameraVelocity later). m_AOMask flips back if a previous run left it readable.
     {
         D3D12ResourceTransition pre[3];
         UINT preCount = 0;
-        pre[preCount++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+        if ( SceneDepthTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[preCount] ) ) ++preCount;
         if ( gbufNormals ) {
             pre[preCount++] = { m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
         }
@@ -424,7 +422,6 @@ void D3D12GraphicsEngine::RenderGTAO() {
                 // pre-pass transition, since m_AOMask isn't written until this callback runs.
                 builder.TransitionExternalAfter( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
                 builder.TransitionExternalAfter( m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-                builder.TransitionExternalAfter( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
                 if ( gbufNormals ) {
                     builder.TransitionExternalAfter( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
                 }

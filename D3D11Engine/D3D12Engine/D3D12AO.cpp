@@ -179,18 +179,6 @@ void D3D12GraphicsEngine::RenderSSAO() {
     RenderSimpleSSAO();
 }
 
-void D3D12GraphicsEngine::BeginAoDepthRead() {
-    // The prepass left m_DepthBuffer in DEPTH_WRITE; the AO compute passes read it as an SRV. Same round-trip
-    // BuildHiZ does a few calls earlier — the DSV stays bound but nothing draws while it is in a read state.
-    m_CmdList->TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-}
-
-void D3D12GraphicsEngine::EndAoDepthRead() {
-    // Straight back to DEPTH_WRITE: the lit geometry passes right after this re-test (and re-write) depth, and
-    // every later transition of this resource asserts DEPTH_WRITE as its "before" state.
-    m_CmdList->TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-}
-
 void D3D12GraphicsEngine::RenderSimpleSSAO() {
     // The depth-reconstructed-normals Alchemy-AO estimate plus a separable depth-aware blur
     // (Shaders/D3D12/SSAO.hlsl). Callers go through RenderSSAO, which owns the mode selection and has already
@@ -211,7 +199,8 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
     const UINT gx = ( static_cast<UINT>( m_AoResourceSize.x ) + 7 ) / 8;
     const UINT gy = ( static_cast<UINT>( m_AoResourceSize.y ) + 7 ) / 8;
 
-    BeginAoDepthRead();
+    // Left readable for the RT shadow trace; OnStartWorldRendering returns it to DEPTH_WRITE before the lit passes.
+    TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 
     // The AO mask rests in UNORDERED_ACCESS (its creation state) except right after a prior successful run,
     // which leaves it PIXEL_SHADER_RESOURCE for the lit passes.
@@ -287,8 +276,6 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
         	{ m_AOBlurTemp.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
         } );
     }
-
-    EndAoDepthRead();
 
     m_AOMaskInPixelState = true;
     m_ActiveAOMaskSrvSlot = m_AOMaskSrvSlot;

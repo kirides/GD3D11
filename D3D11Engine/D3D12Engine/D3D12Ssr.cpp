@@ -107,19 +107,21 @@ void D3D12GraphicsEngine::CaptureSsrOpaqueHistory() {
 
     const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
         ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-    m_CmdList->TransitionBarriers( {
+    Rhi::ResourceTransition pre[4] = {
         { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
-        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE },
         { m_SsrPrevColor.Get(), kSsrPrevReadState, D3D12_RESOURCE_STATE_COPY_DEST },
         { m_SsrPrevDepth.Get(), kSsrPrevReadState, D3D12_RESOURCE_STATE_COPY_DEST },
-        } );
+    };
+    UINT preCount = 3;
+    if ( SceneDepthTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[preCount] ) ) ++preCount;
+    m_CmdList->TransitionBarriers( pre, preCount );
 
     m_CmdList->CopyResource( m_SsrPrevColor.Get(), m_SceneColor.Get() );
     m_CmdList->CopyResource( m_SsrPrevDepth.Get(), m_DepthBuffer.Get() );
 
+    // The depth stays readable: the low-cloud march and the water copy read it next.
     m_CmdList->TransitionBarriers( {
         { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
         { m_SsrPrevColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSsrPrevReadState },
         { m_SsrPrevDepth.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSsrPrevReadState },
         } );

@@ -296,6 +296,11 @@ private:
     bool CreateDepthBuffer( INT2 size ); // R32_TYPELESS depth target + DSV(D32) + SRV(R32) (reversed-Z world rendering)
     bool CreateSceneColorTarget( INT2 size ); // R16F HDR scene-color RT (+RTV +SRV) the 3D passes render into; recreated on resize
     void BindSceneColorTarget();      // transition HDR RT -> RENDER_TARGET (if needed) + bind it (+ depth) as the world-pass RTV
+    // Scene depth state: `access` is DEPTH_WRITE or the read a pass needs. Reads are served by m_DepthReadState
+    // unless `exact`. SceneDepthTransition fills `out` and returns false when no barrier is needed.
+    bool SceneDepthTransition( D3D12_RESOURCE_STATES access, Rhi::ResourceTransition& out, bool exact = false );
+    void TransitionSceneDepth( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES access, bool exact = false );
+    D3D12_CPU_DESCRIPTOR_HANDLE SceneDsv() const;   // the read-only view while the depth is in a read state
     void ResolveSceneToBackBuffer();  // tonemap the HDR scene onto the display target, then rebind it for the 2D UI
 
     // --- Render-resolution scaling (RendererSettings.ResolutionScalePercent) ---------------------------------
@@ -776,10 +781,16 @@ private:
     D3D12_RECT     m_CurrentScissor = {};
 
     // --- 3D world mesh path (Phase 2 first-light: flat-shaded, depth-tested, no G-buffer) ---
-    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_DsvHeap;         // slot 0 = scene depth, slot 1 = preview depth
+    // slot 0 = scene depth, 1 = preview depth, 2 = read-only scene depth
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_DsvHeap;
     Microsoft::WRL::ComPtr<Rhi::Resource>       m_DepthBuffer;     // R32_TYPELESS (DSV D32_FLOAT / SRV R32_FLOAT), reversed-Z
     UINT m_DsvDescriptorSize = 0;
-    UINT m_DepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV of m_DepthBuffer, read by the light cull for per-tile far-Z tightening
+    UINT m_DepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV of m_DepthBuffer
+    // Readers leave the depth in m_DepthReadState; writers and the end of the 3D frame take it back to DEPTH_WRITE.
+    static constexpr D3D12_RESOURCE_STATES kDepthReadState = D3D12_RESOURCE_STATE_DEPTH_READ
+        | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    D3D12_RESOURCE_STATES m_DepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_RESOURCE_STATES m_DepthReadState = kDepthReadState;   // + COPY_SOURCE on D3D12; Vulkan has no layout for both
 
     // Native-resolution depth for the inventory-item preview (DrawVobSingle), which draws onto the display
     // target after the resolve — a bound DSV must match its RTV's size. D3D11's m_SwapchainDepthStencilBuffer.
@@ -1508,9 +1519,6 @@ private:
     bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp + persistent SRV/UAV slots
     void RenderSSAO();                        // the AO entry point: publishes the AO constants, then runs XeGTAO or simple SSAO
     void RenderSimpleSSAO();                  // main estimate -> separable blur (Shaders/D3D12/SSAO.hlsl)
-    void BeginAoDepthRead();                  // m_DepthBuffer DEPTH_WRITE -> NON_PIXEL_SHADER_RESOURCE
-    void EndAoDepthRead();                    // ...and straight back. RenderSimpleSSAO brackets with both;
-                                               // RenderGTAO batches its own depth transitions instead (D3D12GTAO.cpp).
 
     // ---- Intel XeGTAO (D3D12GTAO.cpp) ----------------------------------------------------------------------
     // Ground-truth ambient occlusion; this is what AOMode::AO_ASSAO selects on D3D12 (D3D11 keeps its own ASSAO
@@ -1964,6 +1972,11 @@ private:
     // DrawRain_CS's dirty-check (D3D11Effect.cpp:314-316).
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainBufferStatic;   // StructuredBuffer<RainParticleStatic>, UPLOAD heap, written once
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainBufferDynamic;  // RWStructuredBuffer<RainParticleDynamic>, DEFAULT heap
+    // Per-frame rain draw CB, 256-byte blocks: [0] b0 ViewProj, [256] b1 RainInfo, [512] b3 RainShadow.
+    static constexpr UINT kRainInfoCbOffset = 256;
+    static constexpr UINT kRainShadowCbOffset = 512;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainDrawCB[kBackBufferMax];
+    uint8_t* m_RainDrawCBMapped[kBackBufferMax] = {};
     UINT  m_RainParticleCount = 0;       // particle count backing the CURRENT buffers (128-aligned, like D3D11's alignedCount)
     float m_RainLastRadius = -1.0f;
     float m_RainLastHeight = -1.0f;

@@ -223,7 +223,7 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
                 pre[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
             }
-            pre[n++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDoFDepthRead };
+            if ( SceneDepthTransition( kDoFDepthRead, pre[n] ) ) ++n;
             pre[n++] = { m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
             cmdList.TransitionBarriers( pre, n );
@@ -336,16 +336,13 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
             };
         } );
 
-    // --- Restore: resting states for the engine-owned resources DoF borrowed — NOT graph-managed, so nothing
-    // else restores them. Depth back to DEPTH_WRITE and this frame's focus texture back to its UAV resting
-    // state for whenever it becomes "prevIdx" again. The scene colour is not here: the composite pass above
-    // puts it back into RENDER_TARGET itself, unconditionally, because it has to draw into it.
+    // --- Restore: this frame's focus texture back to its UAV resting state for whenever it becomes "prevIdx"
+    // again; it is not graph-managed, so nothing else restores it. The depth stays readable. The scene colour is
+    // not here: the composite pass above puts it back into RENDER_TARGET itself, because it has to draw into it.
     graph.AddPass( RG_PASS_NAME( "DoF Restore" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
         pass.m_executeCallback = [this, curIdx]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
-            cmdList.TransitionBarriers( {
-                { m_DepthBuffer.Get(), kDoFDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE },
-                { m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-                } );
+            cmdList.TransitionBarrier( m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
             // Rebind the scene colour + depth for whatever comes next in the frame (bloom re-transitions the
             // scene colour itself, but the render target must not be left unbound).

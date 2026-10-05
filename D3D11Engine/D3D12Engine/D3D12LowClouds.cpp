@@ -141,7 +141,7 @@ void D3D12GraphicsEngine::GenerateLowClouds() {
 
             // The depth buffer leaves its DSV binding to be read by the march
             cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-            cmdList.TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+            TransitionSceneDepth( cmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 
             const UINT consts[4] = { m_DepthSrvSlot, layer->GetUavSlot(), depth->GetUavSlot(), skyLayer->GetUavSlot() };
             cmdList.SetComputeRootSignature( m_Pipelines.LowClouds.GenerateRootSig.Get() );
@@ -152,7 +152,6 @@ void D3D12GraphicsEngine::GenerateLowClouds() {
             cmdList.Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
 
             cmdList.TransitionBarriers( {
-                { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
                 { layer->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
                 { depth->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
                 { skyLayer->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
@@ -195,7 +194,7 @@ void D3D12GraphicsEngine::AddLowCloudCompositePass( D3D12RenderGraph& graph ) {
             cmdList.RSSetViewports( 1, &vp );
             cmdList.RSSetScissorRects( 1, &sc );
             cmdList.OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );   // depth is read as an SRV
-            cmdList.TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+            TransitionSceneDepth( cmdList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
             cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
             cmdList.IASetVertexBuffers( 0, 0, nullptr );
 
@@ -205,8 +204,6 @@ void D3D12GraphicsEngine::AddLowCloudCompositePass( D3D12RenderGraph& graph ) {
             cmdList.SetGraphicsRootConstantBufferView( 1, m_LowCloudCBGpu[m_FrameIndex] );
             cmdList.SetGraphicsRootConstantBufferView( 2, m_LowCloudCBGpu[m_FrameIndex] + kLowCloudAtmosphereCbOffset );
             cmdList.DrawInstanced( 3, 1, 0, 0 );
-
-            cmdList.TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
             };
         } );
 }

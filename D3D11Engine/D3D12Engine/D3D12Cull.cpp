@@ -301,13 +301,11 @@ void D3D12GraphicsEngine::BuildHiZ() {
 
     D3D12ResourceTransition pre[2] = {};
     UINT preCount = 0;
-    // Depth prepass left it in DEPTH_WRITE; make it readable for the copy pass and hand it straight back at the
-    // end (the VOB/skeletal prepass draws right after need DEPTH_WRITE). Same round-trip DispatchLightCulling
-    // and RenderSSAO already do — the DSV stays bound but nothing draws while it is in a read state.
-    // Both sides here are compute-only (HiZCopyPSO/HiZReducePSO, and CSCull further down), so the sync
-    // scope is narrowed to compute rather than the table's broader default.
-    pre[preCount++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, kBarrierSyncUnspecified, D3D12_BARRIER_SYNC_COMPUTE_SHADING };
+    // Readable for the copy pass, writable again at the end: the VOB/skeletal prepass draws right after. The DSV
+    // stays bound but nothing draws in between. Exact compute read, so the sync scope narrows to compute.
+    if ( SceneDepthTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[preCount], true ) ) {
+        pre[preCount++].SyncAfter = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+    }
     if ( m_HiZInSrvState ) {
         pre[preCount++] = { m_HiZ.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_SYNC_COMPUTE_SHADING };
@@ -341,12 +339,15 @@ void D3D12GraphicsEngine::BuildHiZ() {
 
     // CSCull reads the pyramid as an SRV (it needs per-level Load(); an RWTexture2D can't select a mip);
     // both this and the depth buffer's read are compute-only.
-    m_CmdList->TransitionBarriers( {
-        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, kBarrierSyncUnspecified },
+    D3D12ResourceTransition post[2] = {
         { m_HiZ.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_SYNC_COMPUTE_SHADING },
-    } );
+    };
+    UINT postCount = 1;
+    if ( SceneDepthTransition( D3D12_RESOURCE_STATE_DEPTH_WRITE, post[postCount] ) ) {
+        post[postCount++].SyncBefore = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+    }
+    m_CmdList->TransitionBarriers( post, postCount );
     m_HiZInSrvState = true;
 }
 
