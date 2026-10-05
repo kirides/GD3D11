@@ -945,9 +945,12 @@ float3 EvaluateOpaqueSSR( float3 wpos, float3 N, float3 V, float roughness, out 
                 // Near-field fade in from MIN_HIT_DISTANCE rather than a hard on/off, so the guard above
                 // doesn't trade a feedback blowup for a visible confidence cliff at its threshold.
                 float nearFade = smoothstep( SSR_OPAQUE_MIN_HIT_DISTANCE, SSR_OPAQUE_MIN_HIT_DISTANCE * 2.0, travelled );
-                confidence = edge.x * edge.y * distFade * nearFade;
                 Texture2D prevColorTex = ResourceDescriptorHeap[colorIdx];
                 float3 hitColor = prevColorTex.SampleLevel( smpAoClamp, hitUV, 0 ).rgb;
+                // NaN/Inf would slip past the clamp below and loop through SsrPrevColor; treat as a miss
+                if ( !all( isfinite( hitColor ) ) )
+                    return float3( 0.0, 0.0, 0.0 );
+                confidence = edge.x * edge.y * distFade * nearFade;
                 // Safety clamp (see SSR_OPAQUE_MAX_LUMINANCE) — bounds per-generation feedback gain
                 // regardless of what energy weight the call site applies.
                 float hitLum = dot( hitColor, float3( 0.3333, 0.3333, 0.3333 ) );
