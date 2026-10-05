@@ -8,7 +8,8 @@
 //   [256, 352) UploadWetnessConstants        — WetnessCBData (D3D12GraphicsEngine.h)
 //   [352, 432) UploadAoScreenConstants       — AoScreenCBData (kAoReprojCbOffset = 352)
 //   [432, 448) UploadSkyIblConstants         — SkyIblCBData   (kSkyIblCbOffset  = 432)
-//   [448, 480) UploadWetnessConstants        — WetSkyCBData   (kWetSkyCbOffset  = 448)
+//   [448, 500) UploadWetnessConstants        — WetSkyCBData   (kWetSkyCbOffset  = 448)
+//   [500, 512) UploadRtSunConstants          — RtSunCBData    (kRtSunCbOffset   = 500)
 // Vegetation.hlsl applies no wetness/SSR and reads no ShadowMap.hlsl helpers for those fields, but must
 // still declare them so its copy of this same 512-byte resource keeps the sky-IBL tail at the right
 // offset — three (four, with Decal) disjoint writers into one layout.
@@ -57,7 +58,9 @@ cbuffer ShadowCB : register(SHADOWCB_REGISTER)
     float3   WetSkyTint;         float WetSunHeight;
     float3   WetMoonDir;         float WetMoonFade;
     float3   NightFill;          float MoonMainLight;  // gamma-space night fill; 1 while the moon is the directional light
-    float    BacklitStrength;    float3 BacklitPad;    // 0 when backlit vegetation is off
+    float    BacklitStrength;                          // 0 when backlit vegetation is off
+    // --- Inline sun ray of the blended surfaces (RtSunInline.hlsl): RtScene heap base + 1 (0 = CSM only)
+    uint     RtSunSceneIndex;    float RtSunDistance;   float RtSunFadeBand;
 };
 
 #endif // D3D12_SHADOWCB_HLSL

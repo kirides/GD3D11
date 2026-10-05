@@ -1026,6 +1026,18 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 }
 
 
+UINT D3D12GraphicsEngine::AllocateSrvRange( UINT count ) {
+	std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+	if ( count == 0 || m_SrvAllocated + count > m_SrvHeapCapacity ) {
+		Logging::Wrn( "D3D12: SRV heap has no room for {} adjacent descriptors.", count );
+		return UINT_MAX;
+	}
+	const UINT base = m_SrvAllocated;
+	m_SrvAllocated += count;
+	return base;
+}
+
+
 void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	if ( slot == UINT_MAX
 		|| slot == m_WhiteTexture->GetSrvSlot()
@@ -1111,6 +1123,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // [kAoReprojCbOffset,..) UNUSED HOLE                   — was the AO-mask reprojection block; see the header
     // [kSkyIblCbOffset,  ..) UploadSkyIblConstants         — sky-IBL cube indices + intensity
     // [kWetSkyCbOffset,  ..) UploadWetnessConstants        — wet-sky tint + moon direction
+    // [kRtSunCbOffset,  512) UploadRtSunConstants          — the transparents' inline sun ray
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};
@@ -1133,6 +1146,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
         void* mapped = nullptr;
         if ( FAILED( m_ShadowCB[i]->Map( 0, &noRead, &mapped ) ) ) return false;
         m_ShadowCBMapped[i] = static_cast<uint8_t*>( mapped );
+        memset( mapped, 0, 512 );   // blocks a frame skips must read as off, not as stale heap indices
         m_ShadowCBGpu[i] = m_ShadowCB[i]->GetGPUVirtualAddress();
     }
     return true;

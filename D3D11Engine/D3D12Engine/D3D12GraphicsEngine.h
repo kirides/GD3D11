@@ -245,6 +245,8 @@ public:
     /** Allocates a persistent slot in the shader-visible SRV heap. Returns UINT_MAX if exhausted.
         Used by D3D12Texture to create its SRV once at load time. */
     UINT AllocateSrvSlot();
+    /** `count` adjacent slots for shaders that index from a base; never freed. UINT_MAX if exhausted. */
+    UINT AllocateSrvRange( UINT count );
     void FreeSrvSlot( UINT slot );
     D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandle( UINT slot ) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle( UINT slot ) const;
@@ -953,10 +955,16 @@ private:
     bool m_RtPointShadowsActive = false;
     // Shadow-mask SRV the lit opaque passes read (UINT_MAX outside them); see BindFrameLights
     UINT m_RtShadowMaskSlot = UINT_MAX;
+    // The same mask for the whole frame: quad marks lie on the surface it was traced for
+    UINT m_RtShadowMaskFrameSlot = UINT_MAX;
+    // The last TraceRtShadows produced a mask with the sun in it; the next frame's cascades may rely on it
+    bool m_RtSunTraced = false;
     /** Builds the frame's ray-traced scene and the shadow mask; after the depth prepass, before the lit passes. */
     void TraceRtShadows();
     /** TLAS reach for every ray-traced consumer this frame. */
     float RtSceneVobRadius() const;
+    /** Camera distance inside which every opaque pixel takes the ray-traced sun alone; 0 when none does. */
+    float RtSunOnlyRadius() const;
     // Read-only views for D3D12RayTracing; the lists live in D3D12Scene.cpp.
     size_t VobVisualBucketCount() const;
     MeshVisualInfo* VobVisualForBucket( size_t bucket ) const;
@@ -2095,9 +2103,19 @@ private:
         XMFLOAT3 SkyTint; float SunHeight;
         XMFLOAT3 MoonDir; float MoonFade;
         XMFLOAT3 NightFill; float MoonMainLight;   // gamma-space night fill; 1 while the moon casts the shadows
-        float BacklitStrength; float _pad0[3];     // 0 when backlit vegetation is off
+        float BacklitStrength;                     // 0 when backlit vegetation is off
     };
     void UploadWetnessConstants();
+    // The shadow CB's last 12 bytes, for the transparent pixel shaders' inline sun ray (RtSunInline.hlsl)
+    static constexpr UINT kRtSunCbOffset = kWetSkyCbOffset + sizeof( WetSkyCBData );
+    struct RtSunCBData {
+        UINT SceneIndex;   // first RtScene.hlsl heap descriptor + 1; 0 = no ray, the CSM
+        float Distance;    // RayTracedSunShadowDistance
+        float FadeBand;    // D3D12RayTracing::SunFadeBand
+    };
+    static_assert( kRtSunCbOffset + sizeof( RtSunCBData ) == 512, "RtSunCBData ends the shadow CB" );
+    /** Every frame before the transparency queue: the scene the blended surfaces trace their sun against. */
+    void UploadRtSunConstants();
 
     // Dynamic exposure / auto-exposure: a two-pass GPU luminance reduction of the finished HDR scene color,
     // temporally adapted (Pattanaik's technique) toward last frame's value, feeding Tonemap's exposure divisor

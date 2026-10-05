@@ -158,6 +158,8 @@ bool D3D12PipelineState::CreateWorld() {
     // was silently zeroing the ambient term (darker with AO "disabled" than with it on — the opposite of what
     // should happen). CLAMP addressing sidesteps this for both the 1x1 fallback and the real full-res mask.
     rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    // s3: alpha test of the blended VOBs' sun ray (RtSunInline.hlsl)
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 3, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
 
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED enables SM6.6 ResourceDescriptorHeap[...] bindless sampling of the
     // per-material normal/ORM maps out of the shared SRV heap (tier-3; present on the target AMD GPU).
@@ -1332,7 +1334,10 @@ bool D3D12PipelineState::CreateVob() {
     // layout as the indirect color PSO above (so a peeled material sways exactly as it did in the opaque set),
     // but PSAlphaBlendBindless and blended-without-depth-write state. Non-fatal on failure: both PSOs stay null
     // and BuildVobDrawCommands then leaves these materials in the opaque set (i.e. today's behaviour).
-    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSAlphaBlendBindless", Shadermodel_PS, World.VobAlphaPsBlob.ReleaseAndGetAddressOf() ) ) {
+    // With ray queries the blended surfaces trace their own sun ray (RtSunInline.hlsl)
+    const D3D_SHADER_MACRO rtSunDefines[] = { { "RT_SUN_INLINE", device->GetCaps().RayQuery ? "1" : "0" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSAlphaBlendBindless", Shadermodel_PS, World.VobAlphaPsBlob.ReleaseAndGetAddressOf(),
+        rtSunDefines ) ) {
         Logging::Wrn( "D3D12: PSAlphaBlendBindless failed to compile — blended VOBs stay alpha-clipped in the opaque pass." );
         World.VobAlphaPsBlob.Reset();
         return true;
@@ -1660,6 +1665,8 @@ bool D3D12PipelineState::CreateDecal() {
     // ComputeSunShadow / SampleScreenSpaceAO hard-code those registers.
     rs.AddStaticSampler( D3D12RootLayout::SamplerComparison( 2, D3D12_SHADER_VISIBILITY_PIXEL ) );
     rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    // s3: alpha test of the blended decals' sun ray (RtSunInline.hlsl)
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 3, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
 
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED: the shared lighting helpers reach the SSAO mask, the sky-IBL cubes
     // and the sky-occlusion map through ResourceDescriptorHeap[...].
@@ -1674,7 +1681,10 @@ bool D3D12PipelineState::CreateDecal() {
     if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "PSMainLit", Shadermodel_PS, Decal.LitPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "PSMainBlend", Shadermodel_PS, Decal.BlendPsBlob.ReleaseAndGetAddressOf() ) ) {
+    // With ray queries the blended decals trace their own sun ray (RtSunInline.hlsl)
+    const D3D_SHADER_MACRO rtSunDefines[] = { { "RT_SUN_INLINE", device->GetCaps().RayQuery ? "1" : "0" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "PSMainBlend", Shadermodel_PS, Decal.BlendPsBlob.ReleaseAndGetAddressOf(),
+        rtSunDefines ) ) {
         return false;
     }
 

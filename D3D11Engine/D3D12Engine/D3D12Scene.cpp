@@ -1477,8 +1477,37 @@ float D3D12GraphicsEngine::RtSceneVobRadius() const {
 }
 
 
+float D3D12GraphicsEngine::RtSunOnlyRadius() const {
+	const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+	if ( !m_RtSunTraced || !rs.EnableShadows || rs.RayTracedSunShadows == GothicRendererSettings::RT_SHADOWS_OFF )
+		return 0.0f;
+	float radius = rs.RayTracedSunShadowDistance - D3D12RayTracing::SunFadeBand( rs.RayTracedSunShadowDistance );
+	// Grass past Vegetation.hlsl's mask cut-off (7000) shades from the CSM
+	if ( !Engine::GAPI->GetVegetationBoxes().empty() && rs.OutdoorSmallVobDrawRadius > 7000.0f )
+		radius = std::min( radius, 7000.0f );
+	return std::max( radius, 0.0f );
+}
+
+
+void D3D12GraphicsEngine::UploadRtSunConstants() {
+	uint8_t* mapped = m_ShadowCBMapped[m_FrameIndex];
+	if ( !mapped ) return;
+	RtSunCBData cb = {};
+	if ( m_RtSunTraced ) {
+		const UINT base = m_RayTracing->PixelScene();
+		if ( base != UINT_MAX ) {
+			cb.SceneIndex = base + 1;
+			cb.Distance = Engine::GAPI->GetRendererState().RendererSettings.RayTracedSunShadowDistance;
+			cb.FadeBand = D3D12RayTracing::SunFadeBand( cb.Distance );
+		}
+	}
+	memcpy( mapped + kRtSunCbOffset, &cb, sizeof( cb ) );
+}
+
+
 void D3D12GraphicsEngine::TraceRtShadows() {
-	m_RtShadowMaskSlot = UINT_MAX;
+	m_RtShadowMaskSlot = m_RtShadowMaskFrameSlot = UINT_MAX;
+	m_RtSunTraced = false;
 	Engine::GAPI->GetRendererState().RendererInfo.RtPointShadowStatsValid = false;
 	if ( !m_RayTracing || !m_FrameOpen || !m_Pipelines.RtShadows.PSO || !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX
 		|| !m_LightBuffer[m_FrameIndex] || !m_LightGridBuffer ) return;
@@ -1509,7 +1538,10 @@ void D3D12GraphicsEngine::TraceRtShadows() {
 
 	TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 	UINT maskSlot = UINT_MAX;
-	if ( m_RayTracing->TraceShadows( in, maskSlot ) ) m_RtShadowMaskSlot = maskSlot;
+	if ( m_RayTracing->TraceShadows( in, maskSlot ) ) {
+		m_RtShadowMaskSlot = m_RtShadowMaskFrameSlot = maskSlot;
+		m_RtSunTraced = sun;
+	}
 
 	auto& info = Engine::GAPI->GetRendererState().RendererInfo;
 	const D3D12RayTracing::ShadowStats& stats = m_RayTracing->LastShadowStats();
@@ -2604,7 +2636,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// the GPU cull below. Lights and skeletal MOBs keep their frustum tests either way (the light buffer is capped,
 	// and the per-draw skeletal path has no GPU cull yet).
 	// Ray-traced point shadows are decided before the light buffer is built; the scene is built after the prepass
-	m_RtShadowMaskSlot = UINT_MAX;
+	m_RtShadowMaskSlot = m_RtShadowMaskFrameSlot = UINT_MAX;
 	m_RtPointShadowsActive = false;
 	if ( m_RayTracing ) {
 		m_RayTracing->BeginFrame();
@@ -2851,7 +2883,6 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// Water stays out of the queue: it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
-	if ( m_RayTracing ) m_RayTracing->EndFrame();
 
 	// Height fog + god rays BEFORE anything that blends (D3D11's order): fogging afterwards used the depth
 	// behind a transparent surface. Its own graph because it runs mid-scene; arena ranges are name-keyed.
@@ -2880,7 +2911,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		DrawParticleEffects();
 	}
     
+	UploadRtSunConstants();
 	DrawTransparencyQueue();
+	// After the transparents: their sun rays read the scene's buffers
+	if ( m_RayTracing ) m_RayTracing->EndFrame();
 
 	// Rain/snow (D3D12 rain parity, step 2): unlit placeholder billboards, always "wet" — see
 	// DrawRainParticles. Same late-transparency slot D3D11 draws rain in.
@@ -3700,8 +3734,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
         barriers.push_back( { c.Src->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
     }
-    // Shader-resource too: the ray-traced reflections build from and read these buffers later in the frame.
-    constexpr D3D12_RESOURCE_STATES kArenaRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    // Shader-resource too: the ray tracing builds from them and its compute and pixel rays read them.
+    constexpr D3D12_RESOURCE_STATES kArenaRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
     if ( vobArena ) {
         barriers.push_back( { m_VobArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST, kArenaRead } );
     }

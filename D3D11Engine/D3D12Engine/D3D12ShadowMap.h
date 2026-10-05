@@ -112,8 +112,7 @@ public:
     // False for a cascade that is being re-used from an earlier frame this frame (lazy update, see
     // m_ShouldUpdateCascade). Such a cascade is neither culled, built nor recorded — its slice keeps the depth
     // it already holds and its matrices stay frozen so the lit pass keeps sampling it correctly.
-    bool ShouldUpdateCascade( UINT cascade ) const { return m_ShouldUpdateCascade[cascade]; }
-    // World-space direction TOWARD the sun (this frame, temporally smoothed). Read by the sky-IBL pass.
+    bool ShouldUpdateCascade( UINT cascade ) const { return m_ShouldUpdateCascade[cascade]; }    // World-space direction TOWARD the sun (this frame, temporally smoothed). Read by the sky-IBL pass.
     const DirectX::XMFLOAT3& GetSunDirWS() const { return m_SunDirWS; }
     const Frustum* CascadeFrusta() const { return m_CascadeFrustum; }
     // The rain shadowmap (D3D12Rain.cpp) renders its own single-slice depth map with the same normal-Z
@@ -243,6 +242,9 @@ private:
     // longer draws. Latched one frame late: written by the cascade's own job, read after WaitCascadeJobs.
     bool m_CascadeHasAnimatedCaster[kShadowCascades] = {};
     bool m_CascadeMatricesValid = false;                // first frame (and after a Resize) nothing may be frozen
+    // Every pixel this cascade would shade takes the ray-traced sun alone: it is not rendered, and the lit passes
+    // get a matrix that never selects it. Implies !m_ShouldUpdateCascade.
+    bool m_CascadeSkipped[kShadowCascades] = {};
     // The GPU scene culled its static casters into this frame's cascades (Prepare), so the cascade jobs skip the
     // leaves' static lists and draw the scene's lists instead. Resolved before the jobs launch.
     bool m_SceneCasters = false;

@@ -39,6 +39,8 @@ SamplerState smpAoClamp : register(s1);
 // SrgbToLinear, ComputeSunShadow, ComputeSunLightingPBR and AccumTiledPointLights live here — the same
 // implementations World.hlsl/Vob.hlsl shade with, so a decal cannot drift away from the surface it sits on.
 #include "include/PBRLighting.hlsl"
+// PSMainBlend's own sun ray: a blended decal can hang off the surface the mask was traced for
+#include "include/RtSunInline.hlsl"
 
 // A decal has no material maps: fully rough, non-metallic, unoccluded. Named constants so the two entry
 // points can't drift apart — the blended pass must shade identically to the opaque one, or the same cobweb
@@ -93,7 +95,8 @@ float3 ShadeDecal( float3 albedo, float3 wpos, float3 nrm, float3 svpos, uint2 r
     // side (or any camera-aligned quad whose +Z ended up pointing away) shades as if it faced into the wall.
     if ( dot( N, normalize( CamPosWS - wpos ) ) < 0.0 ) N = -N;
 
-    float shadow = ComputeSunShadow( rtMask, wpos, N, 1.0 );
+    float shadow = ( rtMask.x & kRtMaskTraced ) != 0u ? ComputeSunShadow( rtMask, wpos, N, 1.0 )
+                                                      : ComputeSunShadowTraced( wpos, N, 1.0 );
     float ssao   = SampleScreenSpaceAO( svpos.xy );
     // vertLighting = 1: decals carry no Gothic vertex/ground light, and 1.0 is the neutral value for the two
     // AO terms it feeds inside ComputeSunLightingPBR (lerp(1, vertLighting, strength) == 1).
@@ -128,6 +131,7 @@ float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend stat
     // Same split Fx.hlsl makes for the quad marks, which carry the identical blend modes.
     // Deliberately NOT fogged: this one PS is shared by all the blend modes, where lerping toward the fog
     // colour would brighten (ADD) or darken (MUL) the surface instead of fading it into the distance.
-    float3 rgb = ( i.lit != 0.0 ) ? ShadeDecal( albedo, i.wpos, i.wnrm, i.clip.xyz, uint2( 0, 0 ) ) : albedo;
+    float3 rgb = albedo;
+    [branch] if ( i.lit != 0.0 ) rgb = ShadeDecal( albedo, i.wpos, i.wnrm, i.clip.xyz, uint2( 0, 0 ) );
     return float4( rgb, t.a * i.alpha );
 }

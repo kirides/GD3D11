@@ -213,12 +213,13 @@ namespace {
         }
         void AccelerationStructureBarrier() override {
             if ( m_List7 ) {
-                // Builds and copies write through AS_WRITE; the next build or ray query reads through AS_READ.
+                // Builds and copies write through AS_WRITE; the next build or ray query (compute or the
+                // transparent pixel shaders) reads through AS_READ.
                 D3D12_GLOBAL_BARRIER barrier = {};
                 barrier.SyncBefore = D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE
                     | D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE;
                 barrier.SyncAfter = D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE
-                    | D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+                    | D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_ALL_SHADING;
                 barrier.AccessBefore = D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE;
                 barrier.AccessAfter = D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ;
                 D3D12_BARRIER_GROUP group = {};

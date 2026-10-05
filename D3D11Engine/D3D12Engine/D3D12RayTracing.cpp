@@ -1317,13 +1317,15 @@ struct D3D12RayTracing::Impl {
             Cmd()->Dispatch( ( budget + 63 ) / 64, 1, 1 );
         }
 
+        // Records are also read by the transparent pixel shaders' sun rays
         Cmd()->TransitionBarriers( {
             { SceneDescs.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-            { SceneInstances.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-            { SceneGeoms.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+            { SceneInstances.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE },
+            { SceneGeoms.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE },
             { SceneFeedback.Res.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE },
             } );
-        for ( GpuBuffer* b : { &SceneDescs, &SceneInstances, &SceneGeoms } ) b->State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        SceneDescs.State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        SceneInstances.State = SceneGeoms.State = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
         Cmd()->CopyBufferRegion( s.SceneFeedback.Get(), 0, SceneFeedback.Res.Get(), 0, ( visuals + 1ull ) * sizeof( uint32_t ) );
         Cmd()->TransitionBarrier( SceneFeedback.Res.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         s.SceneFeedbackVisuals = visuals;
@@ -1334,13 +1336,14 @@ struct D3D12RayTracing::Impl {
 
     // ---------------------------------------------------------------------------------------------------
     // The posed skinning stream is a vertex buffer everywhere else; the BLAS builds and the traces read it.
-    static constexpr D3D12_RESOURCE_STATES kPosedRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    static constexpr D3D12_RESOURCE_STATES kPosedRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
     void AcquirePosed() {
         Rhi::Resource* posed = E.m_SkinnedPosUv.Get();
         if ( PosedInRead || !posed || E.FrameSkelDraws().empty() ) return;
         Cmd()->TransitionBarrier( posed, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, kPosedRead,
             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, Rhi::kBarrierSyncUnspecified,
-            D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_COMPUTE_SHADING );
+            D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_COMPUTE_SHADING
+            | D3D12_BARRIER_SYNC_PIXEL_SHADING );
         PosedInRead = true;
     }
     void ReleasePosed() {
@@ -1450,6 +1453,68 @@ struct D3D12RayTracing::Impl {
         Cmd()->SetComputeRootShaderResourceView( 14, vaOr( skelArena->Ready() ? skelArena->GetIndexBuffer() : nullptr ) );
     }
 
+    // ---------------------------------------------------------------------------------------------------
+    // Pixel-shader rays: BindScene's buffers as heap descriptors, one block per frame slot
+    UINT PixelSrvBase[D3D12GraphicsEngine::kBackBufferMax] = {};   // slot + 1, 0 = not allocated
+    bool PixelSrvFailed = false;
+
+    void BufferSrv( UINT slot, Rhi::Resource* r, UINT64 offset, UINT64 bytes, UINT stride ) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        const UINT unit = stride ? stride : 4u;
+        d.Format = stride ? DXGI_FORMAT_UNKNOWN : DXGI_FORMAT_R32_TYPELESS;
+        d.Buffer.Flags = stride ? D3D12_BUFFER_SRV_FLAG_NONE : D3D12_BUFFER_SRV_FLAG_RAW;
+        d.Buffer.StructureByteStride = stride;
+        d.Buffer.FirstElement = r ? offset / unit : 0;
+        d.Buffer.NumElements = r ? static_cast<UINT>( bytes / unit ) : 1u;   // a null view reads zeros
+        Rhi()->CreateShaderResourceView( r, &d, E.GetSrvCpuHandle( slot ) );
+    }
+    void RawSrv( UINT slot, Rhi::Resource* r ) { BufferSrv( slot, r, 0, r ? r->GetDesc().Width : 0, 0 ); }
+
+    UINT PixelScene() {
+        MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+        if ( !SceneValid || PixelSrvFailed || !WorldBlas.Geoms || !wm ) return UINT_MAX;
+        UINT& stored = PixelSrvBase[E.m_FrameIndex];
+        if ( stored == 0 ) {
+            const UINT allocated = E.AllocateSrvRange( D3D12RayTracing::kPixelSceneSrvs );
+            if ( allocated == UINT_MAX ) { PixelSrvFailed = true; return UINT_MAX; }
+            stored = allocated + 1;
+        }
+        const UINT base = stored - 1;
+        FrameSlot& s = Slot();
+        AcquirePosed();
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC tlas = {};
+        tlas.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+        tlas.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        tlas.RaytracingAccelerationStructure.Location = s.Tlas->GetGPUVirtualAddress();
+        Rhi()->CreateShaderResourceView( nullptr, &tlas, E.GetSrvCpuHandle( base ) );
+
+        Rhi::Resource* ring = s.Ring.Get();
+        if ( SceneOnGpu ) {
+            BufferSrv( base + 1, SceneGeoms.Res.Get(), 0, SceneGeoms.Bytes, sizeof( RtGeomGPU ) );
+            BufferSrv( base + 2, SceneInstances.Res.Get(), 0, SceneInstances.Bytes, sizeof( RtInstanceGPU ) );
+        } else {
+            BufferSrv( base + 1, ring, kOffGeoms, sizeof( RtGeomGPU ) * kMaxGeoms, sizeof( RtGeomGPU ) );
+            BufferSrv( base + 2, ring, kOffInstances, sizeof( RtInstanceGPU ) * kMaxInstances, sizeof( RtInstanceGPU ) );
+        }
+        BufferSrv( base + 3, WorldBlas.Geoms.Get(), 0, WorldBlas.Geoms->GetDesc().Width, sizeof( uint32_t ) * 2 );
+        BufferSrv( base + 4, ring, kOffWorldMats, sizeof( uint32_t ) * kMaxWorldMaterials, sizeof( uint32_t ) );
+        RawSrv( base + 5, D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() )->GetResource() );
+        RawSrv( base + 6, D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() )->GetResource() );
+        D3D12VobArena* vobArena = E.m_VobArena.get();
+        D3D12MeshArena* attachArena = E.m_AttachArena.get();
+        D3D12MeshArena* skelArena = E.m_SkelArena.get();
+        RawSrv( base + 7, vobArena->Ready() ? vobArena->GetVertexBuffer() : nullptr );
+        RawSrv( base + 8, vobArena->Ready() ? vobArena->GetIndexBuffer() : nullptr );
+        RawSrv( base + 9, attachArena->Ready() ? attachArena->GetVertexBuffer() : nullptr );
+        RawSrv( base + 10, attachArena->Ready() ? attachArena->GetIndexBuffer() : nullptr );
+        RawSrv( base + 11, E.m_SkinnedPosUv.Get() );
+        RawSrv( base + 12, skelArena->Ready() ? skelArena->GetIndexBuffer() : nullptr );
+        return base;
+    }
+
     /** Camera-relative clip <-> world for a column-vector view/projection pair. */
     static void ViewProjRel( const XMFLOAT4X4& view, const XMFLOAT4X4& proj, XMFLOAT4X4& viewProjRel, XMFLOAT4X4& invViewProjRel ) {
         XMFLOAT4X4 viewRel = view;
@@ -1555,7 +1620,7 @@ struct D3D12RayTracing::Impl {
         cb.OutIndex = ShadowMaskUav;
         cb.NoiseFrame = in.NoiseFrame;
         cb.SunDistance = in.SunDistance;
-        cb.SunFadeBand = std::max( in.SunDistance * 0.15f, 1.0f );
+        cb.SunFadeBand = SunFadeBand( in.SunDistance );
         cb.SunRays = static_cast<UINT>( std::max( in.SunRays, 0 ) );
         cb.SunConeTan = 0.012f;          // ~0.7 degrees, a little wider than the real sun
         cb.PointRays = static_cast<UINT>( std::max( in.PointRays, 0 ) );
@@ -1680,6 +1745,8 @@ bool D3D12RayTracing::TraceShadows( const ShadowInputs& in, UINT& outMaskSlot ) 
     ZoneScopedN( "D3D12RayTracing::TraceShadows" );
     return m->TraceShadows( in, outMaskSlot );
 }
+
+UINT D3D12RayTracing::PixelScene() { return m->PixelScene(); }
 
 void D3D12RayTracing::OnLoadWorld() {
     {
