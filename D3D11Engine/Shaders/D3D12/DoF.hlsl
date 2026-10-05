@@ -56,6 +56,9 @@ float LinearizeDepth( float d )
 
 float ComputeCoC( float linearDepth, float focusDepth )
 {
+    // The sky (linearized to 1e6) is never blurred, and its taps never feed geometry blur.
+    if ( linearDepth >= 5e5f )
+        return 0.0;
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 }
 
@@ -274,14 +277,19 @@ float4 PSComposite( VS_OUT i ) : SV_TARGET
 
     // ComputeCoC is monotonically decreasing in raw reversed-Z depth (CoC rises with 1/d), so the minimum
     // CoC over the cross is the CoC of the maximum depth — one linearize and one CoC instead of five.
-    float d = depthTex.Load( int3( px, 0 ) );
-    d = max( d, depthTex.Load( int3( max( px.x - 1, 0 ), px.y, 0 ) ) );
-    d = max( d, depthTex.Load( int3( min( px.x + 1, maxPx.x ), px.y, 0 ) ) );
-    d = max( d, depthTex.Load( int3( px.x, max( px.y - 1, 0 ), 0 ) ) );
-    d = max( d, depthTex.Load( int3( px.x, min( px.y + 1, maxPx.y ), 0 ) ) );
+    float d0 = depthTex.Load( int3( px, 0 ) );
+    float d1 = depthTex.Load( int3( max( px.x - 1, 0 ), px.y, 0 ) );
+    float d2 = depthTex.Load( int3( min( px.x + 1, maxPx.x ), px.y, 0 ) );
+    float d3 = depthTex.Load( int3( px.x, max( px.y - 1, 0 ), 0 ) );
+    float d4 = depthTex.Load( int3( px.x, min( px.y + 1, maxPx.y ), 0 ) );
+    float d = max( max( max( d0, d1 ), max( d2, d3 ) ), d4 );
 
     float focusDepth = focusTex.Load( int3( 0, 0, 0 ) );
     float minCoC = ComputeCoC( LinearizeDepth( d ), focusDepth );
+
+    // The sky has CoC 0, so a sky tap anywhere in the cross makes the minimum 0.
+    if ( min( min( min( d0, d1 ), min( d2, d3 ) ), d4 ) <= 0.0 )
+        minCoC = 0.0;
 
     // Fully sharp — the blend would be a no-op, so skip the blur fetch and leave the target untouched.
     if ( minCoC <= 0.0 )

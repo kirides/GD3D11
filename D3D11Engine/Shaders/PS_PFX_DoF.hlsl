@@ -53,6 +53,9 @@ float SampleCenterDepthPoint( float2 uv )
 
 float ComputeCoC( float linearDepth, float focusDepth )
 {
+    // The sky (linearized to 1e6) is never blurred, and its taps never feed geometry blur.
+    if ( linearDepth >= 5e5f )
+        return 0.0;
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 }
 
