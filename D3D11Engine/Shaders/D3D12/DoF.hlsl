@@ -56,12 +56,10 @@ float LinearizeDepth( float d )
 
 float ComputeCoC( float linearDepth, float focusDepth )
 {
-    // The sky (linearized to 1e6) is never blurred, and its taps never feed geometry blur.
-    if ( linearDepth >= 5e5f )
-        return 0.0;
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 }
 
+#include "../DoFSky.h"
 #include "../DoFGaussBlur.h"
 
 //--------------------------------------------------------------------------------------
@@ -132,15 +130,6 @@ void CSFocusResolve( uint3 DTid : SV_DispatchThreadID )
 //--------------------------------------------------------------------------------------
 static const int SAMPLE_COUNT = 48;
 
-float2 GetSpiralSample( int index, int count )
-{
-    float r = sqrt( ( float(index) + 0.5 ) / float(count) );
-    float theta = float(index) * 2.39996323;
-    float sinT, cosT;
-    sincos( theta, sinT, cosT );
-    return float2( r * cosT, r * sinT );
-}
-
 // Point-sample (nearest texel) the centre depth. This pass runs at half-res, so a half-res texel
 // centre falls between full-res depth texels; bilinear filtering would blend foreground and
 // background there into a phantom depth, skewing the centre CoC at silhouettes. Load has no address
@@ -170,11 +159,12 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
 #ifdef DOF_GAUSS_VERTICAL
     // BlurIndex is the horizontal pass's half-res output (rgb = blur, a = CoC); offsets stay in full-res pixels.
     Texture2D<float4> hTex = ResourceDescriptorHeap[DoF_BlurIndex];
+    // Sky texels already hold their 2D spill; sky taps read the scene colour.
     float4 center = hTex.SampleLevel( SS_LinearClamp, texcoord, 0 );
-    if ( center.a >= 0.01 )
+    if ( center.a >= 0.01 && center.a < DOF_SKY_ALPHA_MIN )
     {
         float radius = min( center.a * DoF_BokehRadius, DoF_MaxBlur );
-        center.rgb = DoFGaussBlur1D( hTex, hTex, SS_LinearClamp, texcoord, float2( 0.0, 1.0 / DoF_FullResY ), radius, 3.0, center.a, 0.0 );
+        center.rgb = DoFGaussBlur1D( hTex, sceneTex, SS_LinearClamp, texcoord, float2( 0.0, 1.0 / DoF_FullResY ), radius, 3.0, center.a, 0.0 );
     }
     outBlur[DTid.xy] = center;
     return;
@@ -192,6 +182,13 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
 
     float3 centerColor = sceneTex.SampleLevel( SS_LinearClamp, texcoord, 0 ).rgb;
 
+    Texture2D<float4> depthTex4 = ResourceDescriptorHeap[DoF_DepthIndex];
+    if ( centerDepth <= 0.0 )
+    {
+        outBlur[DTid.xy] = DoFSkySpill( sceneTex, depthTex4, SS_LinearClamp, texcoord, texelSize, centerColor, focusDepth );
+        return;
+    }
+
     // Early out: pass through sharp pixel
     if ( centerCoC < 0.01 )
     {
@@ -203,7 +200,6 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
 
 #ifdef DOF_GAUSS_BLUR
     // Horizontal half of a separable Gaussian; the DOF_GAUSS_VERTICAL pass finishes it.
-    Texture2D<float4> depthTex4 = ResourceDescriptorHeap[DoF_DepthIndex];
     float3 colorAccum = DoFGaussBlur1D( sceneTex, depthTex4, SS_LinearClamp, texcoord, float2( texelSize.x, 0.0 ), blurRadius, 1.5, centerCoC, focusDepth );
 #else
     // --- Bokeh spiral blur (48 taps) ---
@@ -277,24 +273,29 @@ float4 PSComposite( VS_OUT i ) : SV_TARGET
 
     // ComputeCoC is monotonically decreasing in raw reversed-Z depth (CoC rises with 1/d), so the minimum
     // CoC over the cross is the CoC of the maximum depth — one linearize and one CoC instead of five.
-    float d0 = depthTex.Load( int3( px, 0 ) );
-    float d1 = depthTex.Load( int3( max( px.x - 1, 0 ), px.y, 0 ) );
-    float d2 = depthTex.Load( int3( min( px.x + 1, maxPx.x ), px.y, 0 ) );
-    float d3 = depthTex.Load( int3( px.x, max( px.y - 1, 0 ), 0 ) );
-    float d4 = depthTex.Load( int3( px.x, min( px.y + 1, maxPx.y ), 0 ) );
-    float d = max( max( max( d0, d1 ), max( d2, d3 ) ), d4 );
+    float d = depthTex.Load( int3( px, 0 ) );
+
+    // Sky: never blurred itself, only covered by the spill of nearby blurred geometry.
+    if ( d <= 0.0 )
+    {
+        float4 spill = DoFUpsampleBlur( blurTex, SS_LinearClamp, i.uv, true );
+        if ( spill.a <= 0.0 )
+            discard;
+        return float4( spill.rgb, saturate( spill.a ) );
+    }
+
+    d = max( d, depthTex.Load( int3( max( px.x - 1, 0 ), px.y, 0 ) ) );
+    d = max( d, depthTex.Load( int3( min( px.x + 1, maxPx.x ), px.y, 0 ) ) );
+    d = max( d, depthTex.Load( int3( px.x, max( px.y - 1, 0 ), 0 ) ) );
+    d = max( d, depthTex.Load( int3( px.x, min( px.y + 1, maxPx.y ), 0 ) ) );
 
     float focusDepth = focusTex.Load( int3( 0, 0, 0 ) );
     float minCoC = ComputeCoC( LinearizeDepth( d ), focusDepth );
-
-    // The sky has CoC 0, so a sky tap anywhere in the cross makes the minimum 0.
-    if ( min( min( min( d0, d1 ), min( d2, d3 ) ), d4 ) <= 0.0 )
-        minCoC = 0.0;
 
     // Fully sharp — the blend would be a no-op, so skip the blur fetch and leave the target untouched.
     if ( minCoC <= 0.0 )
         discard;
 
-    float4 blurSample = blurTex.SampleLevel( SS_LinearClamp, i.uv, 0 );
+    float4 blurSample = DoFUpsampleBlur( blurTex, SS_LinearClamp, i.uv, false );
     return float4( blurSample.rgb, smoothstep( 0.0, 1.0, minCoC ) );
 }

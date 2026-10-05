@@ -43,6 +43,13 @@ float LinearizeDepth( float d )
     return LinearizeDepthReverseZInfinite( max( d, 1e-6f ) );
 }
 
+float ComputeCoC( float linearDepth, float focusDepth )
+{
+    return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
+}
+
+#include "DoFSky.h"
+
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
     float focusDepth = TX_Focus.Load( int3( 0, 0, 0 ) ).r;
@@ -57,24 +64,29 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
     TX_Depth.GetDimensions( depthSize.x, depthSize.y );
     float2 dtexel = 1.0 / depthSize;
 
-    float d0 = TX_Depth.Sample( SS_Linear, Input.vTexcoord ).r;
-    float d1 = TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( -dtexel.x, 0 ) ).r;
-    float d2 = TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2(  dtexel.x, 0 ) ).r;
-    float d3 = TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0, -dtexel.y ) ).r;
-    float d4 = TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0,  dtexel.y ) ).r;
-    float d = max( max( max( d0, d1 ), max( d2, d3 ) ), d4 );
+    float d = TX_Depth.Sample( SS_Linear, Input.vTexcoord ).r;
 
-    float minCoC = saturate( ( LinearizeDepth( d ) - focusDepth ) / DoF_FocusRange );
+    // Sky: never blurred itself, only covered by the spill of nearby blurred geometry.
+    if ( d <= 0.0 )
+    {
+        float4 spill = DoFUpsampleBlur( TX_Blur, SS_Linear, Input.vTexcoord, true );
+        if ( spill.a <= 0.0 )
+            discard;
+        return float4( spill.rgb, saturate( spill.a ) );
+    }
 
-    // The sky has CoC 0, so a sky tap anywhere in the cross makes the minimum 0.
-    if ( min( min( min( d0, d1 ), min( d2, d3 ) ), d4 ) <= 0.0 )
-        minCoC = 0.0;
+    d = max( d, TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( -dtexel.x, 0 ) ).r );
+    d = max( d, TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2(  dtexel.x, 0 ) ).r );
+    d = max( d, TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0, -dtexel.y ) ).r );
+    d = max( d, TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0,  dtexel.y ) ).r );
+
+    float minCoC = ComputeCoC( LinearizeDepth( d ), focusDepth );
 
     // Fully sharp - the blend would be a no-op, so skip the blur fetch and leave the target untouched.
     if ( minCoC <= 0.0 )
         discard;
 
-    // Bilinear-upsampled half-res bokeh blur; alpha carries the blend factor for the blend unit.
-    float4 blurSample = TX_Blur.Sample( SS_Linear, Input.vTexcoord );
+    // Upsampled half-res bokeh blur; alpha carries the blend factor for the blend unit.
+    float4 blurSample = DoFUpsampleBlur( TX_Blur, SS_Linear, Input.vTexcoord, false );
     return float4( blurSample.rgb, smoothstep( 0.0, 1.0, minCoC ) );
 }
