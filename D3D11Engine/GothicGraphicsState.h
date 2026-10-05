@@ -1033,7 +1033,7 @@ struct GothicRendererSettings {
         OceanCustomClarity = 0.0f;
         OceanCustomTexture = 1.0f;
 #ifdef BUILD_GOTHIC_1_08k
-        WaterShoreFoam = WATER_FOAM_ALL;     // Gothic 1's sea has no NW_WATER_LAKE textures
+        WaterShoreFoam = WATER_FOAM_OFF;     // Gothic 1's sea has no NW_WATER_LAKE textures
 #else
         WaterShoreFoam = WATER_FOAM_OCEAN;
 #endif

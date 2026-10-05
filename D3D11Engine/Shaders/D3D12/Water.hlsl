@@ -168,6 +168,7 @@ float SSR_SceneZ( float2 uv )
 #define SSR_MAX_DISTANCE    30000.0f  // view-space units the ray may travel
 #define SSR_THICKNESS       350.0f    // max depth gap that still counts as a hit
 #define SSR_START_BIAS      2.0f      // push off the surface to avoid self-intersection
+#define SSR_MAX_RADIANCE    4096.0f   // linear cap: the gamma-space shading's ^2.2 must stay inside fp16
 
 bool SSR_ProjectToUV( float3 posVS, out float2 uv )
 {
@@ -252,10 +253,13 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
                 float edgeFade = edge.x * edge.y;
                 float distFade = saturate( 1.0f - travelled / SSR_MAX_DISTANCE );
 
+                Texture2D sceneTex = ResourceDescriptorHeap[SceneIndex];
+                float3 hitColor = sceneTex.SampleLevel( smpClamp, hitUV, 0 ).rgb;
+                if ( !all( isfinite( hitColor ) ) )
+                    return float3( 0.0f, 0.0f, 0.0f );   // a NaN/Inf scene pixel falls back to the cube instead of spreading
                 confidence = edgeFade * distFade;
                 hitDistance = travelled;
-                Texture2D sceneTex = ResourceDescriptorHeap[SceneIndex];
-                return sceneTex.SampleLevel( smpClamp, hitUV, 0 ).rgb;
+                return min( hitColor, SSR_MAX_RADIANCE );
             }
         }
 
@@ -365,9 +369,10 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
         Texture2D<float> rtDistance = ResourceDescriptorHeap[RtDistanceIndex];
         float4 c = rtColor.SampleLevel( smpClamp, g_WaterScreenUV, 0 );
         float inv = c.a > 1e-4 ? 1.0f / c.a : 0.0f;
-        confidence = saturate( c.a );
+        float3 hitColor = c.rgb * inv;
+        confidence = all( isfinite( hitColor ) ) ? saturate( c.a ) : 0.0f;
         hitDistance = rtDistance.SampleLevel( smpClamp, g_WaterScreenUV, 0 ) * inv;
-        return WaterToGamma( c.rgb * inv );
+        return WaterToGamma( confidence > 0.0f ? min( hitColor, SSR_MAX_RADIANCE ) : 0.0f );
     }
     return WaterToGamma( TraceWaterSSR( worldPos, dir, confidence, hitDistance ) );
 }
