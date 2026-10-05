@@ -702,6 +702,7 @@ struct GothicRendererSettings {
         WATER_SSR_LOW      = 1,
         WATER_SSR_MEDIUM   = 2,
         WATER_SSR_HIGH     = 3,
+        WATER_SSR_ULTRA    = 4,
     };
 
     /** D3D12 inline ray-traced water reflections; replaces the SSR geometry march when not OFF. */

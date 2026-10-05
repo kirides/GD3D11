@@ -77,7 +77,7 @@ struct PS_INPUT
 // depth (TX_Depth) and returns the scene color (TX_Scene) at the hit. On a miss the
 // confidence is 0 so the caller falls back to the sky and the static reflection cube.
 //--------------------------------------------------------------------------------------
-// SSR_QUALITY is a compile-time permutation macro: 0=Disabled, 1=Low, 2=Medium, 3=High.
+// SSR_QUALITY is a compile-time permutation macro: 0=Disabled, 1=Low, 2=Medium, 3=High, 4=Ultra.
 // Default to Medium if the macro isn't supplied (e.g. standalone compile).
 #ifndef SSR_QUALITY
 #define SSR_QUALITY 2
@@ -91,9 +91,12 @@ struct PS_INPUT
 #elif SSR_QUALITY == 2      // Medium (balanced quality)
 	#define SSR_MAX_STEPS    24
 	#define SSR_REFINE_STEPS 5
-#else                       // High
+#elif SSR_QUALITY == 3      // High
 	#define SSR_MAX_STEPS    48
 	#define SSR_REFINE_STEPS 6
+#else                       // Ultra
+	#define SSR_MAX_STEPS    128
+	#define SSR_REFINE_STEPS 8
 #endif
 
 #define SSR_MAX_DISTANCE    30000.0f  // view-space units the ray may travel
@@ -137,8 +140,8 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 	float3 originVS = mul( float4(worldPos, 1.0f), RI_View ).xyz;
 	float3 dirVS = normalize( mul( float4(reflectDirWS, 0.0f), RI_View ).xyz );
 
-	// Uniform march; binary search recovers precision at the hit.
-	const float stepLen = SSR_MAX_DISTANCE / (float)SSR_MAX_STEPS;
+	// Quadratic step spacing: short steps near the water catch thin foliage, long ones reach the far shore.
+	// Binary search recovers precision at the hit.
 	float startBias = max( SSR_START_BIAS, originVS.z * 0.002f );
 
 	float3 prevPos = originVS + dirVS * startBias;
@@ -148,13 +151,13 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 	// delta < 0 => ray is in front of the scene surface at this pixel.
 	// Sky/far pixels have a huge sceneZ, so delta stays very negative there.
 	float prevDelta = prevPos.z - SSR_SceneZ( prevUV );
-	float travelled = startBias;
 
 	[loop]
 	for ( int i = 0; i < SSR_MAX_STEPS; ++i )
 	{
-		float3 curPos = prevPos + dirVS * stepLen;
-		travelled += stepLen;
+		float s = (float)( i + 1 ) / (float)SSR_MAX_STEPS;
+		float travelled = startBias + SSR_MAX_DISTANCE * s * s;
+		float3 curPos = originVS + dirVS * travelled;
 
 		float2 uv;
 		if ( !SSR_ProjectToUV( curPos, uv ) )

@@ -186,8 +186,8 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
     float3 originVS = mul( float4( worldPos, 1.0f ), RI_View ).xyz;
     float3 dirVS = normalize( mul( float4( reflectDirWS, 0.0f ), RI_View ).xyz );
 
-    // Uniform march; binary search recovers precision at the hit.
-    const float stepLen = SSR_MAX_DISTANCE / (float)SsrMaxSteps;
+    // Quadratic step spacing: short steps near the water catch thin foliage, long ones reach the far shore.
+    // Binary search recovers precision at the hit.
     float startBias = max( SSR_START_BIAS, originVS.z * 0.002f );
 
     float3 prevPos = originVS + dirVS * startBias;
@@ -197,13 +197,13 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
     // delta < 0 => ray is in front of the scene surface at this pixel. Sky/far pixels have a huge sceneZ,
     // so delta stays very negative there.
     float prevDelta = prevPos.z - SSR_SceneZ( prevUV );
-    float travelled = startBias;
 
     [loop]
     for ( uint i = 0; i < SsrMaxSteps; ++i )
     {
-        float3 curPos = prevPos + dirVS * stepLen;
-        travelled += stepLen;
+        float s = (float)( i + 1 ) / (float)SsrMaxSteps;
+        float travelled = startBias + SSR_MAX_DISTANCE * s * s;
+        float3 curPos = originVS + dirVS * travelled;
 
         float2 uv;
         if ( !SSR_ProjectToUV( curPos, uv ) )

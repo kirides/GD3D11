@@ -6378,8 +6378,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             GothicRendererSettings::WATER_WAVES_OFF, GothicRendererSettings::WATER_WAVES_D3D11 ) );
         // Backward compat: legacy [Display]/WaterSSR bool maps to Medium/Disabled when the
         // new WaterSSRQuality key is absent.
-        s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));
-        s.OpaqueSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "OpaqueSSRQuality", ds.OpaqueSSRQuality, ini.c_str()), 0, 3));
+        s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 4));
+        s.OpaqueSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "OpaqueSSRQuality", ds.OpaqueSSRQuality, ini.c_str()), 0, 4));
         s.WaterReflectionMode = static_cast<GothicRendererSettings::E_WaterReflectionMode>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterReflectionMode", ds.WaterReflectionMode, ini.c_str() ), 0, 1 ) );
         s.WaterRayTracing = static_cast<GothicRendererSettings::E_WaterRayTracing>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterRayTracing", ds.WaterRayTracing, ini.c_str() ),
             GothicRendererSettings::WATER_RT_OFF, GothicRendererSettings::WATER_RT_ULTRA ) );

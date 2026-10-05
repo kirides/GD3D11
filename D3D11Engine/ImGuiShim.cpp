@@ -1198,7 +1198,7 @@ void ImGuiShim::RenderSettingsWindow()
                 }
             }
             {
-                const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High" };
+                const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High", "Ultra" };
                 int ssr = settings.WaterSSRQuality;
                 if ( ImGui::Combo( "Water Reflections (SSR)", &ssr, ssrLevels, IM_ARRAYSIZE( ssrLevels ) ) ) {
                     settings.WaterSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)ssr;
@@ -1245,7 +1245,7 @@ void ImGuiShim::RenderSettingsWindow()
             // reads this — no shader-recompile trigger needed either way: D3D12 treats quality as a runtime
             // loop-bound uniform, same as WaterSSRQuality's own D3D12 path (see D3D12Water.cpp).
             if ( Engine::GraphicsEngine && Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ) {
-                const char* opaqueSsrLevels[] = { "Disabled", "Low", "Medium", "High" };
+                const char* opaqueSsrLevels[] = { "Disabled", "Low", "Medium", "High", "Ultra" };
                 int opaqueSsr = settings.OpaqueSSRQuality;
                 if ( ImGui::Combo( "Wet Surface Reflections (SSR)", &opaqueSsr, opaqueSsrLevels, IM_ARRAYSIZE( opaqueSsrLevels ) ) ) {
                     settings.OpaqueSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)opaqueSsr;

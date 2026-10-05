@@ -542,6 +542,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "Low", GothicRendererSettings::WATER_SSR_LOW },
         { "Medium", GothicRendererSettings::WATER_SSR_MEDIUM },
         { "High", GothicRendererSettings::WATER_SSR_HIGH },
+        { "Ultra", GothicRendererSettings::WATER_SSR_ULTRA, "Thin foliage and other fine detail reflect cleanly. Expensive." },
     };
     // Ray tracing replaces the screen-space geometry march; the stored SSR choice survives untouched.
     const bool rayTracingAvailable = Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery;
@@ -589,6 +590,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
             { "Low", GothicRendererSettings::WATER_SSR_LOW, nullptr, "OpaqueSSR_Low" },
             { "Medium", GothicRendererSettings::WATER_SSR_MEDIUM, nullptr, "OpaqueSSR_Medium" },
             { "High", GothicRendererSettings::WATER_SSR_HIGH, nullptr, "OpaqueSSR_High" },
+            { "Ultra", GothicRendererSettings::WATER_SSR_ULTRA, "Longer reflection reach and finer hits. Expensive.", "OpaqueSSR_Ultra" },
         };
         ComboRow( "Wet Surface Reflections", "##OpaqueSSR", opaqueSsr, &settings.OpaqueSSRQuality,
             "Screen-space reflections on wet/glossy ground and metal. One frame of lag; D3D12 only." );
