@@ -25,6 +25,7 @@ float4 DoFSkySpill( Texture2D sceneTex, Texture2D depthTex, SamplerState ss, flo
     float searchPx = max( min( DoF_BokehRadius, DoF_MaxBlur ), 1.0 );
     float3 colorAccum = 0.0;
     float weightAccum = 0.0;
+    float boostAccum = 0.0;
 
     [loop]
     for ( int i = 0; i < DOF_SKY_SPILL_SAMPLES; i++ )
@@ -42,13 +43,32 @@ float4 DoFSkySpill( Texture2D sceneTex, Texture2D depthTex, SamplerState ss, flo
         if ( weight <= 0.0 )
             continue;
 
-        colorAccum += sceneTex.SampleLevel( ss, sampleUV, 0 ).rgb * weight;
+        float3 sampleColor = sceneTex.SampleLevel( ss, sampleUV, 0 ).rgb;
+#ifdef DOF_GAUSS_BLUR
+        float boost = 1.0;
+#else
+        // Same luminance boost as the bokeh gather, so both sides of a silhouette mix alike.
+        float boost = 1.0 + dot( sampleColor, float3( 0.2126, 0.7152, 0.0722 ) ) * 2.0;
+#endif
+        colorAccum += sampleColor * weight * boost;
+        boostAccum += weight * boost;
         weightAccum += weight;
     }
 
+    float coverage = saturate( weightAccum / DOF_SKY_SPILL_SAMPLES );
+#ifndef DOF_GAUSS_BLUR
+    // The sharp sky stands in for the sky share of the bokeh gather, boosted the same way.
+    if ( weightAccum > 0.0 )
+    {
+        float geometryShare = coverage * boostAccum / weightAccum;
+        float skyShare = ( 1.0 - coverage ) * ( 1.0 + dot( skyColor, float3( 0.2126, 0.7152, 0.0722 ) ) * 2.0 );
+        coverage = geometryShare / ( geometryShare + skyShare );
+    }
+#endif
+
     // Uncovered texels keep the sky colour so bilinear taps between texels never pull in black.
-    float3 color = weightAccum > 0.0 ? colorAccum / weightAccum : skyColor;
-    return float4( color, DOF_SKY_ALPHA_BASE + saturate( weightAccum / DOF_SKY_SPILL_SAMPLES ) );
+    float3 color = boostAccum > 0.0 ? colorAccum / boostAccum : skyColor;
+    return float4( color, DOF_SKY_ALPHA_BASE + coverage );
 }
 
 // Bilinear upsample of the half-res blur that keeps sky and geometry texels apart. For a sky pixel, .a is
