@@ -56,7 +56,39 @@ namespace {
         ComPtr<NativeT> m_Native;
     };
     using RootSignatureImpl = NativeObject<Rhi::RootSignature, ID3D12RootSignature>;
-    using PipelineStateImpl = NativeObject<Rhi::PipelineState, ID3D12PipelineState>;
+
+    class PipelineStateImpl final : public Rhi::PipelineState {
+    public:
+        explicit PipelineStateImpl( ComPtr<ID3D12PipelineState> native, ID3D12RootSignature* rootSig )
+            : m_Native( std::move( native ) ), m_RootSig( rootSig ) {}
+        void SetName( LPCWSTR name ) override { m_Native->SetName( name ); }
+        ComPtr<ID3D12PipelineState> m_Native;
+        ComPtr<ID3D12RootSignature> m_RootSig;   // what it was built against (debug builds check draws against it)
+    };
+
+#ifdef DEBUG_D3D11
+    std::string DebugNameOf( ID3D12Object* object ) {
+        wchar_t name[128] = {};
+        UINT size = sizeof( name ) - sizeof( wchar_t );
+        if ( !object || FAILED( object->GetPrivateData( WKPDID_D3DDebugObjectNameW, &size, name ) ) ) return "?";
+        return Toolbox::ToMultiByte( name );
+    }
+
+    /** Debug builds: names the PSO / root-signature pair behind debug-layer error #201, once per PSO. */
+    void CheckDrawRootSignature( const PipelineStateImpl* pso, ID3D12RootSignature* bound, void* caller ) {
+        if ( !pso || pso->m_RootSig.Get() == bound ) return;
+        static std::mutex mutex;
+        static std::unordered_set<const void*> reported;
+        std::lock_guard lock( mutex );
+        if ( !reported.insert( pso ).second ) return;
+        HMODULE module = nullptr;
+        GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            static_cast<LPCSTR>( caller ), &module );
+        Logging::Err( "D3D12: draw with a PSO built on root signature '{}' ({}) while '{}' ({}) is bound; caller ddraw.dll+0x{:x}",
+            DebugNameOf( pso->m_RootSig.Get() ), static_cast<const void*>( pso->m_RootSig.Get() ), DebugNameOf( bound ),
+            static_cast<const void*>( bound ), reinterpret_cast<uintptr_t>( caller ) - reinterpret_cast<uintptr_t>( module ) );
+    }
+#endif
     using CommandSignatureImpl = NativeObject<Rhi::CommandSignature, ID3D12CommandSignature>;
     using HeapImpl = NativeObject<Rhi::Heap, ID3D12Heap>;
 
@@ -90,12 +122,20 @@ namespace {
 
         HRESULT Close() override { return m_List->Close(); }
         HRESULT Reset( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) override {
+            m_Pso = static_cast<PipelineStateImpl*>( initialState );
+            m_GfxRootSig = nullptr;
             return m_List->Reset( D3D12Rhi::Native( allocator ), D3D12Rhi::Native( initialState ) );
         }
         void SetName( LPCWSTR name ) override { m_List->SetName( name ); }
 
-        void SetPipelineState( Rhi::PipelineState* pso ) override { m_List->SetPipelineState( D3D12Rhi::Native( pso ) ); }
-        void SetGraphicsRootSignature( Rhi::RootSignature* rs ) override { m_List->SetGraphicsRootSignature( D3D12Rhi::Native( rs ) ); }
+        void SetPipelineState( Rhi::PipelineState* pso ) override {
+            m_Pso = static_cast<PipelineStateImpl*>( pso );
+            m_List->SetPipelineState( D3D12Rhi::Native( pso ) );
+        }
+        void SetGraphicsRootSignature( Rhi::RootSignature* rs ) override {
+            m_GfxRootSig = D3D12Rhi::Native( rs );
+            m_List->SetGraphicsRootSignature( m_GfxRootSig );
+        }
         void SetComputeRootSignature( Rhi::RootSignature* rs ) override { m_List->SetComputeRootSignature( D3D12Rhi::Native( rs ) ); }
         void SetDescriptorHeaps( UINT numHeaps, Rhi::DescriptorHeap* const* heaps ) override {
             ID3D12DescriptorHeap* native[2] = {};
@@ -161,9 +201,15 @@ namespace {
         }
 
         void DrawInstanced( UINT vertexCount, UINT instanceCount, UINT startVertex, UINT startInstance ) override {
+#ifdef DEBUG_D3D11
+            CheckDrawRootSignature( m_Pso, m_GfxRootSig, _ReturnAddress() );
+#endif
             m_List->DrawInstanced( vertexCount, instanceCount, startVertex, startInstance );
         }
         void DrawIndexedInstanced( UINT indexCount, UINT instanceCount, UINT startIndex, INT baseVertex, UINT startInstance ) override {
+#ifdef DEBUG_D3D11
+            CheckDrawRootSignature( m_Pso, m_GfxRootSig, _ReturnAddress() );
+#endif
             m_List->DrawIndexedInstanced( indexCount, instanceCount, startIndex, baseVertex, startInstance );
         }
         void Dispatch( UINT x, UINT y, UINT z ) override { m_List->Dispatch( x, y, z ); }
@@ -235,6 +281,8 @@ namespace {
         }
 
         ComPtr<ID3D12GraphicsCommandList> m_List;
+        PipelineStateImpl* m_Pso = nullptr;             // last bound, for the debug root-signature check
+        ID3D12RootSignature* m_GfxRootSig = nullptr;
         ComPtr<ID3D12GraphicsCommandList7> m_List7;   // non-null only with enhanced barriers
         ComPtr<ID3D12GraphicsCommandList4> m_List4;   // non-null only with ray queries
     };
@@ -675,7 +723,7 @@ namespace {
             n.Flags = desc->Flags;
             ComPtr<ID3D12PipelineState> pso;
             const HRESULT hr = Native()->CreateGraphicsPipelineState( &n, IID_PPV_ARGS( pso.GetAddressOf() ) );
-            if ( SUCCEEDED( hr ) ) *outPso = new PipelineStateImpl( std::move( pso ) );
+            if ( SUCCEEDED( hr ) ) *outPso = new PipelineStateImpl( std::move( pso ), n.pRootSignature );
             return hr;
         }
         HRESULT CreateComputePipelineState( const Rhi::ComputePipelineStateDesc* desc, Rhi::PipelineState** outPso ) override {
@@ -687,7 +735,7 @@ namespace {
             n.Flags = desc->Flags;
             ComPtr<ID3D12PipelineState> pso;
             const HRESULT hr = Native()->CreateComputePipelineState( &n, IID_PPV_ARGS( pso.GetAddressOf() ) );
-            if ( SUCCEEDED( hr ) ) *outPso = new PipelineStateImpl( std::move( pso ) );
+            if ( SUCCEEDED( hr ) ) *outPso = new PipelineStateImpl( std::move( pso ), n.pRootSignature );
             return hr;
         }
         HRESULT CreateCommandSignature( const D3D12_COMMAND_SIGNATURE_DESC* desc, Rhi::RootSignature* rootSig,

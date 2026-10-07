@@ -289,6 +289,7 @@ bool D3D12PipelineState::CreateWorldTransparency() {
                           | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     WorldTransparency.RootSig = rs.RootSig();
+    WorldTransparency.BlendPipelines.clear();   // built on the old root sig; DepthFillPSO below comes from this cache
 
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparent", Shadermodel_VS, WorldTransparency.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -4283,8 +4284,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     runFatal( "World", &D3D12PipelineState::CreateWorld );
     World.QuadMarkPipelines.clear();
     runFatal( "DepthPrepass", &D3D12PipelineState::CreateDepthPrepass );
-    runOptional( "WorldTransparency", &D3D12PipelineState::CreateWorldTransparency );
-    WorldTransparency.BlendPipelines.clear();
+    runOptional( "WorldTransparency", &D3D12PipelineState::CreateWorldTransparency );   // clears its own cache
     runFatal( "LightCull", &D3D12PipelineState::CreateLightCull );
     runFatal( "Vob", &D3D12PipelineState::CreateVob );
     runOptional( "Cull", &D3D12PipelineState::CreateCull );
