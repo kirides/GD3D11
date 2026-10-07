@@ -427,14 +427,16 @@ namespace VulkanRhi {
     }
 
     void QueueImpl::HarvestTimesLocked() {
+        struct alignas(8) uint64_2A8_t { uint64_t x, y; };
         const uint64_t completed = CompletedSerial();
+        uint64_2A8_t t = {};
+
         for ( uint32_t i = 0; i < kTimePairs; ++i ) {
             TimePair& p = m_TimePairs[i];
             if ( !p.Pending || p.Serial > completed ) continue;
-            uint64_t t[2] = {};
-            if ( vkGetQueryPoolResults( m_Device->Vk(), m_TimePool, i * 2, 2, sizeof( t ), t, sizeof( uint64_t ), VK_QUERY_RESULT_64_BIT ) == VK_SUCCESS
-                && t[1] > t[0] ) {
-                m_GpuTicks += t[1] - t[0];
+            if ( vkGetQueryPoolResults( m_Device->Vk(), m_TimePool, i * 2, 2, sizeof( t ), &t.x, sizeof( t.x ), VK_QUERY_RESULT_64_BIT ) == VK_SUCCESS
+                && t.y > t.x ) {
+                m_GpuTicks += t.y - t.x;
             }
             p.Pending = false;
         }
