@@ -46,10 +46,10 @@ namespace VulkanRhi {
         VkImage image = m_OwnsImage ? m_Image : VK_NULL_HANDLE;
         VmaAllocation allocation = m_Allocation;
         const uint32_t id = m_BufferId;
-        const bool hostMapped = m_HostPointer.load() != nullptr;
-        device->DeferDestroy( [device, views = std::move( views ), buffer, image, allocation, id, hostMapped]() {
+        const uint32_t mapCount = m_MapCount.load() + ( m_HostPointer.load() ? 1u : 0u );
+        device->DeferDestroy( [device, views = std::move( views ), buffer, image, allocation, id, mapCount]() {
             for ( VkImageView v : views ) vkDestroyImageView( device->Vk(), v, nullptr );
-            if ( hostMapped ) vmaUnmapMemory( device->Allocator(), allocation );
+            for ( uint32_t i = 0; i < mapCount; ++i ) vmaUnmapMemory( device->Allocator(), allocation );
             if ( buffer ) vmaDestroyBuffer( device->Allocator(), buffer, allocation );
             else if ( image && allocation ) vmaDestroyImage( device->Allocator(), image, allocation );
             else if ( image ) vkDestroyImage( device->Vk(), image, nullptr );
@@ -61,6 +61,7 @@ namespace VulkanRhi {
         if ( !m_Allocation || m_HeapType == D3D12_HEAP_TYPE_DEFAULT ) return E_INVALIDARG;
         void* mapped = nullptr;
         if ( m_Device->CheckResult( vmaMapMemory( m_Device->Allocator(), m_Allocation, &mapped ), "vmaMapMemory" ) ) return E_OUTOFMEMORY;
+        m_MapCount.fetch_add( 1 );
         if ( !readRange || readRange->End > readRange->Begin )
             vmaInvalidateAllocation( m_Device->Allocator(), m_Allocation, readRange ? readRange->Begin : 0,
                 readRange ? readRange->End - readRange->Begin : VK_WHOLE_SIZE );
@@ -70,6 +71,10 @@ namespace VulkanRhi {
 
     void ResourceImpl::Unmap( UINT, const D3D12_RANGE* writtenRange ) {
         if ( !m_Allocation ) return;
+        for ( uint32_t n = m_MapCount.load(); ; ) {
+            if ( n == 0 ) return;   // unbalanced Unmap; VMA would assert
+            if ( m_MapCount.compare_exchange_weak( n, n - 1 ) ) break;
+        }
         if ( !writtenRange || writtenRange->End > writtenRange->Begin )
             vmaFlushAllocation( m_Device->Allocator(), m_Allocation, writtenRange ? writtenRange->Begin : 0,
                 writtenRange ? writtenRange->End - writtenRange->Begin : VK_WHOLE_SIZE );

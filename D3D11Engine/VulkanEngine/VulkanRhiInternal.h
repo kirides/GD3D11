@@ -162,6 +162,7 @@ namespace VulkanRhi {
         std::mutex m_ViewMutex;
         std::vector<std::pair<ViewKey, VkImageView>> m_Views;
         std::atomic<uint8_t*> m_HostPointer{ nullptr };
+        std::atomic<uint32_t> m_MapCount{ 0 };   // outstanding Map() calls; D3D12 may release a mapped resource
         ComPtr<ResourceImpl> m_MirrorSource;   // guarded by m_ViewMutex, like the three below
         UINT64 m_MirrorSrcOffset = 0;
         UINT64 m_MirrorDstOffset = 0;

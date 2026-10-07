@@ -116,6 +116,7 @@ namespace {
             decltype( &ffxGetDeviceVK )                         GetDevice = nullptr;
             decltype( &ffxGetCommandListVK )                    GetCommandList = nullptr;
             decltype( &ffxGetResourceVK )                       GetResource = nullptr;
+            decltype( &ffxGetResourceFromHandleVK )             GetResourceFromHandle = nullptr;   // optional
             decltype( &ffxGetImageResourceDescriptionVK )       GetImageResourceDescription = nullptr;
             decltype( &ffxGetInterfaceVK )                      GetInterface = nullptr;
         } Vk;
@@ -157,6 +158,9 @@ namespace {
                 FFX_GET( Vk.GetDevice, ffxGetDeviceVK );
                 FFX_GET( Vk.GetCommandList, ffxGetCommandListVK );
                 FFX_GET( Vk.GetResource, ffxGetResourceVK );
+                // Older DLLs lack it and then only pass handles that fit in 32 bits.
+                Vk.GetResourceFromHandle = reinterpret_cast<decltype( Vk.GetResourceFromHandle )>(
+                    GetProcAddress( Module, "ffxGetResourceFromHandleVK" ) );
                 FFX_GET( Vk.GetImageResourceDescription, ffxGetImageResourceDescriptionVK );
                 FFX_GET( Vk.GetInterface, ffxGetInterfaceVK );
             } else {
@@ -219,11 +223,22 @@ namespace {
         if ( api == Rhi::Backend::Vulkan ) {
             VkImageCreateInfo info;
             const uint64_t image = VulkanRhi::NativeImage( res, &info );
-            // FfxApiResource carries the handle in a void*; a 32-bit process can't pass a wider one.
-            if ( !image || image > UINTPTR_MAX ) return FfxApiResource{};
+            if ( !image ) return FfxApiResource{};
             // VkImage is a uint64_t on 32-bit and a pointer on 64-bit; the C cast covers both.
             const FfxApiResourceDescription desc = g_Ffx.Vk.GetImageResourceDescription(
                 (VkImage)image, info, FFX_API_RESOURCE_USAGE_READ_ONLY );
+            if ( g_Ffx.Vk.GetResourceFromHandle )
+                return g_Ffx.Vk.GetResourceFromHandle( image, desc, name, static_cast<uint32_t>( state ) );
+            // The old entry point carries the handle in a void*; a 32-bit process can't pass a wider one.
+            if ( image > UINTPTR_MAX ) {
+                static bool logged = false;
+                if ( !logged ) {
+                    logged = true;
+                    Logging::Wrn( "FSR: Vulkan image {} has handle {:#x}, which doesn't fit FFX's 32-bit resource pointer.",
+                        Toolbox::ToMultiByte( name ), image );
+                }
+                return FfxApiResource{};
+            }
             return g_Ffx.Vk.GetResource( reinterpret_cast<void*>( static_cast<uintptr_t>( image ) ), desc, name,
                 static_cast<uint32_t>( state ) );
         }

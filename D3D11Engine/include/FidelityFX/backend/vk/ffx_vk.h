@@ -124,6 +124,25 @@ FFX_API FfxApiResource ffxGetResourceVK(void*  vkResource,
     const wchar_t*                          ffxResName,
     uint32_t                                state = FFX_API_RESOURCE_STATE_COMPUTE_READ);
 
+/// Fetch a <c><i>FfxApiResource</i></c> from a 64-bit Vulkan handle (VkImage or VkBuffer).
+///
+/// Same as <c><i>ffxGetResourceVK</i></c>, but takes the handle by value, so on 32-bit targets
+/// (where non-dispatchable handles are uint64_t) handles wider than 32 bits are preserved.
+///
+/// @param [in] vkHandle                    The VkImage or VkBuffer, as a uint64_t.
+/// @param [in] ffxResDescription           An <c><i>FfxApiResourceDescription</i></c> for the resource representation.
+/// @param [in] ffxResName                  (optional) A name string to identify the resource in debug mode.
+/// @param [in] state                       The state the resource is currently in.
+///
+/// @returns
+/// An abstract FidelityFX resources.
+///
+/// @ingroup VKBackend
+FFX_API FfxApiResource ffxGetResourceFromHandleVK(uint64_t vkHandle,
+    FfxApiResourceDescription               ffxResDescription,
+    const wchar_t*                          ffxResName,
+    uint32_t                                state = FFX_API_RESOURCE_STATE_COMPUTE_READ);
+
 /// Fetch a <c><i>FfxApiSurfaceFormat</i></c> from a VkFormat.
 ///
 /// @param [in] format              The VkFormat to convert to <c><i>FfxApiSurfaceFormat</i></c>.
