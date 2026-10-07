@@ -89,6 +89,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.AoMode = AOMode::AO_NONE;
 
         s.textureMaxSize = static_cast<int>(GothicRendererSettings::TX_QUALITY::Medium);
+        s.AnisotropicFiltering = 4;
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
         s.SectionDrawRadius = 2;
@@ -117,6 +118,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ApplyAssaoPreset( 0 );
 
         s.textureMaxSize = static_cast<int>(GothicRendererSettings::TX_QUALITY::Medium);
+        s.AnisotropicFiltering = 8;
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         s.SectionDrawRadius = 4;
@@ -145,6 +147,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ApplyAssaoPreset( 1 );
 
         s.textureMaxSize = static_cast<int>(GothicRendererSettings::TX_QUALITY::High);
+        s.AnisotropicFiltering = 16;
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         s.SectionDrawRadius = 4;
@@ -173,6 +176,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ApplyAssaoPreset( 1 );
 
         s.textureMaxSize = static_cast<int>(GothicRendererSettings::TX_QUALITY::VeryHigh);
+        s.AnisotropicFiltering = 16;
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         s.SectionDrawRadius = 5;

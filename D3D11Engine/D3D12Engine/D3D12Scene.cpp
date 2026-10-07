@@ -4430,6 +4430,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
 void D3D12GraphicsEngine::DrawDepthPrepass() {
     // Forward+ opaque WORLD-MESH depth prepass, before the lit color passes. Writes depth only (color write
     // mask 0). Water is skipped: it is transparent and never writes depth, same as in the opaque pass.
+    m_WorldPrepassDrawn = false;
     if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return;
 
@@ -4492,9 +4493,11 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
         m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
         if ( splitAlpha ) m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
         m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+        m_WorldPrepassDrawn = true;
         return;
     }
     if ( m_WorldDrawCount == 0 ) return;
+    m_WorldPrepassDrawn = true;
     if ( !splitAlpha ) {
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -4668,7 +4671,11 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+    // Opaque run depth-EQUAL against the prepass (no clip, early depth); alpha-tested run keeps PSO's clip.
+    Rhi::PipelineState* opaquePso = m_WorldPrepassDrawn && m_Pipelines.World.OpaquePSO
+        ? m_Pipelines.World.OpaquePSO.Get() : m_Pipelines.World.PSO.Get();
+    m_WorldPrepassDrawn = false;
+    m_CmdList->SetPipelineState( opaquePso );
     BindWorldFrameRootState( viewProj );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
@@ -4690,13 +4697,22 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     if ( m_GpuWorldActive ) {
         if ( m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) {
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
+            m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
         }
         return XR_SUCCESS;
     }
     if ( m_WorldDrawCount == 0 ) return XR_SUCCESS;
-    m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
-        m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+    if ( m_WorldOpaqueDrawCount > 0 ) {
+        m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldOpaqueDrawCount,
+            m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+    }
+    if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
+        m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+        m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
+            m_WorldDrawArgs[m_FrameIndex].Get(),
+            static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );
+    }
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += m_WorldDrawnIndices / 3;
     return XR_SUCCESS;

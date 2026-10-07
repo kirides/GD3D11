@@ -876,6 +876,7 @@ struct GothicRendererSettings {
         TesselationRange = 8.0f;
 
         textureMaxSize = 16384;
+        AnisotropicFiltering = 16;
         ShadowMapSize = 2048;
         WorldShadowRangeScale = 1.0f;
         NumShadowCascades = 3; // looks OK and performance friendly
@@ -1321,6 +1322,8 @@ struct GothicRendererSettings {
     float BrightnessValue;
     int ShadowMapSize;
     int textureMaxSize;
+    // Max anisotropy of the material texture sampler: 1 (plain trilinear), 2, 4, 8 or 16.
+    int AnisotropicFiltering;
 
     float GlobalWindStrength;
     float FogGlobalDensity;

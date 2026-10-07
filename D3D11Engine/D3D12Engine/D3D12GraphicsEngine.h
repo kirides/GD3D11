@@ -308,10 +308,11 @@ private:
     // --- Render-resolution scaling (RendererSettings.ResolutionScalePercent) ---------------------------------
     static INT2 ComputeRenderResolution( INT2 backbufferSize );        // backbuffer * ResolutionScalePercent
     static float ComputeMipLodBias( INT2 renderSize, INT2 displaySize );
-    bool RebakeMipLodBias( float newBias );                            // false = old pipelines kept
+    bool RebakeMaterialSampler( float newBias, UINT newAnisotropy );  // false = old pipelines kept
     bool CreateRenderResolutionTargets( INT2 renderSize );             // fatal only for depth/scene color
     void CreateDisplayResolutionTargets( INT2 displaySize );           // post-tonemap targets, all non-fatal
     void ApplyPendingResolutionScale();
+    void ApplyPendingTextureFiltering();   // RendererSettings.AnisotropicFiltering, debounced like the render scale
 
     // --- AO resolution scaling (RendererSettings.AoResolution, D3D12 only) -----------------------------------
     // `renderSize` halved when AoResolution == Half, unchanged otherwise. Feeds CreateAOResources and
@@ -684,6 +685,9 @@ private:
     // ResolutionScalePercent) - it's a discrete combo box, not a per-drag-frame slider.
     AoResolutionScale m_AppliedAoResolution = AoResolutionScale::Full;
     float m_AppliedMipLodBias = 0.0f;   // see D3D12RootLayout::SetAnisoMipLodBias
+    UINT  m_AppliedAnisotropy = 16;     // see D3D12RootLayout::SetMaterialAnisotropy
+    int   m_PendingAnisotropy = 0;      // 0 = nothing pending
+    int   m_AnisotropyStableFrames = 0;
     // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
     // BaseGraphicsEngine, shared with D3D11's identical deferral). Applied at the very start of the
     // NEXT OnBeginFrame — never mid-frame — so the resize always runs while the command list is
@@ -827,10 +831,11 @@ private:
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferMax] = {};
     UINT m_WorldDrawCount = 0;                       // commands built this frame (shared by both world passes)
     // Alpha-test partition. BuildWorldDrawCommands orders the command set so [0, m_WorldOpaqueDrawCount)
-    // needs NO alpha cutout and the rest does. Only the depth prepass cares: it submits the prefix through a
-    // PS-less PSO (double-rate Z) and the suffix through the clipping one. The color pass draws the whole
-    // range — opaque geometry is order-independent, so the reordering is invisible to it.
+    // needs NO alpha cutout and the rest does. The depth prepass submits the prefix through a PS-less PSO
+    // (double-rate Z); the color pass draws it depth-EQUAL without clip (World.OpaquePSO).
     UINT m_WorldOpaqueDrawCount = 0;
+    // Set by DrawDepthPrepass once it submitted this frame's world commands; DrawWorldMesh's EQUAL run needs it.
+    bool m_WorldPrepassDrawn = false;
     // Coalesced mirror of the opaque prefix, appended PAST m_WorldDrawCount so the color pass' view of the
     // ring is untouched. The wrapped world index buffer is packed section-major, so a visible section's
     // opaque materials form one contiguous index run, and with no pixel shader bound their per-material b6

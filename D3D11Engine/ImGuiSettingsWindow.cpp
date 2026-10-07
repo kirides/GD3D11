@@ -9,6 +9,7 @@
 #include "InventoryRenderer.h"
 #include "Toolbox.h"
 
+#include <bit>
 #include <sstream>
 
 #if defined(BUILD_GOTHIC_1_CLASSIC)
@@ -366,6 +367,15 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         textureQuality[0].value, textureQuality[std::size( textureQuality ) - 1].value );
     ComboRow( "Texture Quality", "##TextureQuality", textureQuality, &settings.textureMaxSize, nullptr,
         [] { Engine::GAPI->UpdateTextureMaxSize(); } );
+
+    // Slider over the power-of-two steps; stored as the max anisotropy itself (1 = off).
+    static constexpr const char* anisoLabels[] = { "Off (trilinear)", "2x", "4x", "8x", "16x" };
+    int anisoStep = std::clamp( std::bit_width( static_cast<unsigned>( std::max( 1, settings.AnisotropicFiltering ) ) ) - 1, 0, 4 );
+    if ( SliderIntRow( "Anisotropic Filtering", "##AnisotropicFiltering", &anisoStep, 0, 4, anisoLabels[anisoStep],
+        "Sharpens textures seen at grazing angles (ground, walls). Lower values save texture\n"
+        "bandwidth, which helps integrated GPUs most." ) ) {
+        settings.AnisotropicFiltering = 1 << std::clamp( anisoStep, 0, 4 );
+    }
 
     constexpr ListItem<int> normalMapModes[] = {
         { "Disabled", 0, nullptr, "NormalMapping_Disabled" },

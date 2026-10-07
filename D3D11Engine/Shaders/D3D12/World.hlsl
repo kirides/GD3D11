@@ -70,7 +70,8 @@ float4 DecodeTangent( float4 packed )
 #include "include/Wetness.hlsl"
 
 struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float4 tan : TANGENT; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float4 wtan : TEXCOORD5; };
+// `precise` (here and in DepthPrepass.hlsl) keeps clip bit-identical to the prepass, which PSMainOpaque's EQUAL test needs.
+struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float4 wtan : TEXCOORD5; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -126,12 +127,12 @@ VS_OUT VSQuadMark( VS_IN_QUADMARK i )
     return o;
 }
 
-float4 PSMain( VS_OUT i ) : SV_TARGET
+float4 ShadeWorld( VS_OUT i, uniform bool alphaTest )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
     Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];   // bindless diffuse (ExecuteIndirect, P2.11)
     float4 t = difTex.Sample( smp, i.uv );
-    clip( t.a - 0.5 );                        // fixed alpha-test cutout (opaque textures have a==1 -> kept)
+    if ( alphaTest ) clip( t.a - 0.5 );       // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 N = normalize( i.wnrm );
     float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )       // bindless normal map (BC5/BC1, Z reconstructed) if this material has one
@@ -176,6 +177,18 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     rgb = lerp( rgb, SrgbToLinear( FogColor ), f );
     return float4( rgb, 1.0 );
+}
+
+float4 PSMain( VS_OUT i ) : SV_TARGET
+{
+    return ShadeWorld( i, true );
+}
+
+// Opaque world materials after the depth prepass: depth EQUAL already rejects everything hidden, so no clip.
+[earlydepthstencil]
+float4 PSMainOpaque( VS_OUT i ) : SV_TARGET
+{
+    return ShadeWorld( i, false );
 }
 
 // =====================================================================================================

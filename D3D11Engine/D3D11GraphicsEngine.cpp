@@ -420,13 +420,16 @@ void D3D11GraphicsEngine::CreateAndBindDefaultSampler() {
     // Calculate raw bias, but clamp it to a maximum of 0.0f to protect Supersampling
     float mipBias = std::min(0.0f, std::log2(scaleRatio));
 
+    // AnisotropicFiltering 1 = plain trilinear.
+    const UINT anisotropy = static_cast<UINT>( std::clamp( Engine::GAPI->GetRendererState().RendererSettings.AnisotropicFiltering, 1, 16 ) );
+
     D3D11_SAMPLER_DESC samplerDesc{};
-    samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
+    samplerDesc.Filter = anisotropy > 1 ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.MipLODBias = mipBias;
-    samplerDesc.MaxAnisotropy = 16;
+    samplerDesc.MaxAnisotropy = anisotropy;
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     samplerDesc.BorderColor[0] = 1.0f;
     samplerDesc.BorderColor[1] = 1.0f;
@@ -1591,6 +1594,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     static int s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
     static GothicRendererSettings::E_RendererMode s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
     static DXGI_FORMAT s_oldBackBufferFormat = GetBackBufferFormat();
+    static int s_oldAnisotropicFiltering = rendererState.RendererSettings.AnisotropicFiltering;
 
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
     BeginFrameTransientBufferPools();
@@ -1629,6 +1633,11 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         RecreateMSAABuffers( GetResolution() );
         s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
         s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
+    }
+
+    if ( rendererState.RendererSettings.AnisotropicFiltering != s_oldAnisotropicFiltering ) {
+        s_oldAnisotropicFiltering = rendererState.RendererSettings.AnisotropicFiltering;
+        CreateAndBindDefaultSampler();
     }
 
     // TAA overrides CompressBackBuffer, so an AA-mode change can switch the scene format.

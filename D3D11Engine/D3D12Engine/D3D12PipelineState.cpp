@@ -145,8 +145,7 @@ bool D3D12PipelineState::CreateWorld() {
     // prepass — the only consumer — records anything.
     rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 13: b5 MotionCB
 
-    // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
-    // angles and in the distance, which trilinear alone smears badly.
+    // s0 diffuse: anisotropic per RendererSettings.AnisotropicFiltering (matches D3D11's main texture sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s2: PCF comparison sampler for the CSM depth. Normal-Z map (LESS_EQUAL): SampleCmp returns 1 where the
     // fragment is closer-or-equal to the light than the stored occluder (lit), 0 where behind it (shadowed).
@@ -174,6 +173,11 @@ bool D3D12PipelineState::CreateWorld() {
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSMain", Shadermodel_PS, World.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+    // Non-fatal: without it the opaque run keeps the clipping GREATER_EQUAL PSO.
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSMainOpaque", Shadermodel_PS, World.OpaquePsBlob.ReleaseAndGetAddressOf() ) ) {
+        Logging::Wrn( "D3D12: World.hlsl PSMainOpaque failed to compile — opaque world draws keep the alpha-test shader." );
+        World.OpaquePsBlob.Reset();
+    }
     // Lit quad marks (D3D12Fx.cpp). Non-fatal: DrawQuadMarks falls back to the unlit Fx pipeline if this
     // blob is missing, so a shader edit that breaks it costs the lighting, not the blood splats.
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSQuadMark", Shadermodel_VS, World.QuadMarkVsBlob.ReleaseAndGetAddressOf() ) ) {
@@ -184,6 +188,7 @@ bool D3D12PipelineState::CreateWorld() {
     rs.ValidateShaders( {
         { World.VsBlob.Get(),        "World.hlsl:VSMain",     D3D12_SHADER_VISIBILITY_VERTEX },
         { World.PsBlob.Get(),        "World.hlsl:PSMain",     D3D12_SHADER_VISIBILITY_PIXEL  },
+        { World.OpaquePsBlob.Get(),  "World.hlsl:PSMainOpaque", D3D12_SHADER_VISIBILITY_PIXEL },
         { World.QuadMarkVsBlob.Get(),"World.hlsl:VSQuadMark", D3D12_SHADER_VISIBILITY_VERTEX },
     } );
 
@@ -231,16 +236,9 @@ bool D3D12PipelineState::CreateWorld() {
 
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-    // Reversed-Z: test depth, pass on GREATER_EQUAL (matches Gothic's infinite-far projection).
-    //
-    // Depth write is OFF: the Forward+ depth prepass already laid down this geometry's depth, so a write here
-    // only restores the value already in the buffer. It also lets an alpha-clipping lit shader take plain
-    // early-Z rather than Re-Z, since a `discard` has nothing left to invalidate.
-    //
-    // The test stays GREATER_EQUAL rather than EQUAL: the prepass runs a DIFFERENT vertex shader
-    // (DepthPrepass.hlsl:VSWorld vs World.hlsl:VSMain) and HLSL guarantees no cross-shader SV_Position
-    // invariance, so one ULP under EQUAL makes a whole surface vanish. Same at the VOB/attachment/skeletal
-    // color PSOs.
+    // Reversed-Z GREATER_EQUAL, depth write OFF: the Forward+ depth prepass already laid this geometry's depth.
+    // Serves the alpha-tested run, and everything when OpaquePSO is missing. VOB/skeletal color PSOs stay
+    // GREATER_EQUAL: their prepass VSs are not position-invariant with the lit ones.
     //
     // Does NOT apply to vegetation: DrawVegetationDepthPrepass is range-limited (kVegetationPrepassRange), so
     // distant grass has no prepass depth and must keep writing its own or it stops occluding other grass.
@@ -252,6 +250,18 @@ bool D3D12PipelineState::CreateWorld() {
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, World.PSO.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world)." );
         return false;
+    }
+
+    // Opaque run: EQUAL is safe because VSMain and the prepass VSs compute a `precise` SV_Position from the same
+    // expression. The prepass already cut alpha holes, so no clip and forced early depth.
+    World.OpaquePSO.Reset();
+    if ( World.OpaquePsBlob ) {
+        pso.PS = { World.OpaquePsBlob->GetBufferPointer(), World.OpaquePsBlob->GetBufferSize() };
+        pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, World.OpaquePSO.ReleaseAndGetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world opaque EQUAL) — opaque world draws keep the alpha-test PSO." );
+            World.OpaquePSO.Reset();
+        }
     }
     return true;
 }
@@ -1832,8 +1842,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
     rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b8 AOCB { AoMaskIndex }
 
-    // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
-    // angles and in the distance, which trilinear alone smears badly.
+    // s0 diffuse: anisotropic per RendererSettings.AnisotropicFiltering (matches D3D11's main texture sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s2 PCF (see world root sig).
     rs.AddStaticSampler( D3D12RootLayout::SamplerComparison( 2, D3D12_SHADER_VISIBILITY_PIXEL ) );

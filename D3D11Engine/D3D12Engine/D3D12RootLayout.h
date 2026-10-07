@@ -106,12 +106,15 @@ public:
         rebuilds every root signature and PSO to apply it. */
     static void  SetAnisoMipLodBias( float bias );
     static float GetAnisoMipLodBias();
+    // Max anisotropy SamplerAniso uses when none is passed (1 = trilinear); same rebuild rule as the bias.
+    static void  SetMaterialAnisotropy( UINT anisotropy );
+    static UINT  GetMaterialAnisotropy();
 
     // Static-sampler factories for the shapes this backend actually uses. All set MaxLOD to
     // FLOAT32_MAX and leave MinLOD at zero, matching what the hand-written descs did; only the
     // anisotropic one carries a MipLODBias (see SetAnisoMipLodBias).
     static D3D12_STATIC_SAMPLER_DESC SamplerAniso( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,
-        UINT maxAnisotropy = 16, D3D12_TEXTURE_ADDRESS_MODE address = D3D12_TEXTURE_ADDRESS_MODE_WRAP );
+        UINT maxAnisotropy = 0, D3D12_TEXTURE_ADDRESS_MODE address = D3D12_TEXTURE_ADDRESS_MODE_WRAP );   // 0 = material setting
     static D3D12_STATIC_SAMPLER_DESC SamplerLinear( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,
         D3D12_TEXTURE_ADDRESS_MODE address = D3D12_TEXTURE_ADDRESS_MODE_CLAMP );
     static D3D12_STATIC_SAMPLER_DESC SamplerPoint( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,

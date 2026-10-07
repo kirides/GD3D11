@@ -64,6 +64,9 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> PSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        // Opaque-material run after the depth prepass: depth EQUAL, PSMainOpaque (no clip, early depth). Optional.
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> OpaquePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            OpaquePsBlob;
         // Lit instanced static VOBs (reuses RootSig)
         Microsoft::WRL::ComPtr<Rhi::PipelineState> VobPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            VobVsBlob;

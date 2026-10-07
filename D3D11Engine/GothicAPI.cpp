@@ -6048,6 +6048,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     
     auto res = Engine::GraphicsEngine->GetBackbufferResolution();
     WritePrivateProfileStringA( "Display", "TextureQuality", to_string_locale_independent( s.textureMaxSize ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "AnisotropicFiltering", to_string_locale_independent( s.AnisotropicFiltering ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "Width", to_string_locale_independent( res.x ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "Height", to_string_locale_independent( res.y ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "ResolutionScale", to_string_locale_independent( s.ResolutionScalePercent ).c_str(), ini.c_str() );
@@ -6327,6 +6328,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
         s.textureMaxSize = std::max<int>( 32, GetPrivateProfileIntA( "Display", "TextureQuality", 16384, ini.c_str() ) );
+        // Snapped down to a power of two in 1..16.
+        s.AnisotropicFiltering = static_cast<int>( std::bit_floor( static_cast<unsigned>( std::clamp<int>(
+            GetPrivateProfileIntA( "Display", "AnisotropicFiltering", ds.AnisotropicFiltering, ini.c_str() ), 1, 16 ) ) ) );
         res.x = GetPrivateProfileIntA( "Display", "Width", desktopRect.right, ini.c_str() );
         res.y = GetPrivateProfileIntA( "Display", "Height", desktopRect.bottom, ini.c_str() );
         s.ResolutionScalePercent = std::clamp<int>( GetPrivateProfileIntA( "Display", "ResolutionScale", ds.ResolutionScalePercent, ini.c_str() ), 25, 200 );

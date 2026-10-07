@@ -58,9 +58,11 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_V
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
     m_AppliedResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
     // Static samplers are serialized into the root signature blob, so the bias has to be right before Init()
-    // builds any of them. A later change goes through RebakeMipLodBias.
+    // builds any of them. A later change goes through RebakeMaterialSampler.
     m_AppliedMipLodBias = ComputeMipLodBias( m_Resolution, m_BackbufferResolution );
     D3D12RootLayout::SetAnisoMipLodBias( m_AppliedMipLodBias );
+    D3D12RootLayout::SetMaterialAnisotropy( static_cast<UINT>( Engine::GAPI->GetRendererState().RendererSettings.AnisotropicFiltering ) );
+    m_AppliedAnisotropy = D3D12RootLayout::GetMaterialAnisotropy();
     // Same LowLatency toggle D3D11 uses for its swapchain waitable object. kBackBufferCount is always
     // N+1 - 1 slot for the frame currently in flight plus N queued behind it - so normally N=2 queued
     // (3 slots) and LowLatency trims that to N=1 queued (2 slots, matching D3D11's non-low-latency
@@ -1877,32 +1879,34 @@ INT2 D3D12GraphicsEngine::GetAoTargetResolution( INT2 renderSize ) {
 }
 
 
-/** Re-bakes `newBias` into every root signature's static aniso sampler. A static sampler lives in the root
-    signature blob and a PSO binds its root signature at creation, so this is a full rebuild through the
-    shader hot-reload path (backup + rollback included) — seconds, not milliseconds, hence the debounce in
-    ApplyPendingResolutionScale. The caller must have idled the GPU. */
-bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
-    const float previousBias = m_AppliedMipLodBias;
+/** Re-bakes the mip bias + max anisotropy into every root signature's static material sampler. A static sampler
+    lives in the root signature blob and a PSO binds its root signature at creation, so this is a full rebuild
+    through the shader hot-reload path (backup + rollback included) — seconds, not milliseconds, hence the
+    debounces. The caller must have idled the GPU. */
+bool D3D12GraphicsEngine::RebakeMaterialSampler( float newBias, UINT newAnisotropy ) {
     D3D12RootLayout::SetAnisoMipLodBias( newBias );
+    D3D12RootLayout::SetMaterialAnisotropy( newAnisotropy );
 
     D3D12PipelineState backup = m_Pipelines;   // cheap AddRef pass — see ApplyPendingShaderReload
     std::vector<std::string> failedFatal, failedOptional;
     if ( !m_Pipelines.ReloadAll( m_HdrOutputActive, m_SceneEnabled, failedFatal, failedOptional ) ) {
         m_Pipelines = backup;
-        D3D12RootLayout::SetAnisoMipLodBias( previousBias );
+        D3D12RootLayout::SetAnisoMipLodBias( m_AppliedMipLodBias );
+        D3D12RootLayout::SetMaterialAnisotropy( m_AppliedAnisotropy );
         std::string names;
         for ( const auto& n : failedFatal ) { if ( !names.empty() ) names += ", "; names += n; }
-        Logging::Wrn( "D3D12: could not re-bake the texture mip bias ({} failed to rebuild) — keeping the previous pipelines. Textures will look blurrier than they should.",
+        Logging::Wrn( "D3D12: could not re-bake the texture sampler ({} failed to rebuild) — keeping the previous pipelines.",
             names );
         return false;
     }
     if ( !failedOptional.empty() ) {
         std::string names;
         for ( const auto& n : failedOptional ) { if ( !names.empty() ) names += ", "; names += n; }
-        Logging::Wrn( "D3D12: mip-bias rebuild finished with degraded passes ({}).", names );
+        Logging::Wrn( "D3D12: texture-sampler rebuild finished with degraded passes ({}).", names );
     }
     RebuildRootSignatureDependents();
     m_AppliedMipLodBias = newBias;
+    m_AppliedAnisotropy = D3D12RootLayout::GetMaterialAnisotropy();
     return true;
 }
 
@@ -2138,6 +2142,9 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     // Same spot, same reasoning, for a render-scale change (ImGui slider / ini).
     ApplyPendingResolutionScale();
+
+    // Same spot, same reasoning, for an anisotropic-filtering change (rebuilds every pipeline).
+    ApplyPendingTextureFiltering();
 
     // Same spot, same reasoning, for a change of FSR upscaler (its context frees resources immediately).
     ApplyPendingUpscalerChange();
@@ -3157,12 +3164,41 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
     const float newBias = ComputeMipLodBias( m_Resolution, m_BackbufferResolution );
     if ( std::abs( newBias - m_AppliedMipLodBias ) > 0.02f ) {
         Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Applying render scale..." );
-        RebakeMipLodBias( newBias );
+        RebakeMaterialSampler( newBias, m_AppliedAnisotropy );
     }
 
     m_AppliedResolutionScalePercent = requested;
     Logging::Inf( "D3D12 render scale {}% -> rendering at {}x{} (display {}x{}), texture mip bias {}.",
         requested, m_Resolution.x, m_Resolution.y, m_BackbufferResolution.x, m_BackbufferResolution.y, m_AppliedMipLodBias );
+}
+
+
+/** Picks up a change to RendererSettings.AnisotropicFiltering from the top of OnBeginFrame. Debounced because
+    each step of a slider drag would otherwise rebuild every pipeline. */
+void D3D12GraphicsEngine::ApplyPendingTextureFiltering() {
+    if ( !m_SwapChainReady ) return;
+    const int requested = std::clamp( Engine::GAPI->GetRendererState().RendererSettings.AnisotropicFiltering, 1, 16 );
+    if ( static_cast<UINT>( requested ) == m_AppliedAnisotropy ) {
+        m_PendingAnisotropy = 0;
+        m_AnisotropyStableFrames = 0;
+        return;
+    }
+    if ( requested != m_PendingAnisotropy ) {
+        m_PendingAnisotropy = requested;
+        m_AnisotropyStableFrames = 0;
+        return;
+    }
+    if ( ++m_AnisotropyStableFrames < kResolutionScaleDebounceFrames ) return;
+    m_PendingAnisotropy = 0;
+    m_AnisotropyStableFrames = 0;
+
+    Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Applying texture filtering..." );
+    WaitForGpuIdle();   // the old PSOs are still referenced by in-flight frames
+    if ( !RebakeMaterialSampler( m_AppliedMipLodBias, static_cast<UINT>( requested ) ) ) {
+        m_AppliedAnisotropy = static_cast<UINT>( requested );   // don't retry the failed rebuild every frame
+        return;
+    }
+    Logging::Inf( "D3D12 anisotropic filtering -> {}x.", m_AppliedAnisotropy );
 }
 
 
