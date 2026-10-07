@@ -152,6 +152,8 @@ public:
 
     /** Presents the current frame to the screen */
     XRESULT Present() override;
+    /** Debug builds: debug-layer errors stored since the last call go to Log.txt. */
+    void LogDebugLayerMessages();
 
     /** Saves a screenshot */
     void SaveScreenshot() override;
@@ -564,6 +566,7 @@ protected:
 
     /** Swapchain buffers */
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> BackbufferRTV;
+    Microsoft::WRL::ComPtr<ID3D11InfoQueue> DebugInfoQueue;   // debug builds only; drained per Present
     std::unique_ptr<RenderToTextureBuffer> DepthStencilBufferCopy;
     std::unique_ptr<RenderToTextureBuffer> HDRBackBufferSwap;
 

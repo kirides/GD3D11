@@ -678,6 +678,17 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     Device11.As( &Device );
     Context11.As( &Context );
+
+#ifdef DEBUG_D3D11
+    // Debug-layer messages otherwise only reach OutputDebugString; keep errors and drain them per Present.
+    if ( SUCCEEDED( Device11.As( &DebugInfoQueue ) ) ) {
+        D3D11_MESSAGE_SEVERITY severities[] = { D3D11_MESSAGE_SEVERITY_CORRUPTION, D3D11_MESSAGE_SEVERITY_ERROR };
+        D3D11_INFO_QUEUE_FILTER filter = {};
+        filter.AllowList.NumSeverities = _countof( severities );
+        filter.AllowList.pSeverityList = severities;
+        DebugInfoQueue->PushStorageFilter( &filter );
+    }
+#endif
     s_tracyD3D11Ctx = TracyD3D11Context( Device.Get(), Context.Get() );
 
     Context.As( &m_UserDefinedAnnotation );
@@ -1883,6 +1894,22 @@ void RenderVelocity(D3D11GraphicsEngine* engine,
 }
 
 /** Presents the current frame to the screen */
+void D3D11GraphicsEngine::LogDebugLayerMessages() {
+    if ( !DebugInfoQueue ) return;
+    static std::vector<uint8_t> buffer;   // main thread only; grows to the largest message once
+    const UINT64 count = DebugInfoQueue->GetNumStoredMessages();
+    for ( UINT64 i = 0; i < count; ++i ) {
+        SIZE_T size = 0;
+        if ( FAILED( DebugInfoQueue->GetMessage( i, nullptr, &size ) ) || size == 0 ) continue;
+        if ( buffer.size() < size ) buffer.resize( size );
+        auto* message = reinterpret_cast<D3D11_MESSAGE*>( buffer.data() );
+        if ( SUCCEEDED( DebugInfoQueue->GetMessage( i, message, &size ) ) && message->pDescription ) {
+            Logging::Err( "D3D11 debug layer (#{}): {}", static_cast<int>( message->ID ), message->pDescription );
+        }
+    }
+    DebugInfoQueue->ClearStoredMessages();
+}
+
 XRESULT D3D11GraphicsEngine::Present() {
     ZoneScoped;
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -1952,6 +1979,8 @@ XRESULT D3D11GraphicsEngine::Present() {
     } else {
         hr = SwapChain->Present( vsync ? 1 : 0, 0 );
     }
+
+    LogDebugLayerMessages();
 
     if ( hr == DXGI_ERROR_DEVICE_REMOVED ) {
         switch ( GetDevice()->GetDeviceRemovedReason() ) {
