@@ -326,6 +326,7 @@ PS_OUTPUT_REACTIVE PSMainReactive( PS_INPUT i )
 {
     PS_OUTPUT_REACTIVE o;
     o.Color = RainColor( i );
-    o.Reactive = saturate( o.Color.a * 20.0f );
+	o.Reactive = select( IsSnow, 0.9f, 0.8f );
+
     return o;
 }
