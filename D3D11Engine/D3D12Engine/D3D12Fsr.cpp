@@ -327,6 +327,8 @@ void D3D12GraphicsEngine::EnsureFsrReady() {
         m_FsrFailedKind = kind;
         return;
     }
+    // Optional: without it FSR 2/3 still run, the snow just ghosts.
+    if ( kind != Upscaler::UPSCALER_FSR_1 && !m_FsrReactive ) CreateFsrReactiveMask( m_Resolution );
 
     Logging::Inf( "{}: {} upscaler ready ({}x{} -> {}x{}).", m_Api == Rhi::Backend::Vulkan ? "Vulkan" : "D3D12",
         UpscalerName( kind ), m_Resolution.x, m_Resolution.y, m_BackbufferResolution.x, m_BackbufferResolution.y );
@@ -370,6 +372,54 @@ bool D3D12GraphicsEngine::CreateFsrOutput( INT2 size ) {
 
     m_FsrOutputReady = true;
     m_FsrReset = true;   // no coherent history to accumulate onto
+    return true;
+}
+
+
+/** Render-res R8 reactive mask for FSR 2/3. Rests in RENDER_TARGET; BindFsrReactiveTarget clears it before rain. */
+bool D3D12GraphicsEngine::CreateFsrReactiveMask( INT2 size ) {
+    m_FsrReactive.Reset();
+    m_FsrReactiveWritten = false;
+    if ( !m_Rhi || !m_RtvHeap || size.x < 4 || size.y < 4 ) return false;
+
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width = static_cast<UINT64>( size.x );
+    dd.Height = static_cast<UINT>( size.y );
+    dd.DepthOrArraySize = 1;
+    dd.MipLevels = 1;
+    dd.Format = kFsrReactiveFormat;
+    dd.SampleDesc.Count = 1;
+    dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_CLEAR_VALUE clear = {};
+    clear.Format = kFsrReactiveFormat;
+    if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+        m_FsrReactive.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
+        Logging::Wrn( "Failed to create the FSR reactive mask ({}x{}); particles may ghost.", size.x, size.y );
+        m_FsrReactive.Reset();
+        return false;
+    }
+    m_FsrReactive->SetName( L"FsrReactiveMask" );
+
+    m_FsrReactiveRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_FsrReactiveRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 8 ) * m_RtvDescriptorSize;
+    m_Rhi->CreateRenderTargetView( m_FsrReactive.Get(), nullptr, m_FsrReactiveRtv );
+    m_CmdList.InvalidateRenderTargets();   // descriptor rewritten in place
+    return true;
+}
+
+
+/** For the rain draw under FSR 2/3: binds scene colour + the cleared reactive mask. False = draw without it. */
+bool D3D12GraphicsEngine::BindFsrReactiveTarget() {
+    if ( !m_FsrReactive || !m_Pipelines.RainDraw.ReactivePSO || !IsTemporalFsrEnabled() ) return false;
+    BindSceneColorTarget();
+    static constexpr float kNoReactive[4] = {};
+    m_CmdList->ClearRenderTargetView( m_FsrReactiveRtv, kNoReactive, 0, nullptr );
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtvs[] = { m_SceneColorRtv, m_FsrReactiveRtv };
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = SceneDsv();
+    m_CmdList->OMSetRenderTargets( 2, rtvs, FALSE, dsv.ptr ? &dsv : nullptr );
+    m_FsrReactiveWritten = true;
     return true;
 }
 
@@ -570,6 +620,8 @@ void D3D12GraphicsEngine::ReleaseFsr() {
     m_FsrOutputReady = false;
     m_FsrOutput.Reset();
     m_FsrOutputInUavState = false;
+    m_FsrReactive.Reset();   // render-res; EnsureFsrReady rebuilds it at the new size
+    m_FsrReactiveWritten = false;
     // The SRV slot is kept and re-pointed by CreateFsrOutput.
     m_FsrRanThisFrame = false;
     m_FsrReset = true;
@@ -581,12 +633,15 @@ void D3D12GraphicsEngine::ReleaseFsr() {
     Runs after RenderBloom/RenderLuminanceAdapt and before ResolveSceneToBackBuffer. */
 void D3D12GraphicsEngine::RenderFsrUpscale() {
     m_FsrRanThisFrame = false;
+    const bool reactiveWritten = m_FsrReactiveWritten;   // this frame's rain draw wrote the mask
+    m_FsrReactiveWritten = false;
     if ( !m_FrameOpen || !m_CmdList ) return;
     if ( !IsFsrEnabled() ) return;
 
     const int kind = m_FsrContextKind;
     const bool temporal = kind != Upscaler::UPSCALER_FSR_1;
     const bool vk = m_Api == Rhi::Backend::Vulkan;
+    const bool reactive = temporal && reactiveWritten && m_FsrReactive;
     DX_ZONE( m_CmdList.Get(), "FSR upscale" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "FSR upscale" );
 
@@ -595,13 +650,16 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
     // barriers them) through the RHI, which tracks them with enhanced barriers.
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
     if ( temporal ) TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, true );
-    Rhi::ResourceTransition pre[2];
+    Rhi::ResourceTransition pre[3];
     UINT n = 0;
     pre[n++] = { m_SceneColor.Get(), m_SceneColorInPixelState ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
         : D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
     if ( temporal ) {
         pre[n++] = { m_VelocityBuffer.Get(), m_VelocityInPixelState ? kVelocityReadState : D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+    }
+    if ( reactive ) {
+        pre[n++] = { m_FsrReactive.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
     }
     m_CmdList->TransitionBarriers( pre, n );
     TransitionFsrOutput( m_FsrOutputInUavState ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
@@ -617,6 +675,7 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
             VulkanRhi::SetImageLayout( m_CmdList.Get(), m_DepthBuffer.Get(), kShaderReadOnly );
             VulkanRhi::SetImageLayout( m_CmdList.Get(), m_VelocityBuffer.Get(), kShaderReadOnly );
         }
+        if ( reactive ) VulkanRhi::SetImageLayout( m_CmdList.Get(), m_FsrReactive.Get(), kShaderReadOnly );
         if ( kind == Upscaler::UPSCALER_FSR_3 ) {
             for ( auto& shared : m_Fsr3Shared ) VulkanRhi::SetImageLayout( m_CmdList.Get(), shared.Get(), kShaderReadOnly );
         }
@@ -649,6 +708,10 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
     } else {
         const FfxApiResource depth = AsFfxResource( m_Api, m_DepthBuffer.Get(), L"FsrInputDepth", FFX_API_RESOURCE_STATE_COMPUTE_READ );
         const FfxApiResource velocity = AsFfxResource( m_Api, m_VelocityBuffer.Get(), L"FsrInputVelocity", FFX_API_RESOURCE_STATE_COMPUTE_READ );
+        // Absent mask == all zero, which FFX handles; a failed wrap only loses the mask.
+        const FfxApiResource reactiveMask = reactive
+            ? AsFfxResource( m_Api, m_FsrReactive.Get(), L"FsrInputReactiveMask", FFX_API_RESOURCE_STATE_COMPUTE_READ )
+            : FfxApiResource{};
         bool inputsValid = depth.resource && velocity.resource;
         // AdvanceJitter's FSR phase sequence, in pixels; velocity is UV-space (prevUV - currUV).
         const FfxApiFloatCoords2D jitter = { m_TaaJitterPixels.x, m_TaaJitterPixels.y };
@@ -662,8 +725,7 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
         const float fovY = XMConvertToRadians( fovA );
         const float cameraFar = std::max( cam ? cam->GetNearPlane() : 0.01f, 0.075f );   // FFX wants >= 0.075
 
-        // Optional exposure/reactive/transparency inputs stay null: AUTO_EXPOSURE covers the first, and the
-        // D3D12 rain pass has no second target to build a reactive mask from (D3D11 does).
+        // Exposure stays null (AUTO_EXPOSURE) and so does transparency-and-composition (nothing writes one).
         if ( !inputsValid ) {
             err = FFX_ERROR_INVALID_POINTER;
         } else if ( kind == Upscaler::UPSCALER_FSR_2 ) {
@@ -672,6 +734,7 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
             dd.color = color;
             dd.depth = depth;
             dd.motionVectors = velocity;
+            dd.reactive = reactiveMask;
             dd.output = output;
             dd.jitterOffset = jitter;
             dd.motionVectorScale = motionScale;
@@ -692,6 +755,7 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
             dd.color = color;
             dd.depth = depth;
             dd.motionVectors = velocity;
+            dd.reactive = reactiveMask;
             dd.output = output;
             FfxApiResource* sharedSlots[3] = { &dd.dilatedDepth, &dd.dilatedMotionVectors, &dd.reconstructedPrevNearestDepth };
             for ( UINT i = 0; i < 3; ++i ) {
@@ -727,12 +791,15 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
 
     // --- states out ------------------------------------------------------------------------------------
     // Scene colour and output to PIXEL_SHADER_RESOURCE for the tonemap, velocity back to its combined read
-    // state. The FSR 3 shared resources are left alone (see CreateFsr3SharedResources).
-    Rhi::ResourceTransition post[2];
+    // state, the reactive mask back to RENDER_TARGET. The FSR 3 shared resources are left alone (see CreateFsr3SharedResources).
+    Rhi::ResourceTransition post[3];
     n = 0;
     post[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
     if ( temporal ) {
         post[n++] = { m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, kVelocityReadState };
+    }
+    if ( reactive ) {
+        post[n++] = { m_FsrReactive.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET };
     }
     m_CmdList->TransitionBarriers( post, n );
     TransitionFsrOutput( D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );

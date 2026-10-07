@@ -1688,7 +1688,11 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_Fsr3Shared[3];
     static constexpr D3D12_RESOURCE_STATES kFsr3SharedRestState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     bool m_Fsr3SharedReady = false;
-    bool m_FsrReset = true;             // drop the temporal history (world load, resize, fresh context/output)
+    // Render-res reactive mask for FSR 2/3; rests in RENDER_TARGET. Passed only when the rain draw wrote it.
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_FsrReactive;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_FsrReactiveRtv = {};   // RTV heap slot kBackBufferMax+8
+    bool m_FsrReactiveWritten = false;
+    bool m_FsrReset = true;            // drop the temporal history (world load, resize, fresh context/output)
     bool m_FsrRanThisFrame = false;     // drives GetTonemapSourceSrvSlot and the sharpen pass's early-out
     bool m_FsrInitFailed = false;       // don't retry m_FsrFailedKind every frame; cleared by ReleaseFsr
     int  m_FsrFailedKind = 0;
@@ -1700,6 +1704,8 @@ private:
     bool CreateFsrOutput( INT2 size );                            // display-res HDR UAV target + its SRV
     bool CreateFsrContext( int kind, INT2 renderSize, INT2 upscaleSize ); // FFX interface + context (+ FSR 3 shared)
     bool CreateFsr3SharedResources();                             // the three application-owned FSR 3 resources
+    bool CreateFsrReactiveMask( INT2 size );                      // render-res R8 RTV the rain draw writes
+    bool BindFsrReactiveTarget();                                 // clears + binds scene colour and mask for the rain draw
     void DestroyFsrContext();                                     // requires an idle GPU (FFX frees immediately)
     void ReleaseFsr();                                            // context + shared + output; from the resize paths
     void RenderFsrUpscale();                                      // the dispatch (no-op unless IsFsrEnabled)

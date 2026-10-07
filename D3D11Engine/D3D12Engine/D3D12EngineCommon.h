@@ -259,6 +259,8 @@ inline constexpr DXGI_FORMAT kHdrDisplayFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 // be derived in that algorithm's own pass rather than widened into this shared buffer.
 inline constexpr DXGI_FORMAT kVelocityFormat = DXGI_FORMAT_R16G16_FLOAT;
 inline constexpr DXGI_FORMAT kGBufferNormalFormat = DXGI_FORMAT_R16G16_FLOAT;
+// FSR 2/3 reactive mask (render res): 0 = trust history, 1 = take the current frame. Written by the rain draw.
+inline constexpr DXGI_FORMAT kFsrReactiveFormat = DXGI_FORMAT_R8_UNORM;
 
 // Sentinel the velocity target is cleared to each frame. FillCameraVelocity (end of world rendering, when depth
 // is final) replaces every pixel STILL holding it with a camera-only depth reprojection — that is what covers

@@ -2704,6 +2704,26 @@ bool D3D12PipelineState::CreateRainDraw() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (rain draw)." );
         return false;
     }
+
+    // FSR 2/3 variant: + R8 reactive mask, MAX so overlapping flakes keep the strongest value.
+    RainDraw.ReactivePSO.Reset();
+    if ( m_Shaders->CompileFromFile( "Rain.hlsl", "PSMainReactive", Shadermodel_PS, RainDraw.ReactivePsBlob.ReleaseAndGetAddressOf() ) ) {
+        pso.PS = { RainDraw.ReactivePsBlob->GetBufferPointer(), RainDraw.ReactivePsBlob->GetBufferSize() };
+        pso.NumRenderTargets = 2;
+        pso.RTVFormats[1] = kFsrReactiveFormat;
+        pso.BlendState.IndependentBlendEnable = TRUE;
+        D3D12_RENDER_TARGET_BLEND_DESC& reactive = pso.BlendState.RenderTarget[1];
+        reactive.BlendEnable = TRUE;
+        reactive.SrcBlend = reactive.DestBlend = D3D12_BLEND_ONE;
+        reactive.BlendOp = D3D12_BLEND_OP_MAX;
+        reactive.SrcBlendAlpha = reactive.DestBlendAlpha = D3D12_BLEND_ONE;
+        reactive.BlendOpAlpha = D3D12_BLEND_OP_MAX;
+        reactive.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, RainDraw.ReactivePSO.ReleaseAndGetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (rain draw, FSR reactive mask)." );
+            RainDraw.ReactivePSO.Reset();
+        }
+    }
     return true;
 }
 

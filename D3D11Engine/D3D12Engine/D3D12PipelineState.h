@@ -49,6 +49,11 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthGBufVsBlob;       // Vegetation.hlsl VSDepthGBuf
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthGBufPsBlob;       // Vegetation.hlsl PSDepthClipGBuf
     };
+    // Rain/snow billboards. ReactivePSO adds the FSR 2/3 reactive mask as RT1 (R8, MAX blend); optional.
+    struct RainDrawPipeline : GraphicsPipeline {
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> ReactivePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            ReactivePsBlob;   // Rain.hlsl PSMainReactive
+    };
     // The shared opaque "world family": one root signature (b0 ViewProj, t0 diffuse, Forward+ light SRVs,
     // CSM + point-shadow tables, bindless material indices) anchors the lit world-mesh PSO, the lit
     // instanced-VOB PSO, and the depth-prepass PSOs. Skeletal + shadow-caster PSOs still living in the
@@ -743,7 +748,7 @@ public:
     FogPipeline      Fog;        // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)
     LowCloudPipeline LowClouds;  // low clouds (Shaders/D3D12/LowClouds.hlsl)
     ComputePipeline  AdvanceRain;   // rain/snow particle advance (Shaders/D3D12/AdvanceRain.hlsl)
-    GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
+    RainDrawPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
     CullPipeline     Cull;          // Hi-Z build + GPU VOB cull (Shaders/D3D12/HiZ.hlsl + VobCull.hlsl)
     // GPU morph fold (Shaders/D3D12/MorphFold.hlsl). Its availability is what decides how morph submesh
     // vertex buffers are CREATED (DEFAULT+UAV vs DYNAMIC+CA_WRITE — see MorphGpu::IsActive), so unlike the

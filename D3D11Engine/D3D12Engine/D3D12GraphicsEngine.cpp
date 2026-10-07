@@ -2034,9 +2034,10 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
     Rhi::Device* device = m_Rhi.Get();
 
     // Fixed RTV slots: 0..kBackBufferMax-1 unused (keeps the offsets below stable), kBackBufferMax scene colour,
-    // +3 HDR display, +4/+5 motion/normal G-buffer (D3D12Motion.cpp), +6/+7 LDR display-chain scratches (D3D12PostFX.cpp).
+    // +3 HDR display, +4/+5 motion/normal G-buffer (D3D12Motion.cpp), +6/+7 LDR display-chain scratches (D3D12PostFX.cpp),
+    // +8 FSR reactive mask (D3D12Fsr.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferMax + 8;
+    rtvHeapDesc.NumDescriptors = kBackBufferMax + 9;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( m_Rhi->CreateDescriptorHeap( &rtvHeapDesc, m_RtvHeap.ReleaseAndGetAddressOf() ) ) )

@@ -335,7 +335,8 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     memcpy( cb + kRainShadowCbOffset, &shadowCb, sizeof( shadowCb ) );
     const D3D12_GPU_VIRTUAL_ADDRESS cbGpu = m_RainDrawCB[m_FrameIndex]->GetGPUVirtualAddress();
 
-    m_CmdList->SetPipelineState( m_Pipelines.RainDraw.PSO.Get() );
+    const bool reactive = BindFsrReactiveTarget();
+    m_CmdList->SetPipelineState( reactive ? m_Pipelines.RainDraw.ReactivePSO.Get() : m_Pipelines.RainDraw.PSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.RainDraw.RootSig.Get() );
     m_CmdList->SetGraphicsRootConstantBufferView( 0, cbGpu );
     m_CmdList->SetGraphicsRootConstantBufferView( 1, cbGpu + kRainInfoCbOffset );
@@ -348,6 +349,7 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     // No IA vertex/index buffers — the VS pulls everything from the two root SRVs above by SV_VertexID/
     // SV_InstanceID (see Shaders/D3D12/Rain.hlsl).
     m_CmdList->DrawInstanced( 4, numParticles, 0, 0 );
+    if ( reactive ) BindSceneColorTarget();   // later single-target PSOs must not see the mask bound
 }
 
 bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, ComPtr<Rhi::Resource>& outTex,
