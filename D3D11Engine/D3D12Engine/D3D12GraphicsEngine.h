@@ -465,7 +465,7 @@ private:
     XRESULT SubmitUIDraw( const D3D12_VERTEX_BUFFER_VIEW& vbv, unsigned int numVertices, unsigned int startVertex, bool ffVbLayout );
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
-    void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
+    void WaitForGpuIdle() override;   // full CPU/GPU flush (used on resize / teardown)
     void MoveToNextFrame( UINT64 currentFenceValue, uint64_t submittedOrdinal );   // advance, wait for next allocator
 
     /** CPU-blocks on m_Fence reaching `value`, but bounded + diagnosed instead of WaitForSingleObject(INFINITE).
