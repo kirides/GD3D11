@@ -1615,7 +1615,7 @@
     <ClCompile Include="D3D12Engine\D3D12VobArena.cpp" />
     <ClCompile Include="include\meshoptimizer\src\simplifier.cpp" />
     <ClCompile Include="MorphGpu.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Fsr3.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Fsr.cpp" />
     <ClCompile Include="PointShadow\PointShadowBatch.cpp" />
     <ClCompile Include="PointLightSlotSelector.cpp" />
     <ClCompile Include="PointShadow\LegacyCubeTechnique.cpp" />

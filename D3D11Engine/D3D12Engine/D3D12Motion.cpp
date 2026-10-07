@@ -217,7 +217,7 @@ void D3D12GraphicsEngine::UploadMotionConstants() {
 
 bool D3D12GraphicsEngine::MotionGBufferNeeded() const {
     // Does ANYTHING downstream read the velocity or normal target this frame?
-    //   velocity -> RenderTAA (D3D12Taa.cpp), RenderFsr3Upscale (D3D12Fsr3.cpp) and the debug overlay
+    //   velocity -> RenderTAA (D3D12Taa.cpp), RenderFsrUpscale (D3D12Fsr.cpp) and the debug overlay
     //   normals  -> XeGTAO (D3D12GTAO.cpp; it has a depth-derived fallback and is happy without them)
     // Neither is on in a stock config (AntiAliasingMode defaults to AA_SMAA, AoMode to AO_HBAO), and writing
     // two extra full-screen render targets across every opaque prepass draw for nobody is the single most
@@ -228,10 +228,10 @@ bool D3D12GraphicsEngine::MotionGBufferNeeded() const {
     // keeps the velocity/normal barrier state machine paired (BeginMotionGBuffer flips them to RENDER_TARGET,
     // FillCameraVelocity flips them back; running one without the other transitions from the wrong state).
     // Both temporal resolvers are answered by the time this is first asked: AdvanceJitter runs at the top of
-    // OnStartWorldRendering (and builds the FSR3 context there), so IsFsr3Enabled() cannot flip mid-frame and
+    // OnStartWorldRendering (and builds the FSR context there), so IsTemporalFsrEnabled() cannot flip mid-frame and
     // leave the barrier state machine unpaired.
     if ( IsTaaEnabled() ) return true;
-    if ( IsFsr3Enabled() ) return true;   // FSR3 reprojects through the same velocity target TAA does
+    if ( IsTemporalFsrEnabled() ) return true;   // FSR 2/3 reproject through the same velocity target TAA does
     if ( IsGtaoEnabled() ) return true;   // wants the real normals over its depth-derived fallback
     const auto& taa = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.TAA;
     return taa.DisplayVelocity || taa.DisplayNormals;

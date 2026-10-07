@@ -2,26 +2,32 @@
 #include "pch.h"
 
 #include <FidelityFX/api/internal/ffx_interface.h>
-#include <FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h>
 
 // Forward declarations
 class D3D11PfxRenderer;
+struct FfxFsr2Context;
+struct FfxFsr3UpscalerContext;
 
+/** The FidelityFX temporal upscalers, FSR 2 and FSR 3. Both come from the same DLL and take the same
+    inputs; only one context is alive at a time. */
 class D3D11PFX_FSR3 {
 public:
+    enum class EVersion { Fsr2, Fsr3 };
+
     D3D11PFX_FSR3( D3D11PfxRenderer* renderer );
     ~D3D11PFX_FSR3();
 
-    /** Initialize FSR2 resources and context
+    /** Initialize the backend interface and the context
      * @param maxInputSize The maximum resolution the game will render at before upscaling
      * @param maxOutputSize The maximum resolution the game will upscale to (display res)
+     * @param version Which upscaler the context is for
      */
-    bool Init( const INT2& maxInputSize, const INT2& maxOutputSize );
+    bool Init( const INT2& maxInputSize, const INT2& maxOutputSize, EVersion version );
 
-    /** Destroys the FSR2 context. Call this on device lost or shutdown. */
+    /** Destroys the context. Call this on device lost or shutdown. */
     void Destroy();
 
-    /** * Applies the FSR2 Temporal Upscaling pass.
+    /** * Applies the temporal upscaling pass, (re)creating the context if size or version changed.
      * Note: The output resource MUST have been created with D3D11_BIND_UNORDERED_ACCESS.
      * * @param color Aliased color input (SRV)
      * @param depth Depth buffer input (SRV)
@@ -40,6 +46,7 @@ public:
      * @param sharpness Sharpness value (0.0 = max, 1.0 = min, opposite of FSR1's stops)
      */
     XRESULT Apply(
+        EVersion version,
         ID3D11ShaderResourceView* color,
         ID3D11ShaderResourceView* depth,
         ID3D11ShaderResourceView* motionVectors,
@@ -60,11 +67,12 @@ public:
 private:
     D3D11PfxRenderer* Renderer;
 
-    FfxInterface m_ffxInterface;
+    FfxFsr2Context* Fsr2Context;            // exactly one of these two is set while Initialized
     FfxFsr3UpscalerContext* Context;
     void* ScratchMemory;
 
     INT2 MaxInputSize;
     INT2 MaxOutputSize;
+    EVersion Version;
     bool Initialized;
 };

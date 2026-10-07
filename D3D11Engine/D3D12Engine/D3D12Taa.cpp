@@ -17,8 +17,8 @@
 // JITTER. Uses the FSR3 phase sequence (ffxFsr3UpscalerGetJitterPhaseCount/Offset), which is already linked
 // because D3D11PFX_TAA::AdvanceJitter uses it. Note these two come from the DX11 upscaler DLL, not the DX12
 // one: they are backend-agnostic Halton maths exported by both, and TAA must jitter even when FSR 3 is
-// unavailable - so it deliberately does NOT go through D3D12Fsr3.cpp's lazily-loaded Fsr3Dx12Api. Sharing the sequence is deliberate: the planned FSR3 upscaler expects
-// exactly this jitter, so it becomes a drop-in rather than a competing jitter regime. The offset goes into
+// unavailable - so it deliberately does NOT go through D3D12Fsr.cpp's lazily-loaded FfxApi. FSR 2 uses the same
+// sequence, so both temporal upscalers are a drop-in rather than a competing jitter regime. The offset goes into
 // TransformProj._13/_23, which every geometry pass picks up through GothicAPI::GetProjectionMatrix, while
 // MotionCB::UnjitteredViewProj deliberately stays clean so motion vectors do not encode the jitter as motion.
 #include "../pch.h"
@@ -160,13 +160,11 @@ bool D3D12GraphicsEngine::IsTaaEnabled() const {
 
     Direct counterpart of D3D11PFX_TAA::AdvanceJitter, including the clip-space conversion factor of 2.
 
-    Shared with the FSR 3 upscaler: FSR expects exactly this phase sequence, and RenderFsr3Upscale hands
-    m_TaaJitterPixels straight to FfxFsr3UpscalerDispatchDescription::jitterOffset. EnsureFsr3Ready runs first
-    so IsFsr3Enabled() answers the same here as it does later in the frame — the jitter and its resolver must
-    never disagree, in either direction. */
+    Shared with FSR 2/3, which take m_TaaJitterPixels as their jitterOffset. EnsureFsrReady runs first so
+    IsTemporalFsrEnabled() answers here as it does later in the frame: jitter and resolver must never disagree. */
 void D3D12GraphicsEngine::AdvanceJitter() {
-    EnsureFsr3Ready();
-    const bool wantJitter = IsTaaEnabled() || IsFsr3Enabled();
+    EnsureFsrReady();
+    const bool wantJitter = IsTaaEnabled() || IsTemporalFsrEnabled();
     if ( !wantJitter ) {
         // Leave the projection alone. Gothic resets it every frame anyway, but being explicit means a frame in
         // which TAA is switched off mid-session cannot inherit the previous frame's offset.

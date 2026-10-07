@@ -118,14 +118,12 @@ namespace {
 }
 
 void ImGuiSettings::FixupSettings( GothicRendererSettings& s ) {
-    if ( s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
-        if ( s.Upscaler != GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 ) {
-            s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
-        }
+    // AA_FSR and a temporal upscaler (FSR 2/3) only come as a pair; the AA mode wins a conflict.
+    const bool temporalUpscaler = GothicRendererSettings::IsTemporalUpscaler( s.Upscaler );
+    if ( s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR && !temporalUpscaler ) {
+        s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
     }
-    if ( s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_TAA
-        && ( s.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 ) ) {
-        // don't allow TAA and FSR2 at the same time.
+    if ( s.AntiAliasingMode != GothicRendererSettings::E_AntiAliasingMode::AA_FSR && temporalUpscaler ) {
         s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1;
     }
     if ( s.ResolutionScalePercent > 100 && s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
@@ -226,11 +224,8 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
 
     ImGui::SeparatorText( "Render Resolution" );
 
-    // D3D12 has the FSR 3 temporal upscaler (D3D12Fsr3.cpp) but no FSR 1 spatial one.
-    const bool noFsr1 = IsD3D12();
-
     Label( "Resolution Scale", nullptr );
-    if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
+    if ( GothicRendererSettings::IsTemporalUpscaler( settings.Upscaler ) ) {
         settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
         // Display "levels" as typical for FSR
         static constexpr ListItem<int> fsrLevels[] = {
@@ -253,22 +248,20 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         shim.CurrentResolution.y * settings.ResolutionScalePercent / 100 );
 
     static constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
-        { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
-        { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
-        { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
+        { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT, "Bilinear scaling." },
+        { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1,
+            "FidelityFX Super Resolution 1: spatial upscaling, very cheap. Works with any anti-aliasing." },
+        { "FSR 2", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2,
+            "FidelityFX Super Resolution 2: temporal upscaling and anti-aliasing. Cheaper than FSR 3." },
+        { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3,
+            "FidelityFX Super Resolution 3: temporal upscaling and anti-aliasing, best quality." },
     };
-    static constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
-        { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
-        { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
-    };
-    // A stored FSR 1 choice must survive a switch back to D3D11, so it is NOT written back here - it
-    // simply behaves as "Simple" while the combo shows nothing selected.
-    if ( noFsr1 ) {
-        ComboRow( "Upscaler", "##Upscaler", upscalersNoFsr1, &settings.Upscaler,
-            "FSR 1 needs the Direct3D 11 backend." );
-    } else {
-        ComboRow( "Upscaler", "##Upscaler", upscalers, &settings.Upscaler );
-    }
+    ComboRow( "Upscaler", "##Upscaler", upscalers, &settings.Upscaler, nullptr,
+        [&settings] {
+            if ( GothicRendererSettings::IsTemporalUpscaler( settings.Upscaler ) ) {
+                settings.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_FSR;
+            }
+        } );
 
     static constexpr ListItem<GothicRendererSettings::E_SharpeningMode> sharpeners[] = {
         { "Disabled", GothicRendererSettings::E_SharpeningMode::SHARPEN_NONE },
@@ -291,11 +284,13 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         { "Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE },
         { "SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA },
         { "TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA, "Temporal Anti-Aliasing" },
-        { "FSR 3", GothicRendererSettings::E_AntiAliasingMode::AA_FSR, "FidelityFX Super Resolution 3" },
+        { "FSR", GothicRendererSettings::E_AntiAliasingMode::AA_FSR,
+            "FidelityFX Super Resolution 2 or 3, chosen under Upscaler" },
     };
     ComboRow( "Anti-Aliasing", "##AntiAliasing", antiAliasing, &settings.AntiAliasingMode, nullptr,
         [&settings] {
-            if ( settings.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
+            if ( settings.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR
+                && !GothicRendererSettings::IsTemporalUpscaler( settings.Upscaler ) ) {
                 settings.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
             }
         } );

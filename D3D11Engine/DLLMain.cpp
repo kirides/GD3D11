@@ -533,6 +533,7 @@ static void PreloadGameFolderDlls() {
     // Vulkan compiles SPIR-V with the same dxcompiler.dll but never needs dxil.dll (it only signs DXIL).
     if ( Engine::IsVulkanRequested() ) {
         preload( "dxcompiler.dll" );
+        preload( "ffx_fsr3upscaler_vk_x86.dll" );
         return;
     }
 

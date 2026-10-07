@@ -1375,7 +1375,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12PostFX.cpp" />
     <ClCompile Include="VulkanEngine\VulkanRhiPipeline.cpp" />
     <ClCompile Include="PointShadow\PointShadowBatch.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Fsr3.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Fsr.cpp" />
     <ClCompile Include="PointLightSlotSelector.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Water.cpp" />
     <ClCompile Include="D3D11TiledDeferredShading.cpp" />

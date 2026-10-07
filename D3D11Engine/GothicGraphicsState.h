@@ -650,7 +650,7 @@ struct GothicRendererSettings {
     enum E_Upscaler {
         UPSCALER_DEFAULT = 0,
         UPSCALER_FSR_1 = 1,
-        // UPSCALER_FSR_2 = 2, // removed
+        UPSCALER_FSR_2 = 2,
         UPSCALER_FSR_3 = 3,
         _UPSCALER_NUM_MODES
     };
@@ -1065,7 +1065,6 @@ struct GothicRendererSettings {
         ShadowStrength = 0.20f;
         
         EnableBloom = true;
-        Upscaler = UPSCALER_DEFAULT; // no FSR1 available yet.
     }
 
     /** Resolves the capability-driven FeatureSet entries: FEATURE_AUTO takes the device's answer, a
@@ -1625,6 +1624,11 @@ struct GothicRendererSettings {
     // TAA stores its accumulated weight in the history alpha, which R11G11B10 lacks.
     bool GetUseCompressedBackBuffer() const {
         return CompressBackBuffer && AntiAliasingMode != E_AntiAliasingMode::AA_TAA;
+    }
+
+    // FSR 2/3 are temporal: they replace the TAA resolve and need AA_FSR. FSR 1 is spatial.
+    static bool IsTemporalUpscaler( E_Upscaler upscaler ) {
+        return upscaler == E_Upscaler::UPSCALER_FSR_2 || upscaler == E_Upscaler::UPSCALER_FSR_3;
     }
 
     bool GetIsTAAEnabled() const {

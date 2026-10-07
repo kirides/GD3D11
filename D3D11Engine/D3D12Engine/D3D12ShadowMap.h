@@ -74,6 +74,7 @@ public:
     // Grass caster PSO. Separate from Init() because it reuses m_Pipelines.Grass.RootSig, so it can only be
     // built after D3D12PipelineState::CreateGrass() — non-fatal (grass just casts no shadow).
     bool CreateGrassCaster();
+    bool CreateCasterPipelines();   // all but grass; again after a pipeline reload (new root signatures)
     // Per-cascade ExecuteIndirect argument rings. Called from the engine's CreateWorldIndirect/CreateVobIndirect
     // so the command-signature layout and the ring layout stay defined in one place each.
     bool CreateWorldArgRings( const D3D12_RESOURCE_DESC& bufferDesc );

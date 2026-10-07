@@ -1419,6 +1419,23 @@ namespace VulkanRhi {
         outLayout = general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
         return true;
     }
+    uint64_t NativeImage( Rhi::Resource* resource, VkImageCreateInfo* outInfo ) {
+        const ResourceImpl* r = ToImpl( resource );
+        if ( !r || !r->m_Image ) return 0;
+        if ( outInfo ) {
+            *outInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            outInfo->imageType = r->m_Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+            outInfo->format = r->m_Format;
+            outInfo->extent = r->m_Extent;
+            outInfo->mipLevels = r->m_Mips;
+            outInfo->arrayLayers = r->m_Layers;
+            outInfo->samples = VK_SAMPLE_COUNT_1_BIT;
+            outInfo->tiling = VK_IMAGE_TILING_OPTIMAL;
+            outInfo->usage = r->m_Usage;
+        }
+        return VkUtil::HandleToU64( r->m_Image );
+    }
+
     Microsoft::WRL::ComPtr<Rhi::Device> CreateDevice() {
         ComPtr<DeviceImpl> device;
         device.Attach( new DeviceImpl() );

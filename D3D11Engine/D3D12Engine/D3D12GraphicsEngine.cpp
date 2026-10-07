@@ -108,7 +108,7 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
     g_GpuScopeMarkers.Buffer.Reset();
     // After the idle+drain above: the FFX context releases its internal D3D12 resources synchronously, so it
     // must not outlive in-flight work — and must go before the device does.
-    ReleaseFsr3();
+    ReleaseFsr();
     if ( m_FenceEvent ) CloseHandle( m_FenceEvent );
     if ( m_UploadEvent ) CloseHandle( m_UploadEvent );
     if ( m_FrameLatencyWaitableObject ) CloseHandle( m_FrameLatencyWaitableObject );
@@ -1491,7 +1491,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetDisplayRtv() const {
 }
 
 /** Counts the display-chain passes for this frame; zero means the tonemap resolve renders straight into the
-	real display target. Runs at EXECUTE time, so m_Fsr3RanThisFrame is already final. */
+	real display target. Runs at EXECUTE time, so m_FsrRanThisFrame is already final. */
 void D3D12GraphicsEngine::PlanDisplayChain() {
 	m_DisplaySlot = -1;
 	m_DisplayChainRemaining = 0;
@@ -1587,7 +1587,7 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 
 	// NATIVE viewport over the render-res scene texture: the fullscreen triangle's uv spans [0,1] of
 	// m_SceneColor and s0 is a bilinear clamp sampler, so this draw IS the render-scale up/downscale.
-	// When FSR 3 ran it already produced a display-res image (GetTonemapSourceSrvSlot) and this becomes 1:1.
+	// When an FSR upscaler ran it already produced a display-res image (GetTonemapSourceSrvSlot); this is 1:1.
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_BackbufferResolution.x), static_cast<float>(m_BackbufferResolution.y), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
@@ -1901,6 +1901,7 @@ bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
         for ( const auto& n : failedOptional ) { if ( !names.empty() ) names += ", "; names += n; }
         Logging::Wrn( "D3D12: mip-bias rebuild finished with degraded passes ({}).", names );
     }
+    RebuildRootSignatureDependents();
     m_AppliedMipLodBias = newBias;
     return true;
 }
@@ -1917,10 +1918,9 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     // always runs before CreateDisplayResolutionTargets (every call site below), so one Clear() covers both.
     m_AliasArena.Clear();
 
-    // The FFX context is built for one specific (render, display) size pair and its internal resources are
-    // freed immediately by ffxFsr3UpscalerContextDestroy — so it has to go here, on a path whose callers have
-    // already idled the GPU, rather than lazily from the frame. EnsureFsr3Ready rebuilds it next frame.
-    ReleaseFsr3();
+    // The FFX context is built for one (render, display) size pair and frees its resources immediately, so it
+    // goes here, behind the callers' GPU idle. EnsureFsrReady rebuilds it next frame.
+    ReleaseFsr();
     if ( !CreateDepthBuffer( renderSize ) ) return false;
     if ( !CreateSceneColorTarget( renderSize ) ) return false;
     CreateBloomResources( renderSize );
@@ -1956,7 +1956,7 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
 /** Everything sized to the NATIVE backbuffer — the post-tonemap passes. All non-fatal (each guards on its
     own resources); the underwater pair is lazily built, so it is only re-sized here if it is already up. */
 void D3D12GraphicsEngine::CreateDisplayResolutionTargets( INT2 displaySize ) {
-    ReleaseFsr3();                          // display size is half of the pair the FFX context is built for
+    ReleaseFsr();                           // display size is half of the pair the FFX context is built for
     CreateLdrCopyResource( displaySize );   // display-chain scratches; SMAA/sharpen/underwater no-op without them
     // SMAA's edges/blend and the underwater blur pair no longer need a resize hook — both are
     // D3D12RenderGraph-managed transients acquired fresh at the current resolution every call (see
@@ -2137,6 +2137,9 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     // Same spot, same reasoning, for a render-scale change (ImGui slider / ini).
     ApplyPendingResolutionScale();
+
+    // Same spot, same reasoning, for a change of FSR upscaler (its context frees resources immediately).
+    ApplyPendingUpscalerChange();
 
     // Same spot, same reasoning, for an AO-resolution change (ImGui combo / ini).
     ApplyPendingAoResolutionChange();
@@ -2994,7 +2997,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     // and a savegame thumbnail wants the plain SDR image regardless — hence hdrOutput=false below too.
     m_CmdList->SetPipelineState( m_Pipelines.TonemapCapturePSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
-    // Same source the on-screen resolve used: m_Fsr3Output when FSR 3 upscaled this frame, else m_SceneColor.
+    // Same source the on-screen resolve used: m_FsrOutput when FSR upscaled this frame, else m_SceneColor.
     m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( GetTonemapSourceSrvSlot() ) );
     // Brightness/contrast go in here, not through Present's pass: the capture never sees the 2D UI anyway,
     // and D3D11's GetBackbufferData likewise draws HDRBackBuffer through PS_PFX_GammaCorrectInv.
@@ -3300,8 +3303,26 @@ void D3D12GraphicsEngine::ApplyPendingShaderReload() {
         Logging::Wrn( "D3D12: shader reload finished with degraded passes ({}) - those effects are disabled/simplified until fixed and reloaded again.",
                    names );
     }
+    RebuildRootSignatureDependents();
     D3D12ShaderBackend::LogAndResetCacheStats( "reload" );
     Logging::Inf( "D3D12: shaders reloaded." );
+}
+
+
+/** After a successful ReloadAll: rebuilds what was created against the old root signatures outside
+    m_Pipelines (shadow caster PSOs, indirect command signatures). The GPU is idle in both callers. */
+void D3D12GraphicsEngine::RebuildRootSignatureDependents() {
+    if ( !m_SceneEnabled ) return;
+    if ( !m_ShadowMap.CreateCasterPipelines() ) {
+        Logging::Wrn( "D3D12: rebuilding the shadow caster pipelines failed; sun shadows may be missing." );
+    }
+    if ( m_Pipelines.Grass.RootSig && !m_ShadowMap.CreateGrassCaster() ) {
+        Logging::Wrn( "D3D12: rebuilding the grass shadow caster failed; grass casts no shadow." );
+    }
+    if ( m_WorldIndirectCmdSig ) CreateWorldIndirectSignature();
+    if ( m_VobIndirectCmdSig ) CreateVobIndirectSignature();
+    if ( m_SkeletalIndirectCmdSig ) CreateSkeletalIndirectSignature();
+    if ( m_Pipelines.PointShadow.RootSig ) m_PointShadows.CreateCasterSignature();
 }
 
 

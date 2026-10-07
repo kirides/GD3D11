@@ -210,7 +210,12 @@ bool D3D12ShadowMap::Init() {
 	if ( m_SrvSlot == UINT_MAX ) return false;
 
 	if ( !CreateTextureAndViews( m_MapSize ) ) return false;
+	return CreateCasterPipelines();
+}
 
+
+/** The caster PSOs, built on m_Pipelines.World/Skeletal root signatures: rebuilt whenever those are. */
+bool D3D12ShadowMap::CreateCasterPipelines() {
 	// Caster PSO. Void PS (PSShadowClip) so no RTV is needed; front-face cull + slope-scaled depth bias fight
 	// shadow acne (front-culling casts back faces, standard for opaque shadow maps).
 	if ( !m_E->m_ShaderBackend.CompileFromFile( "DepthPrepass.hlsl", "PSShadowClip", Shadermodel_PS, m_CasterPsBlob.ReleaseAndGetAddressOf() ) )
