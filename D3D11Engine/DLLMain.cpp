@@ -14,6 +14,7 @@
 #include "VersionCheck.h"
 #include "InstructionSet.h"
 #include "D3D11GraphicsEngine.h"
+#include "CrashDump.h"
 
 #include <shlwapi.h>
 #include <psapi.h>
@@ -467,7 +468,7 @@ void InitializeEngine() {
     HookedFunctions::OriginalFunctions.InitHooks();
 
     EnableCrashingOnCrashes();
-    //SetUnhandledExceptionFilter(MyUnhandledExceptionFilter);
+    CrashDump::Install();
 }
 
 static decltype(&ExitProcess) originalExitProcess = ExitProcess;
