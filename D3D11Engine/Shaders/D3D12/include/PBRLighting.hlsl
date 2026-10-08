@@ -554,10 +554,9 @@ float3x3 TangentFrameExplicit( float3 N, float3 T, float sign )
 // including its dot(T,T) < 0.25 threshold for "no real tangent here".
 float3 PerturbNormal( float3 N, float3 p, float4 vertexTangent, Texture2D nrmTex, float2 uv, SamplerState samp, float strength = 1.0 )
 {
-    if ( dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25 )
-    {
-        return PerturbNormal( N, p, nrmTex, uv, samp, strength );
-    }
+    // The tangent test is per pixel, so the derivative frame is built outside it: ddx/ddy in a branch
+    // that splits a quad read inactive lanes and give garbage normals (dark dots along the threshold).
+    float3x3 derivFrame = CotangentFrame( N, -p, uv );
 
 #if NORMAL_MAP_RESTORE_Z == 1
     float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
@@ -575,7 +574,9 @@ float3 PerturbNormal( float3 N, float3 p, float4 vertexTangent, Texture2D nrmTex
     nrm.xy *= strength;
     nrm = normalize( nrm );
 #endif
-    return normalize( mul( nrm, TangentFrameExplicit( normalize( N ), vertexTangent.xyz, vertexTangent.w ) ) );
+    float3x3 vertexFrame = TangentFrameExplicit( normalize( N ), vertexTangent.xyz, vertexTangent.w );
+    float3x3 frame = dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25 ? derivFrame : vertexFrame;
+    return normalize( mul( nrm, frame ) );
 }
 
 // Backlit vegetation class packed into MatOrmIndex by D3D12Scene.cpp: 1 = leaf foliage, 2 = thin two-sided plant.
