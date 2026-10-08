@@ -121,6 +121,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
+    N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), tx, smp );
     float3 orm = SampleOrm( MatOrmIndex, i.uv );
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
@@ -235,6 +236,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
+    N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), difTex, smp );
     float3 orm = SampleOrm( MatOrmIndex, i.uv );
     float3 albedo = SrgbToLinear( ApplyDetailTexture( t.rgb, i.uv, fx, smp ) );
     albedo = DelightDiffuse( albedo );

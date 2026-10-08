@@ -140,6 +140,7 @@ float4 ShadeWorld( VS_OUT i, uniform bool alphaTest )
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, i.wtan, nrmTex, i.uv, smp, MatNormalStrength );
     }
+    N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), difTex, smp );
     float3 orm = SampleOrm( MatOrmIndex, i.uv );   // AO/Roughness/Metallic, decoded per the material's FxMap layout
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
     albedo = DelightDiffuse( albedo );
