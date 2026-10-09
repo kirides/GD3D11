@@ -70,6 +70,7 @@ public:
     // caster PIPELINES live in m_Pipelines.PointShadow (D3D12PipelineState::CreatePointShadow). Non-fatal at
     // init: on failure the point lights simply stay unshadowed.
     bool Init();
+    bool CreateCasterSignature();   // again after a pipeline reload (new root signature)
 
     UINT GetStaticSrvSlot() const { return m_StaticSrvSlot; }   // bindless heap slot of the static core cube array
     UINT GetDynSrvSlot() const { return m_DynSrvSlot; }         // bindless heap slot of the overlay cube array

@@ -213,7 +213,7 @@ inline bool GetSkipDefaultHeapCopyAfterUpload() {
 
 // Screen-space reflection step-count tiers, shared by water (D3D12Water.cpp) and opaque-surface SSR
 // (D3D12AO.cpp's UploadAoScreenConstants — see D3D12_SSR_WET_SURFACES_PLAN.md). `quality` is
-// GothicRendererSettings::E_WaterSSRQuality (0=Disabled/1=Low/2=Medium/3=High) passed as a plain int, to
+// GothicRendererSettings::E_WaterSSRQuality (0=Disabled/1=Low/2=Medium/3=High/4=Ultra) passed as a plain int, to
 // avoid pulling GothicGraphicsState.h into this widely-included header — both callers already have the
 // real enum type in scope and pass it in, implicitly converted.
 inline void SsrStepsForQuality( int quality, UINT& maxSteps, UINT& refineSteps ) {
@@ -221,6 +221,7 @@ inline void SsrStepsForQuality( int quality, UINT& maxSteps, UINT& refineSteps )
     case 1: maxSteps = 12; refineSteps = 4; break;   // WATER_SSR_LOW
     case 2: maxSteps = 24; refineSteps = 5; break;   // WATER_SSR_MEDIUM
     case 3: maxSteps = 48; refineSteps = 6; break;   // WATER_SSR_HIGH
+    case 4: maxSteps = 128; refineSteps = 8; break;  // WATER_SSR_ULTRA
     default: maxSteps = 0; refineSteps = 0; break;   // WATER_SSR_DISABLED
     }
 }
@@ -258,6 +259,8 @@ inline constexpr DXGI_FORMAT kHdrDisplayFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 // be derived in that algorithm's own pass rather than widened into this shared buffer.
 inline constexpr DXGI_FORMAT kVelocityFormat = DXGI_FORMAT_R16G16_FLOAT;
 inline constexpr DXGI_FORMAT kGBufferNormalFormat = DXGI_FORMAT_R16G16_FLOAT;
+// FSR 2/3 reactive mask (render res): 0 = trust history, 1 = take the current frame. Written by the rain draw.
+inline constexpr DXGI_FORMAT kFsrReactiveFormat = DXGI_FORMAT_R8_UNORM;
 
 // Sentinel the velocity target is cleared to each frame. FillCameraVelocity (end of world rendering, when depth
 // is final) replaces every pixel STILL holding it with a camera-only depth reprojection — that is what covers

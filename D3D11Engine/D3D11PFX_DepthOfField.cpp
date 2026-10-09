@@ -133,9 +133,11 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
         blurVPS->Apply();
         blurVPS->UpdateBuffer( "DepthOfFieldConstantBuffer", &cb, sizeof( cb ) );
         engine->GetContext()->OMSetRenderTargets( 1, vBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
-        engine->GetContext()->PSSetShaderResources( 0, 1, halfBuffer->GetShaderResView().GetAddressOf() );
+        // t0 = horizontal result, t1 = scene (colour for sky taps)
+        ID3D11ShaderResourceView* vSRVs[2] = { halfBuffer->GetShaderResView().Get(), backbuffer };
+        engine->GetContext()->PSSetShaderResources( 0, 2, vSRVs );
         FxRenderer->DrawFullScreenQuad();
-        engine->GetContext()->PSSetShaderResources( 0, 1, nullSRVs );
+        engine->GetContext()->PSSetShaderResources( 0, 2, nullSRVs );
         halfBuffer = std::move( vBuffer );
     }
     engine->GetContext()->RSSetViewports( 1, &oldVP );
@@ -274,11 +276,13 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11S
         auto blurVCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_GaussV );
         blurVCS->Apply();
         blurVCS->UpdateBuffer( "DepthOfFieldConstantBuffer", &cb, sizeof( cb ) );
-        context->CSSetShaderResources( 0, 1, halfBuffer->GetShaderResView().GetAddressOf() );
+        // t0 = horizontal result, t1 = scene (colour for sky taps)
+        ID3D11ShaderResourceView* vSRVs[2] = { halfBuffer->GetShaderResView().Get(), backbuffer };
+        context->CSSetShaderResources( 0, 2, vSRVs );
         context->CSSetUnorderedAccessViews( 0, 1, vBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
         context->Dispatch( (res.x / 2 + 7) / 8, (res.y / 2 + 7) / 8, 1 );
         context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
-        context->CSSetShaderResources( 0, 1, nullSRVs );
+        context->CSSetShaderResources( 0, 2, nullSRVs );
         halfBuffer = std::move( vBuffer );
     }
 

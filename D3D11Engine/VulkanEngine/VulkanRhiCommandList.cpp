@@ -121,6 +121,8 @@ namespace VulkanRhi {
 
         VkCommandBuffer BeginNative();
         void EndNative();
+        VkCommandBuffer BeginNativeCompute() { EndRenderingScope(); return m_Cmd; }
+        void SetLayout( ResourceImpl* r, VkImageLayout layout );
 
         VkCommandBuffer m_Cmd = VK_NULL_HANDLE;
 
@@ -245,6 +247,15 @@ namespace VulkanRhi {
 
     void EndNativeRendering( Rhi::CommandList* list ) {
         if ( list ) static_cast<CommandListImpl*>( list )->EndNative();
+    }
+
+    VkCommandBuffer_T* BeginNativeCompute( Rhi::CommandList* list ) {
+        return list ? static_cast<CommandListImpl*>( list )->BeginNativeCompute() : nullptr;
+    }
+
+    void SetImageLayout( Rhi::CommandList* list, Rhi::Resource* image, int layout ) {
+        ResourceImpl* r = ToImpl( image );
+        if ( list && r && r->m_Image ) static_cast<CommandListImpl*>( list )->SetLayout( r, static_cast<VkImageLayout>( layout ) );
     }
 
     HRESULT DeviceImpl::CreateCommandList( D3D12_COMMAND_LIST_TYPE type, Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState,
@@ -1074,6 +1085,30 @@ namespace VulkanRhi {
         }
         FlushBarriers( batch );
         TouchedOnCopyList( r );
+    }
+
+    void CommandListImpl::SetLayout( ResourceImpl* r, VkImageLayout layout ) {
+        EndRenderingScope();
+        BarrierBatch batch;
+        for ( uint32_t sub = 0; sub < r->m_Layouts.size(); ++sub ) {
+            VkImageLayout& current = r->m_Layouts[sub];
+            if ( current == layout ) continue;
+            if ( batch.ImageCount == kMaxBatch ) FlushBarriers( batch );
+            VkImageMemoryBarrier2& b = batch.Images[batch.ImageCount++];
+            b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+            b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            b.oldLayout = current;
+            b.newLayout = layout;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = r->m_Image;
+            b.subresourceRange = { r->m_Aspect, sub % r->m_Mips, 1, sub / r->m_Mips, 1 };
+            current = layout;
+        }
+        FlushBarriers( batch );
     }
 
     void CommandListImpl::TouchedOnCopyList( ResourceImpl* r ) {

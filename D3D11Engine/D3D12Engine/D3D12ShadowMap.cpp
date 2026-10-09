@@ -210,7 +210,12 @@ bool D3D12ShadowMap::Init() {
 	if ( m_SrvSlot == UINT_MAX ) return false;
 
 	if ( !CreateTextureAndViews( m_MapSize ) ) return false;
+	return CreateCasterPipelines();
+}
 
+
+/** The caster PSOs, built on m_Pipelines.World/Skeletal root signatures: rebuilt whenever those are. */
+bool D3D12ShadowMap::CreateCasterPipelines() {
 	// Caster PSO. Void PS (PSShadowClip) so no RTV is needed; front-face cull + slope-scaled depth bias fight
 	// shadow acne (front-culling casts back faces, standard for opaque shadow maps).
 	if ( !m_E->m_ShaderBackend.CompileFromFile( "DepthPrepass.hlsl", "PSShadowClip", Shadermodel_PS, m_CasterPsBlob.ReleaseAndGetAddressOf() ) )
@@ -607,12 +612,24 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 	++m_LazyFrameCounter;
 	const bool lazyUpdate = shadowDirSettings.DebugSettings.ShadowCascades.LazyCascadeUpdate && m_CascadeMatricesValid;
 	for ( UINT c = 0; c < kShadowCascades; ++c ) m_ShouldUpdateCascade[c] = true;
-	if ( lazyUpdate && kShadowCascades > 1 && !m_CascadeHasAnimatedCaster[kShadowCascades - 1] )
+	// A cascade skipped last frame holds stale depth, so it may not be frozen
+	if ( lazyUpdate && kShadowCascades > 1 && !m_CascadeHasAnimatedCaster[kShadowCascades - 1]
+		&& !m_CascadeSkipped[kShadowCascades - 1] )
 		m_ShouldUpdateCascade[kShadowCascades - 1] = (m_LazyFrameCounter % kLazyLastCascadeInterval) == 0;
 	m_CascadeMatricesValid = true;
 
+	// Skip the cascades whose whole slice lies within the ray-traced sun's own range. A pixel at view depth d is
+	// at most d * cornerScale from the camera; any pixel still projecting into a skipped cascade uses the next.
+	const float rtSunOnly = m_E->RtSunOnlyRadius();
+	const float cornerScale = sqrtf( 1.0f + 1.0f / (projXScale * projXScale) + 1.0f / (projYScale * projYScale) );
 	for ( UINT c = 0; c < kShadowCascades; ++c ) {
-		if ( !m_ShouldUpdateCascade[c] ) continue;   // frozen: keep m_CascadeViewProj/m_CascadeFrustum/m_CascadeTexelWorld
+		m_CascadeSkipped[c] = rtSunOnly > 0.0f && splits[c + 1] * cornerScale <= rtSunOnly;
+		if ( m_CascadeSkipped[c] ) m_ShouldUpdateCascade[c] = false;
+	}
+
+	for ( UINT c = 0; c < kShadowCascades; ++c ) {
+		// Frozen: keep m_CascadeViewProj/m_CascadeFrustum/m_CascadeTexelWorld. Skipped ones still get fresh matrices.
+		if ( !m_ShouldUpdateCascade[c] && !m_CascadeSkipped[c] ) continue;
 
 		// 8 world-space corners of the camera frustum slice [splits[c], splits[c+1]].
 		XMFLOAT3 corners[8];
@@ -747,7 +764,11 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 	} cb;
 	static_assert( sizeof( cb ) == D3D12GraphicsEngine::kWetnessCbOffset, "ShadowCB head size must match the HLSL layout" );
 	const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
-	for ( UINT c = 0; c < kShadowCascades; ++c ) cb.CascadeViewProj[c] = m_CascadeViewProj[c];
+	// A skipped cascade maps every point to clip z = -1, which ComputeSunShadow's range test rejects
+	XMFLOAT4X4 neverSelected = {};
+	neverSelected._34 = -1.0f;
+	neverSelected._44 = 1.0f;
+	for ( UINT c = 0; c < kShadowCascades; ++c ) cb.CascadeViewProj[c] = m_CascadeSkipped[c] ? neverSelected : m_CascadeViewProj[c];
 	cb.SunDirWS = m_SunDirWS;
 	cb.ShadowMapSize = static_cast<float>( m_MapSize );
 	cb.CascadeTexelWorld = XMFLOAT3( m_CascadeTexelWorld[0], m_CascadeTexelWorld[1], m_CascadeTexelWorld[2] );
@@ -947,7 +968,7 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 		// jobs are launched, so FinishPrepare has nothing to wait for and skips Phase C outright.
 		// The lazy gate is overridden here: a frozen cascade skips RecordCascade entirely, so at dusk it
 		// would go on shadowing with its daytime depth for two more frames. Clearing is cheap.
-		for ( UINT c = 0; c < kShadowCascades; ++c ) m_ShouldUpdateCascade[c] = true;
+		for ( UINT c = 0; c < kShadowCascades; ++c ) m_ShouldUpdateCascade[c] = !m_CascadeSkipped[c];
 		m_CascadeMatricesValid = false;   // the frozen matrices no longer describe any rendered slice
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
 			m_WorldDrawCount[c] = 0;
@@ -983,8 +1004,11 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 	// Skeletal casters: the whole registered list against the near cascades' frusta, on the main thread since it
 	// mutates Gothic state, ahead of the jobs. MOB snapshots the scene's casters hold are left out.
 	for ( UINT c = 0; c < kShadowCascades; ++c ) { SkelDraws[c].clear(); AttachDraws[c].clear(); }
-	m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f,
-		kSkeletalShadowCascades, false, nullptr, m_SceneCasters );
+	bool skeletalCascades = false;
+	for ( UINT c = 0; c < kSkeletalShadowCascades; ++c ) skeletalCascades |= m_ShouldUpdateCascade[c];
+	if ( skeletalCascades )
+		m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f,
+			kSkeletalShadowCascades, false, nullptr, m_SceneCasters );
 
 	// --- Phase B+C+D: per-cascade cull -> build -> record — LAUNCHED HERE, JOINED IN FinishShadowPasses ----
 	// Mirrors D3D11ShadowMap: PrepareRender() enqueues one CollectVisibleVobs job per cascade on the WORKER

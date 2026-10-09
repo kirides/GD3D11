@@ -245,6 +245,8 @@ public:
     /** Allocates a persistent slot in the shader-visible SRV heap. Returns UINT_MAX if exhausted.
         Used by D3D12Texture to create its SRV once at load time. */
     UINT AllocateSrvSlot();
+    /** `count` adjacent slots for shaders that index from a base; never freed. UINT_MAX if exhausted. */
+    UINT AllocateSrvRange( UINT count );
     void FreeSrvSlot( UINT slot );
     D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandle( UINT slot ) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle( UINT slot ) const;
@@ -306,10 +308,11 @@ private:
     // --- Render-resolution scaling (RendererSettings.ResolutionScalePercent) ---------------------------------
     static INT2 ComputeRenderResolution( INT2 backbufferSize );        // backbuffer * ResolutionScalePercent
     static float ComputeMipLodBias( INT2 renderSize, INT2 displaySize );
-    bool RebakeMipLodBias( float newBias );                            // false = old pipelines kept
+    bool RebakeMaterialSampler( float newBias, UINT newAnisotropy );  // false = old pipelines kept
     bool CreateRenderResolutionTargets( INT2 renderSize );             // fatal only for depth/scene color
     void CreateDisplayResolutionTargets( INT2 displaySize );           // post-tonemap targets, all non-fatal
     void ApplyPendingResolutionScale();
+    void ApplyPendingTextureFiltering();   // RendererSettings.AnisotropicFiltering, debounced like the render scale
 
     // --- AO resolution scaling (RendererSettings.AoResolution, D3D12 only) -----------------------------------
     // `renderSize` halved when AoResolution == Half, unchanged otherwise. Feeds CreateAOResources and
@@ -463,7 +466,7 @@ private:
     XRESULT SubmitUIDraw( const D3D12_VERTEX_BUFFER_VIEW& vbv, unsigned int numVertices, unsigned int startVertex, bool ffVbLayout );
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
-    void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
+    void WaitForGpuIdle() override;   // full CPU/GPU flush (used on resize / teardown)
     void MoveToNextFrame( UINT64 currentFenceValue, uint64_t submittedOrdinal );   // advance, wait for next allocator
 
     /** CPU-blocks on m_Fence reaching `value`, but bounded + diagnosed instead of WaitForSingleObject(INFINITE).
@@ -544,6 +547,7 @@ private:
     // Closed+Executed+Presented (nothing is mid-recording) and before this frame's allocator Reset, so it is
     // safe to fully stall the GPU here. See the .cpp for the flush + rollback-on-fatal-failure sequence.
     void ApplyPendingShaderReload();
+    void RebuildRootSignatureDependents();   // after ReloadAll: caster PSOs + command signatures
 
     Microsoft::WRL::ComPtr<Rhi::Resource>         m_BackBuffers[kSwapchainImageMax];
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap>   m_BackBufferRtvHeap;   // one RTV per swapchain image
@@ -681,6 +685,9 @@ private:
     // ResolutionScalePercent) - it's a discrete combo box, not a per-drag-frame slider.
     AoResolutionScale m_AppliedAoResolution = AoResolutionScale::Full;
     float m_AppliedMipLodBias = 0.0f;   // see D3D12RootLayout::SetAnisoMipLodBias
+    UINT  m_AppliedAnisotropy = 16;     // see D3D12RootLayout::SetMaterialAnisotropy
+    int   m_PendingAnisotropy = 0;      // 0 = nothing pending
+    int   m_AnisotropyStableFrames = 0;
     // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
     // BaseGraphicsEngine, shared with D3D11's identical deferral). Applied at the very start of the
     // NEXT OnBeginFrame — never mid-frame — so the resize always runs while the command list is
@@ -824,10 +831,11 @@ private:
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferMax] = {};
     UINT m_WorldDrawCount = 0;                       // commands built this frame (shared by both world passes)
     // Alpha-test partition. BuildWorldDrawCommands orders the command set so [0, m_WorldOpaqueDrawCount)
-    // needs NO alpha cutout and the rest does. Only the depth prepass cares: it submits the prefix through a
-    // PS-less PSO (double-rate Z) and the suffix through the clipping one. The color pass draws the whole
-    // range — opaque geometry is order-independent, so the reordering is invisible to it.
+    // needs NO alpha cutout and the rest does. The depth prepass submits the prefix through a PS-less PSO
+    // (double-rate Z); the color pass draws it depth-EQUAL without clip (World.OpaquePSO).
     UINT m_WorldOpaqueDrawCount = 0;
+    // Set by DrawDepthPrepass once it submitted this frame's world commands; DrawWorldMesh's EQUAL run needs it.
+    bool m_WorldPrepassDrawn = false;
     // Coalesced mirror of the opaque prefix, appended PAST m_WorldDrawCount so the color pass' view of the
     // ring is untouched. The wrapped world index buffer is packed section-major, so a visible section's
     // opaque materials form one contiguous index run, and with no pixel shader bound their per-material b6
@@ -837,6 +845,7 @@ private:
     UINT m_WorldDepthMergedCount = 0;
     unsigned int m_WorldDrawnIndices = 0;            // total indices in this frame's command set (triangle counter)
     bool m_WorldDrawArgsOverflowLogged = false;
+    bool CreateWorldIndirectSignature();
     bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
     void BuildWorldDrawCommands();                   // collect visible sections + fill arg ring (once/frame, pre-prepass)
     // Merges the opaque world commands in `opaque` (sorted in place) into the fewest DrawIndexed commands
@@ -953,10 +962,16 @@ private:
     bool m_RtPointShadowsActive = false;
     // Shadow-mask SRV the lit opaque passes read (UINT_MAX outside them); see BindFrameLights
     UINT m_RtShadowMaskSlot = UINT_MAX;
+    // The same mask for the whole frame: quad marks lie on the surface it was traced for
+    UINT m_RtShadowMaskFrameSlot = UINT_MAX;
+    // The last TraceRtShadows produced a mask with the sun in it; the next frame's cascades may rely on it
+    bool m_RtSunTraced = false;
     /** Builds the frame's ray-traced scene and the shadow mask; after the depth prepass, before the lit passes. */
     void TraceRtShadows();
     /** TLAS reach for every ray-traced consumer this frame. */
     float RtSceneVobRadius() const;
+    /** Camera distance inside which every opaque pixel takes the ray-traced sun alone; 0 when none does. */
+    float RtSunOnlyRadius() const;
     // Read-only views for D3D12RayTracing; the lists live in D3D12Scene.cpp.
     size_t VobVisualBucketCount() const;
     MeshVisualInfo* VobVisualForBucket( size_t bucket ) const;
@@ -1000,6 +1015,7 @@ private:
     bool m_VobDrawArgsOverflowLogged = false;
     // The shadow-caster variant of this pipeline (VSDepth + PSShadowClipBindless) and the per-cascade arg rings
     // it submits from live in D3D12ShadowMap; this signature is shared by both.
+    bool CreateVobIndirectSignature();
     bool CreateVobIndirect();                         // command signature + per-frame arg rings + shadow-caster PSO (once, at init)
     // Fill an arg buffer from the given VOB uploads; returns command count.
     //   resolveMaps  false leaves normal/orm at defaults (depth/shadow passes only alpha-clip on diffuse).
@@ -1090,6 +1106,7 @@ private:
         first sight. False until a flush has uploaded it; on true, `draw` holds the mesh's draw arguments. */
     bool BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
     bool BindAttachmentMesh( const MeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
+    bool CreateSkeletalIndirectSignature();
     bool CreateSkeletalIndirect();                   // command signature + both per-frame arg rings (once, at init)
 
     // ---- GPU-driven VOB culling (Hi-Z occlusion + frustum, replaces the CPU per-VOB frustum test) ----
@@ -1568,7 +1585,7 @@ private:
     bool m_VelocityInPixelState = false;  // mirrors m_SceneColorInPixelState: tracks RT vs shader-read rest state
     // The combined shader-read state m_VelocityBuffer rests in once FillCameraVelocity has run — the debug
     // overlay reads it from a pixel shader, TAA and FSR3 from compute. Named because FSR3 has to narrow it to
-    // the plain NON_PIXEL state for the duration of its dispatch and put it back (see D3D12Fsr3.cpp).
+    // the plain NON_PIXEL state for the duration of its dispatch and put it back (see D3D12Fsr.cpp).
     static constexpr D3D12_RESOURCE_STATES kVelocityReadState =
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
@@ -1661,47 +1678,46 @@ private:
     void RenderTAA();                      // the resolve dispatch + copy back over the scene colour
     bool IsTaaEnabled() const;             // AntiAliasingMode == AA_TAA and everything it needs exists
 
-    // ---- FSR 3 temporal upscaler (D3D12Fsr3.cpp) ------------------------------------------------------------
-    // AMD FidelityFX Super Resolution 3, the AA_FSR alternative to the TAA resolve above. Mutually exclusive
-    // with it (one AntiAliasingMode), and deliberately sharing its jitter sequence and its motion-vector
-    // G-buffer. Unlike D3D11 (which upscales the finished LDR backbuffer) this runs on the LINEAR HDR scene
-    // colour, immediately before the tonemap resolve — see the file header for why, and for the shipping
-    // requirement on ffx_backend_dx12_x86.dll.
-    //
-    // m_Fsr3Output is display-resolution and kSceneColorFormat, so the tonemap resolve can sample it in place
-    // of m_SceneColor with no second PSO; that swap (GetTonemapSourceSrvSlot) is what turns the resolve's
-    // implicit bilinear upscale into a 1:1 blit whenever FSR3 actually ran.
-    struct FfxFsr3UpscalerContext* m_Fsr3Context = nullptr;   // heap-allocated: the FFX header stays out of here
-    void* m_Fsr3Scratch = nullptr;                            // backend scratch; must outlive the context
-    Microsoft::WRL::ComPtr<Rhi::Resource>      m_Fsr3Output;
-    UINT m_Fsr3OutputSrvSlot = UINT_MAX;
-    bool m_Fsr3OutputReady = false;
-    bool m_Fsr3OutputInUavState = false;   // UNORDERED_ACCESS (FSR writes) vs PIXEL_SHADER_RESOURCE (rest)
-    // The three resources FfxFsr3UpscalerDispatchDescription makes the application own, in the order
-    // { dilatedDepth, dilatedMotionVectors, reconstructedPrevNearestDepth }. Sized/formatted from
-    // ffxFsr3UpscalerGetSharedResourceDescriptions. We never touch their contents; the rest state below is
-    // both where they are created and what every dispatch declares (see CreateFsr3SharedResources).
+    // ---- FSR 1/2/3 upscalers (D3D12Fsr.cpp) -----------------------------------------------------------------
+    // AMD FidelityFX Super Resolution on D3D12 and Vulkan, on the LINEAR HDR scene colour right before the
+    // tonemap resolve. FSR 2/3 are AA_FSR (sharing TAA's jitter and motion G-buffer), FSR 1 is spatial.
+    // m_FsrOutput is display-res kSceneColorFormat, sampled by the tonemap in place of m_SceneColor.
+    void* m_FsrContext = nullptr;      // FfxFsr1Context / FfxFsr2Context / FfxFsr3UpscalerContext per m_FsrContextKind
+    int   m_FsrContextKind = 0;        // GothicRendererSettings::E_Upscaler; UPSCALER_DEFAULT = no context
+    void* m_FsrScratch = nullptr;      // backend scratch; must outlive the context
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_FsrOutput;
+    UINT m_FsrOutputSrvSlot = UINT_MAX;
+    bool m_FsrOutputReady = false;
+    bool m_FsrOutputInUavState = false;   // UNORDERED_ACCESS (FSR writes) vs PIXEL_SHADER_RESOURCE (rest)
+    // FSR 3's application-owned { dilatedDepth, dilatedMotionVectors, reconstructedPrevNearestDepth }.
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_Fsr3Shared[3];
     static constexpr D3D12_RESOURCE_STATES kFsr3SharedRestState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     bool m_Fsr3SharedReady = false;
-    // True until a dispatch succeeds after a discontinuity (world load, resize, fresh context/output): tells
-    // FSR to throw away its temporal history instead of smearing the previous world across the new one.
-    bool m_Fsr3Reset = true;
-    // Did THIS frame's dispatch succeed? Drives GetTonemapSourceSrvSlot and the sharpen pass's early-out, so
-    // a failed dispatch degrades to the plain bilinear resolve instead of showing a stale/garbage frame.
-    bool m_Fsr3RanThisFrame = false;
-    bool m_Fsr3InitFailed = false;             // don't retry context creation every frame; cleared by ReleaseFsr3
-    bool m_Fsr3DispatchFailureLogged = false;  // one log line per session, not one per frame
+    // Render-res reactive mask for FSR 2/3; rests in RENDER_TARGET. Passed only when the rain draw wrote it.
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_FsrReactive;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_FsrReactiveRtv = {};   // RTV heap slot kBackBufferMax+8
+    bool m_FsrReactiveWritten = false;
+    bool m_FsrReset = true;            // drop the temporal history (world load, resize, fresh context/output)
+    bool m_FsrRanThisFrame = false;     // drives GetTonemapSourceSrvSlot and the sharpen pass's early-out
+    bool m_FsrInitFailed = false;       // don't retry m_FsrFailedKind every frame; cleared by ReleaseFsr
+    int  m_FsrFailedKind = 0;
+    bool m_FsrDispatchFailureLogged = false;
 
-    void EnsureFsr3Ready();                                       // lazy build, from AdvanceJitter
-    bool CreateFsr3Output( INT2 size );                           // display-res HDR UAV target + its SRV
-    bool CreateFsr3Context( INT2 renderSize, INT2 upscaleSize );   // FFX interface + context + shared resources
-    bool CreateFsr3SharedResources();                             // the three application-owned FFX resources
-    void DestroyFsr3Context();                                    // requires an idle GPU (FFX frees immediately)
-    void ReleaseFsr3();                                           // context + shared + output; from the resize paths
-    void RenderFsr3Upscale();                                     // the dispatch (no-op unless IsFsr3Enabled)
-    bool IsFsr3Enabled() const;                                   // AA_FSR + FSR3 upscaler + everything exists
-    UINT GetTonemapSourceSrvSlot() const;                         // m_Fsr3Output when it ran, else m_SceneColor
+    int  WantedFsrKind() const;                                   // E_Upscaler the settings ask for; DEFAULT = none
+    void ApplyPendingUpscalerChange();                            // OnBeginFrame: idles + drops a context of another kind
+    void EnsureFsrReady();                                        // lazy build, from AdvanceJitter
+    bool CreateFsrOutput( INT2 size );                            // display-res HDR UAV target + its SRV
+    bool CreateFsrContext( int kind, INT2 renderSize, INT2 upscaleSize ); // FFX interface + context (+ FSR 3 shared)
+    bool CreateFsr3SharedResources();                             // the three application-owned FSR 3 resources
+    bool CreateFsrReactiveMask( INT2 size );                      // render-res R8 RTV the rain draw writes
+    bool BindFsrReactiveTarget();                                 // clears + binds scene colour and mask for the rain draw
+    void DestroyFsrContext();                                     // requires an idle GPU (FFX frees immediately)
+    void ReleaseFsr();                                            // context + shared + output; from the resize paths
+    void RenderFsrUpscale();                                      // the dispatch (no-op unless IsFsrEnabled)
+    void TransitionFsrOutput( D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
+    bool IsFsrEnabled() const;                                    // the wanted upscaler is built and its inputs exist
+    bool IsTemporalFsrEnabled() const;                            // ... and it is FSR 2/3 (jitter + motion vectors)
+    UINT GetTonemapSourceSrvSlot() const;                         // m_FsrOutput when it ran, else m_SceneColor
 
     // ---- Depth of field (D3D12DoF.cpp) ----------------------------------------------------------------------
     // Compute port of D3D11PFX_DepthOfField::RenderCS (Shaders/D3D12/DoF.hlsl). Three passes on the LINEAR HDR
@@ -2095,9 +2111,19 @@ private:
         XMFLOAT3 SkyTint; float SunHeight;
         XMFLOAT3 MoonDir; float MoonFade;
         XMFLOAT3 NightFill; float MoonMainLight;   // gamma-space night fill; 1 while the moon casts the shadows
-        float BacklitStrength; float _pad0[3];     // 0 when backlit vegetation is off
+        float BacklitStrength;                     // 0 when backlit vegetation is off
     };
     void UploadWetnessConstants();
+    // The shadow CB's last 12 bytes, for the transparent pixel shaders' inline sun ray (RtSunInline.hlsl)
+    static constexpr UINT kRtSunCbOffset = kWetSkyCbOffset + sizeof( WetSkyCBData );
+    struct RtSunCBData {
+        UINT SceneIndex;   // first RtScene.hlsl heap descriptor + 1; 0 = no ray, the CSM
+        float Distance;    // RayTracedSunShadowDistance
+        float FadeBand;    // D3D12RayTracing::SunFadeBand
+    };
+    static_assert( kRtSunCbOffset + sizeof( RtSunCBData ) == 512, "RtSunCBData ends the shadow CB" );
+    /** Every frame before the transparency queue: the scene the blended surfaces trace their sun against. */
+    void UploadRtSunConstants();
 
     // Dynamic exposure / auto-exposure: a two-pass GPU luminance reduction of the finished HDR scene color,
     // temporally adapted (Pattanaik's technique) toward last frame's value, feeding Tonemap's exposure divisor

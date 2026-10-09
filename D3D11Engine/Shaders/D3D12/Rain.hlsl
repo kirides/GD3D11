@@ -290,7 +290,7 @@ float4 RainResponse( Texture2DArray texArray, uint type, float2 vTexcoord,
     return float4( lightColor, opacity );
 }
 
-float4 PSMain( PS_INPUT i ) : SV_TARGET0
+float4 RainColor( PS_INPUT i )
 {
     Texture2DArray texArray = ResourceDescriptorHeap[TexArrayIndex];
 
@@ -308,4 +308,25 @@ float4 PSMain( PS_INPUT i ) : SV_TARGET0
     }
 
     return response;
+}
+
+float4 PSMain( PS_INPUT i ) : SV_TARGET0
+{
+    return RainColor( i );
+}
+
+struct PS_OUTPUT_REACTIVE
+{
+    float4 Color    : SV_TARGET0;
+    float  Reactive : SV_TARGET1;   // FSR 2/3 reactive mask: the flakes have no motion vectors
+};
+
+// With temporal FSR: same colour, plus D3D11 PS_Rain.hlsl's reactive value (MAX-blended).
+PS_OUTPUT_REACTIVE PSMainReactive( PS_INPUT i )
+{
+    PS_OUTPUT_REACTIVE o;
+    o.Color = RainColor( i );
+	o.Reactive = select( IsSnow, 0.9f, 0.8f );
+
+    return o;
 }

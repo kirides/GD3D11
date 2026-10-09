@@ -56,31 +56,24 @@ float ComputeCoC( float linearDepth, float focusDepth )
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 }
 
+#include "DoFSky.h"
 #include "DoFGaussBlur.h"
 
 static const int SAMPLE_COUNT = 48;
-
-float2 GetSpiralSample( int index, int count )
-{
-    float r = sqrt( ( float(index) + 0.5 ) / float(count) );
-    float theta = float(index) * 2.39996323;
-    float sinT, cosT;
-    sincos( theta, sinT, cosT );
-    return float2( r * cosT, r * sinT );
-}
 
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
 #ifdef DOF_GAUSS_VERTICAL
     // t0 is the horizontal pass's half-res output (rgb = blur, a = CoC); offsets stay in full-res pixels.
+    // t1 is the full-res scene colour in this pass. Sky texels already hold their 2D spill.
     float4 center = TX_Scene.SampleLevel( SS_Linear, Input.vTexcoord, 0 );
-    if ( center.a < 0.01 )
+    if ( center.a < 0.01 || center.a >= DOF_SKY_ALPHA_MIN )
         return center;
 
     float2 halfSize;
     TX_Scene.GetDimensions( halfSize.x, halfSize.y );
     float radius = min( center.a * DoF_BokehRadius, DoF_MaxBlur );
-    return float4( DoFGaussBlur1D( TX_Scene, TX_Scene, SS_Linear, Input.vTexcoord, float2( 0.0, 0.5 / halfSize.y ), radius, 3.0, center.a, 0.0 ), center.a );
+    return float4( DoFGaussBlur1D( TX_Scene, TX_Depth, SS_Linear, Input.vTexcoord, float2( 0.0, 0.5 / halfSize.y ), radius, 3.0, center.a, 0.0 ), center.a );
 #else
     // Texel size of the full-res scene for sampling offsets
     float2 sceneSize;
@@ -94,6 +87,9 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
     float centerCoC = ComputeCoC( centerLinear, focusDepth );
 
     float3 centerColor = TX_Scene.Sample( SS_Linear, Input.vTexcoord ).rgb;
+
+    if ( centerDepth <= 0.0 )
+        return DoFSkySpill( TX_Scene, TX_Depth, SS_Linear, Input.vTexcoord, texelSize, centerColor, focusDepth );
 
     // Early out: pass through sharp pixel
     if ( centerCoC < 0.01 )

@@ -9,6 +9,7 @@
 #include "InventoryRenderer.h"
 #include "Toolbox.h"
 
+#include <bit>
 #include <sstream>
 
 #if defined(BUILD_GOTHIC_1_CLASSIC)
@@ -118,14 +119,12 @@ namespace {
 }
 
 void ImGuiSettings::FixupSettings( GothicRendererSettings& s ) {
-    if ( s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
-        if ( s.Upscaler != GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 ) {
-            s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
-        }
+    // AA_FSR and a temporal upscaler (FSR 2/3) only come as a pair; the AA mode wins a conflict.
+    const bool temporalUpscaler = GothicRendererSettings::IsTemporalUpscaler( s.Upscaler );
+    if ( s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR && !temporalUpscaler ) {
+        s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
     }
-    if ( s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_TAA
-        && ( s.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 ) ) {
-        // don't allow TAA and FSR2 at the same time.
+    if ( s.AntiAliasingMode != GothicRendererSettings::E_AntiAliasingMode::AA_FSR && temporalUpscaler ) {
         s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1;
     }
     if ( s.ResolutionScalePercent > 100 && s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
@@ -226,11 +225,8 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
 
     ImGui::SeparatorText( "Render Resolution" );
 
-    // D3D12 has the FSR 3 temporal upscaler (D3D12Fsr3.cpp) but no FSR 1 spatial one.
-    const bool noFsr1 = IsD3D12();
-
     Label( "Resolution Scale", nullptr );
-    if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
+    if ( GothicRendererSettings::IsTemporalUpscaler( settings.Upscaler ) ) {
         settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
         // Display "levels" as typical for FSR
         static constexpr ListItem<int> fsrLevels[] = {
@@ -253,22 +249,20 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         shim.CurrentResolution.y * settings.ResolutionScalePercent / 100 );
 
     static constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
-        { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
-        { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
-        { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
+        { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT, "Bilinear scaling." },
+        { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1,
+            "FidelityFX Super Resolution 1: spatial upscaling, very cheap. Works with any anti-aliasing." },
+        { "FSR 2", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2,
+            "FidelityFX Super Resolution 2: temporal upscaling and anti-aliasing. Cheaper than FSR 3." },
+        { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3,
+            "FidelityFX Super Resolution 3: temporal upscaling and anti-aliasing, best quality." },
     };
-    static constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
-        { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
-        { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
-    };
-    // A stored FSR 1 choice must survive a switch back to D3D11, so it is NOT written back here - it
-    // simply behaves as "Simple" while the combo shows nothing selected.
-    if ( noFsr1 ) {
-        ComboRow( "Upscaler", "##Upscaler", upscalersNoFsr1, &settings.Upscaler,
-            "FSR 1 needs the Direct3D 11 backend." );
-    } else {
-        ComboRow( "Upscaler", "##Upscaler", upscalers, &settings.Upscaler );
-    }
+    ComboRow( "Upscaler", "##Upscaler", upscalers, &settings.Upscaler, nullptr,
+        [&settings] {
+            if ( GothicRendererSettings::IsTemporalUpscaler( settings.Upscaler ) ) {
+                settings.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_FSR;
+            }
+        } );
 
     static constexpr ListItem<GothicRendererSettings::E_SharpeningMode> sharpeners[] = {
         { "Disabled", GothicRendererSettings::E_SharpeningMode::SHARPEN_NONE },
@@ -291,11 +285,13 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         { "Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE },
         { "SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA },
         { "TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA, "Temporal Anti-Aliasing" },
-        { "FSR 3", GothicRendererSettings::E_AntiAliasingMode::AA_FSR, "FidelityFX Super Resolution 3" },
+        { "FSR", GothicRendererSettings::E_AntiAliasingMode::AA_FSR,
+            "FidelityFX Super Resolution 2 or 3, chosen under Upscaler" },
     };
     ComboRow( "Anti-Aliasing", "##AntiAliasing", antiAliasing, &settings.AntiAliasingMode, nullptr,
         [&settings] {
-            if ( settings.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
+            if ( settings.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR
+                && !GothicRendererSettings::IsTemporalUpscaler( settings.Upscaler ) ) {
                 settings.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
             }
         } );
@@ -371,6 +367,15 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         textureQuality[0].value, textureQuality[std::size( textureQuality ) - 1].value );
     ComboRow( "Texture Quality", "##TextureQuality", textureQuality, &settings.textureMaxSize, nullptr,
         [] { Engine::GAPI->UpdateTextureMaxSize(); } );
+
+    // Slider over the power-of-two steps; stored as the max anisotropy itself (1 = off).
+    static constexpr const char* anisoLabels[] = { "Off (trilinear)", "2x", "4x", "8x", "16x" };
+    int anisoStep = std::clamp( std::bit_width( static_cast<unsigned>( std::max( 1, settings.AnisotropicFiltering ) ) ) - 1, 0, 4 );
+    if ( SliderIntRow( "Anisotropic Filtering", "##AnisotropicFiltering", &anisoStep, 0, 4, anisoLabels[anisoStep],
+        "Sharpens textures seen at grazing angles (ground, walls). Lower values save texture\n"
+        "bandwidth, which helps integrated GPUs most." ) ) {
+        settings.AnisotropicFiltering = 1 << std::clamp( anisoStep, 0, 4 );
+    }
 
     constexpr ListItem<int> normalMapModes[] = {
         { "Disabled", 0, nullptr, "NormalMapping_Disabled" },
@@ -542,6 +547,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "Low", GothicRendererSettings::WATER_SSR_LOW },
         { "Medium", GothicRendererSettings::WATER_SSR_MEDIUM },
         { "High", GothicRendererSettings::WATER_SSR_HIGH },
+        { "Ultra", GothicRendererSettings::WATER_SSR_ULTRA, "Thin foliage and other fine detail reflect cleanly. Expensive." },
     };
     // Ray tracing replaces the screen-space geometry march; the stored SSR choice survives untouched.
     const bool rayTracingAvailable = Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery;
@@ -589,6 +595,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
             { "Low", GothicRendererSettings::WATER_SSR_LOW, nullptr, "OpaqueSSR_Low" },
             { "Medium", GothicRendererSettings::WATER_SSR_MEDIUM, nullptr, "OpaqueSSR_Medium" },
             { "High", GothicRendererSettings::WATER_SSR_HIGH, nullptr, "OpaqueSSR_High" },
+            { "Ultra", GothicRendererSettings::WATER_SSR_ULTRA, "Longer reflection reach and finer hits. Expensive.", "OpaqueSSR_Ultra" },
         };
         ComboRow( "Wet Surface Reflections", "##OpaqueSSR", opaqueSsr, &settings.OpaqueSSRQuality,
             "Screen-space reflections on wet/glossy ground and metal. One frame of lag; D3D12 only." );

@@ -554,10 +554,9 @@ float3x3 TangentFrameExplicit( float3 N, float3 T, float sign )
 // including its dot(T,T) < 0.25 threshold for "no real tangent here".
 float3 PerturbNormal( float3 N, float3 p, float4 vertexTangent, Texture2D nrmTex, float2 uv, SamplerState samp, float strength = 1.0 )
 {
-    if ( dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25 )
-    {
-        return PerturbNormal( N, p, nrmTex, uv, samp, strength );
-    }
+    // The tangent test is per pixel, so the derivative frame is built outside it: ddx/ddy in a branch
+    // that splits a quad read inactive lanes and give garbage normals (dark dots along the threshold).
+    float3x3 derivFrame = CotangentFrame( N, -p, uv );
 
 #if NORMAL_MAP_RESTORE_Z == 1
     float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
@@ -575,11 +574,28 @@ float3 PerturbNormal( float3 N, float3 p, float4 vertexTangent, Texture2D nrmTex
     nrm.xy *= strength;
     nrm = normalize( nrm );
 #endif
-    return normalize( mul( nrm, TangentFrameExplicit( normalize( N ), vertexTangent.xyz, vertexTangent.w ) ) );
+    float3x3 vertexFrame = TangentFrameExplicit( normalize( N ), vertexTangent.xyz, vertexTangent.w );
+    float3x3 frame = dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25 ? derivFrame : vertexFrame;
+    return normalize( mul( nrm, frame ) );
 }
 
 // Backlit vegetation class packed into MatOrmIndex by D3D12Scene.cpp: 1 = leaf foliage, 2 = thin two-sided plant.
 uint BacklitClassOf( uint packedOrmIndex ) { return ( packedOrmIndex >> 28 ) & 3u; }
+
+// Steep foliage cards (tree-top cones) keep ZenGin's horizontal face normals while the flat branches around them
+// face up, so a sun behind them left only ambient. Bend leafy foliage toward up, like grass (Vegetation.hlsl).
+#ifndef FOLIAGE_NORMAL_BEND
+#define FOLIAGE_NORMAL_BEND 0.7
+#endif
+float3 BendFoliageNormal( float3 N, uint backlitClass, Texture2D difTex, SamplerState samp )
+{
+    [branch] if ( backlitClass != 1u || FOLIAGE_NORMAL_BEND <= 0.0 ) return N;
+    // Greenness of the texture's average colour (last mip), so a whole material bends alike: fences/grates stay put.
+    float3 avg = difTex.SampleLevel( samp, float2( 0.5, 0.5 ), 16.0 ).rgb;
+    float greenness = ( avg.g - max( avg.r, avg.b ) ) / max( avg.g, 1e-3 );
+    float w = smoothstep( 0.08, 0.25, greenness ) * FOLIAGE_NORMAL_BEND;
+    return normalize( lerp( N, float3( 0, 1, 0 ), w ) );
+}
 
 // Sun or moon light through leaves (after MarcoMarwin's GD3D11): thin plants take a share of the light on
 // their back faces, and green foliage glows when the viewer looks into the light through it.

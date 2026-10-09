@@ -156,7 +156,11 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
 
         if ( wantLit != litClass ) {
             if ( wantLit ) {
+                // A mark lies on the surface the ray-traced mask was traced for, so it takes that mask
+                const UINT maskSlot = m_RtShadowMaskSlot;
+                m_RtShadowMaskSlot = m_RtShadowMaskFrameSlot;
                 BindWorldFrameRootState( viewProj );
+                m_RtShadowMaskSlot = maskSlot;
             } else {
                 m_CmdList->SetGraphicsRootSignature( m_Pipelines.Fx.RootSig.Get() );
                 m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );

@@ -51,18 +51,10 @@ float ComputeCoC( float linearDepth, float focusDepth )
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 }
 
+#include "DoFSky.h"
 #include "DoFGaussBlur.h"
 
 static const int SAMPLE_COUNT = 48;
-
-float2 GetSpiralSample( int index, int count )
-{
-    float r = sqrt( ( float(index) + 0.5 ) / float(count) );
-    float theta = float(index) * 2.39996323;
-    float sinT, cosT;
-    sincos( theta, sinT, cosT );
-    return float2( r * cosT, r * sinT );
-}
 
 [numthreads(8, 8, 1)]
 void CSMain( uint3 DTid : SV_DispatchThreadID )
@@ -77,11 +69,12 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
 
 #ifdef DOF_GAUSS_VERTICAL
     // t0 is the horizontal pass's half-res output (rgb = blur, a = CoC); offsets stay in full-res pixels.
+    // t1 is the full-res scene colour in this pass. Sky texels already hold their 2D spill.
     float4 center = TX_Scene.SampleLevel( SS_Linear, texcoord, 0 );
-    if ( center.a >= 0.01 )
+    if ( center.a >= 0.01 && center.a < DOF_SKY_ALPHA_MIN )
     {
         float radius = min( center.a * DoF_BokehRadius, DoF_MaxBlur );
-        center.rgb = DoFGaussBlur1D( TX_Scene, TX_Scene, SS_Linear, texcoord, float2( 0.0, 0.5 / float( outSize.y ) ), radius, 3.0, center.a, 0.0 );
+        center.rgb = DoFGaussBlur1D( TX_Scene, TX_Depth, SS_Linear, texcoord, float2( 0.0, 0.5 / float( outSize.y ) ), radius, 3.0, center.a, 0.0 );
     }
     OutputBlur[DTid.xy] = center;
 #else
@@ -98,6 +91,12 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
     float centerCoC = ComputeCoC( centerLinear, focusDepth );
 
     float3 centerColor = TX_Scene.SampleLevel( SS_Linear, texcoord, 0 ).rgb;
+
+    if ( centerDepth <= 0.0 )
+    {
+        OutputBlur[DTid.xy] = DoFSkySpill( TX_Scene, TX_Depth, SS_Linear, texcoord, texelSize, centerColor, focusDepth );
+        return;
+    }
 
     // Early out: pass through sharp pixel
     if ( centerCoC < 0.01 )

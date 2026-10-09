@@ -43,6 +43,8 @@ public:
     std::vector<const zCVob*>& CarrierVobs();
 
     static float WaterVobRadius( int quality );
+    /** Width of the band before SunDistance where the ray-traced sun fades into the CSM. */
+    static float SunFadeBand( float sunDistance ) { return std::max( sunDistance * 0.15f, 1.0f ); }
 
     /** What DrawWaterSurfaces hands over; slots index the shader-visible heap. */
     struct Inputs {
@@ -79,6 +81,12 @@ public:
     };
     /** Writes the R32G32_UINT shadow mask (RtShadowMask.hlsl) and leaves it in PIXEL_SHADER_RESOURCE. */
     bool TraceShadows( const ShadowInputs& in, UINT& outMaskSlot );
+
+    // Heap descriptors behind RT_SCENE_HEAP_BASE, in RtScene.hlsl's t0-t12 order
+    static constexpr UINT kPixelSceneSrvs = 13;
+    /** This frame's scene for pixel-shader rays (EnsureScene first); readable from pixel shaders until EndFrame.
+        Returns the first of kPixelSceneSrvs heap slots, or UINT_MAX without a scene. */
+    UINT PixelScene();
 
     // Shadow slots per pixel (RtShadowMask.hlsl's kRtMaxPointLights)
     static constexpr uint32_t kMaxPointShadowSlots = 15;

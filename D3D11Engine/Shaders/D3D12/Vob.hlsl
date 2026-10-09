@@ -47,6 +47,8 @@ SamplerState smpAoClamp : register(s1);
 // DelightDiffuse, SamplePointShadow, ComputeSunShadow, the Cook-Torrance PBR helpers, PerturbNormal/
 // CotangentFrame, ComputeSunLightingPBR and AccumTiledPointLights are shared with World.hlsl/Skeletal.hlsl.
 #include "include/PBRLighting.hlsl"
+// PSAlphaBlendBindless' own sun ray: blended surfaces are not in the ray-traced mask
+#include "include/RtSunInline.hlsl"
 // Wet-ground / scene-wetness (rain) — see World.hlsl.
 #include "include/Wetness.hlsl"
 
@@ -119,6 +121,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
+    N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), tx, smp );
     float3 orm = SampleOrm( MatOrmIndex, i.uv );
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
@@ -233,6 +236,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
+    N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), difTex, smp );
     float3 orm = SampleOrm( MatOrmIndex, i.uv );
     float3 albedo = SrgbToLinear( ApplyDetailTexture( t.rgb, i.uv, fx, smp ) );
     albedo = DelightDiffuse( albedo );
@@ -295,7 +299,7 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
     float3 orm = SampleOrm( MatOrmIndex, i.uv );
     float3 albedo = SrgbToLinear( ApplyDetailTexture( t.rgb, i.uv, fx, smp ) );
     albedo = DelightDiffuse( albedo );
-    float shadow = ComputeSunShadow( i.wpos, geomN, i.col.g );
+    float shadow = ComputeSunShadowTraced( i.wpos, geomN, i.col.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, i.col.g, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );

@@ -126,6 +126,27 @@ bool D3D12PointShadows::IsNpcAttached( const zCVob* vob ) {
 }
 
 
+/** Built on m_Pipelines.PointShadow.RootSig, so rebuilt with it (RebuildRootSignatureDependents). */
+bool D3D12PointShadows::CreateCasterSignature() {
+	D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
+	args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+	args[0].Constant.RootParameterIndex = 1;   // b1 CasterCB { DiffuseIndex }
+	args[0].Constant.DestOffsetIn32BitValues = 0;
+	args[0].Constant.Num32BitValuesToSet = 1;
+	args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+	D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+	sigDesc.ByteStride = sizeof( PointShadowCasterCommand );
+	sigDesc.NumArgumentDescs = _countof( args );
+	sigDesc.pArgumentDescs = args;
+	if ( FAILED( m_E->m_Rhi->CreateCommandSignature( &sigDesc, m_E->m_Pipelines.PointShadow.RootSig.Get(),
+		m_CasterCmdSig.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Wrn( "D3D12: failed to create the point-shadow caster command signature." );
+		return false;
+	}
+	return true;
+}
+
+
 bool D3D12PointShadows::Init() {
 	// P2.10a: the cube ARRAY GPU RESOURCES — the active + static-aside cube textures, their per-slot 6-slice DSV
 	// heaps, the TextureCubeArray SRV, and the per-frame face-matrix CB + VOB-instance rings. The caster
@@ -274,21 +295,7 @@ bool D3D12PointShadows::Init() {
 	}
 
 	// Skinned/attachment caster commands: b1 (param 1) + DrawIndexed, nothing else, so Vulkan can run them as DGC.
-	D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
-	args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
-	args[0].Constant.RootParameterIndex = 1;   // b1 CasterCB { DiffuseIndex }
-	args[0].Constant.DestOffsetIn32BitValues = 0;
-	args[0].Constant.Num32BitValuesToSet = 1;
-	args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
-	D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
-	sigDesc.ByteStride = sizeof( PointShadowCasterCommand );
-	sigDesc.NumArgumentDescs = _countof( args );
-	sigDesc.pArgumentDescs = args;
-	if ( FAILED( m_E->m_Rhi->CreateCommandSignature( &sigDesc, m_E->m_Pipelines.PointShadow.RootSig.Get(),
-		m_CasterCmdSig.ReleaseAndGetAddressOf() ) ) ) {
-		Logging::Wrn( "D3D12: failed to create the point-shadow caster command signature." );
-		return false;
-	}
+	if ( !CreateCasterSignature() ) return false;
 	D3D12_RESOURCE_DESC argDesc = viDesc;
 	argDesc.Width = static_cast<UINT64>( kMaxCasterCommands ) * sizeof( PointShadowCasterCommand );
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {

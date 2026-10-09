@@ -420,13 +420,16 @@ void D3D11GraphicsEngine::CreateAndBindDefaultSampler() {
     // Calculate raw bias, but clamp it to a maximum of 0.0f to protect Supersampling
     float mipBias = std::min(0.0f, std::log2(scaleRatio));
 
+    // AnisotropicFiltering 1 = plain trilinear.
+    const UINT anisotropy = static_cast<UINT>( std::clamp( Engine::GAPI->GetRendererState().RendererSettings.AnisotropicFiltering, 1, 16 ) );
+
     D3D11_SAMPLER_DESC samplerDesc{};
-    samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
+    samplerDesc.Filter = anisotropy > 1 ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.MipLODBias = mipBias;
-    samplerDesc.MaxAnisotropy = 16;
+    samplerDesc.MaxAnisotropy = anisotropy;
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     samplerDesc.BorderColor[0] = 1.0f;
     samplerDesc.BorderColor[1] = 1.0f;
@@ -678,6 +681,17 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     Device11.As( &Device );
     Context11.As( &Context );
+
+#ifdef DEBUG_D3D11
+    // Debug-layer messages otherwise only reach OutputDebugString; keep errors and drain them per Present.
+    if ( SUCCEEDED( Device11.As( &DebugInfoQueue ) ) ) {
+        D3D11_MESSAGE_SEVERITY severities[] = { D3D11_MESSAGE_SEVERITY_CORRUPTION, D3D11_MESSAGE_SEVERITY_ERROR };
+        D3D11_INFO_QUEUE_FILTER filter = {};
+        filter.AllowList.NumSeverities = _countof( severities );
+        filter.AllowList.pSeverityList = severities;
+        DebugInfoQueue->PushStorageFilter( &filter );
+    }
+#endif
     s_tracyD3D11Ctx = TracyD3D11Context( Device.Get(), Context.Get() );
 
     Context.As( &m_UserDefinedAnnotation );
@@ -1580,6 +1594,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     static int s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
     static GothicRendererSettings::E_RendererMode s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
     static DXGI_FORMAT s_oldBackBufferFormat = GetBackBufferFormat();
+    static int s_oldAnisotropicFiltering = rendererState.RendererSettings.AnisotropicFiltering;
 
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
     BeginFrameTransientBufferPools();
@@ -1618,6 +1633,11 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         RecreateMSAABuffers( GetResolution() );
         s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
         s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
+    }
+
+    if ( rendererState.RendererSettings.AnisotropicFiltering != s_oldAnisotropicFiltering ) {
+        s_oldAnisotropicFiltering = rendererState.RendererSettings.AnisotropicFiltering;
+        CreateAndBindDefaultSampler();
     }
 
     // TAA overrides CompressBackBuffer, so an AA-mode change can switch the scene format.
@@ -1883,6 +1903,22 @@ void RenderVelocity(D3D11GraphicsEngine* engine,
 }
 
 /** Presents the current frame to the screen */
+void D3D11GraphicsEngine::LogDebugLayerMessages() {
+    if ( !DebugInfoQueue ) return;
+    static std::vector<uint8_t> buffer;   // main thread only; grows to the largest message once
+    const UINT64 count = DebugInfoQueue->GetNumStoredMessages();
+    for ( UINT64 i = 0; i < count; ++i ) {
+        SIZE_T size = 0;
+        if ( FAILED( DebugInfoQueue->GetMessage( i, nullptr, &size ) ) || size == 0 ) continue;
+        if ( buffer.size() < size ) buffer.resize( size );
+        auto* message = reinterpret_cast<D3D11_MESSAGE*>( buffer.data() );
+        if ( SUCCEEDED( DebugInfoQueue->GetMessage( i, message, &size ) ) && message->pDescription ) {
+            Logging::Err( "D3D11 debug layer (#{}): {}", static_cast<int>( message->ID ), message->pDescription );
+        }
+    }
+    DebugInfoQueue->ClearStoredMessages();
+}
+
 XRESULT D3D11GraphicsEngine::Present() {
     ZoneScoped;
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -1952,6 +1988,8 @@ XRESULT D3D11GraphicsEngine::Present() {
     } else {
         hr = SwapChain->Present( vsync ? 1 : 0, 0 );
     }
+
+    LogDebugLayerMessages();
 
     if ( hr == DXGI_ERROR_DEVICE_REMOVED ) {
         switch ( GetDevice()->GetDeviceRemovedReason() ) {

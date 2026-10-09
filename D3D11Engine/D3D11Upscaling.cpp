@@ -37,7 +37,8 @@ namespace {
 
     }
 
-    void AddFSR3Pass( RenderGraph& graph,
+    void AddTemporalFsrPass( RenderGraph& graph,
+        D3D11PFX_FSR3::EVersion version,
         D3D11GraphicsEngine& engine,
         ID3D11RenderTargetView* outputRTV,
         RGResourceHandle backBufferHandle,
@@ -45,14 +46,15 @@ namespace {
         RGResourceHandle velocityBufferHandle,
         RGResourceHandle reactiveMaskResource )
     {
-        graph.AddPass( RG_PASS_NAME("FSR 3"), [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( version == D3D11PFX_FSR3::EVersion::Fsr2 ? RG_PASS_NAME("FSR 2") : RG_PASS_NAME("FSR 3"),
+            [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( velocityBufferHandle );
             builder.Read( reactiveMaskResource );
             builder.Read( backBufferHandle );
 
             builder.Write( backBufferHandle );
 
-            pass.m_executeCallback = [&engine, backBufferHandle, outputRTV, velocityBufferHandle, reactiveMaskResource, depth]( const RenderGraph& graph ) {
+            pass.m_executeCallback = [version, &engine, backBufferHandle, outputRTV, velocityBufferHandle, reactiveMaskResource, depth]( const RenderGraph& graph ) {
                 auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
                 auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
@@ -84,6 +86,7 @@ namespace {
                 engine.GetContext()->CSSetConstantBuffers( 0, std::size( nullCBs ), nullCBs );
 
                 engine.GetPfxRenderer()->GetFSR3()->Apply(
+                    version,
                     backbufferTex->GetShaderResView().Get(),
                     depth,
                     velocityBufferTex->GetShaderResView().Get(),
@@ -140,11 +143,13 @@ bool D3D11Upscaling::AddUpscalingPass( RenderGraph& graph,
         return false;
     }
 
-    if ( settings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3
+    if ( GothicRendererSettings::IsTemporalUpscaler( settings.Upscaler )
             && (settings.ResolutionScalePercent <= 100)
             && settings.AntiAliasingMode == GothicRendererSettings::AA_FSR ) {
 
-        AddFSR3Pass( graph, engine, outputRTV, color, depth, motionVectors, reactiveMask );
+        const auto version = settings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2
+            ? D3D11PFX_FSR3::EVersion::Fsr2 : D3D11PFX_FSR3::EVersion::Fsr3;
+        AddTemporalFsrPass( graph, version, engine, outputRTV, color, depth, motionVectors, reactiveMask );
         return true;
     }
     return false;

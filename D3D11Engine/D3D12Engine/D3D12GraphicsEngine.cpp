@@ -58,9 +58,11 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_V
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
     m_AppliedResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
     // Static samplers are serialized into the root signature blob, so the bias has to be right before Init()
-    // builds any of them. A later change goes through RebakeMipLodBias.
+    // builds any of them. A later change goes through RebakeMaterialSampler.
     m_AppliedMipLodBias = ComputeMipLodBias( m_Resolution, m_BackbufferResolution );
     D3D12RootLayout::SetAnisoMipLodBias( m_AppliedMipLodBias );
+    D3D12RootLayout::SetMaterialAnisotropy( static_cast<UINT>( Engine::GAPI->GetRendererState().RendererSettings.AnisotropicFiltering ) );
+    m_AppliedAnisotropy = D3D12RootLayout::GetMaterialAnisotropy();
     // Same LowLatency toggle D3D11 uses for its swapchain waitable object. kBackBufferCount is always
     // N+1 - 1 slot for the frame currently in flight plus N queued behind it - so normally N=2 queued
     // (3 slots) and LowLatency trims that to N=1 queued (2 slots, matching D3D11's non-low-latency
@@ -108,7 +110,7 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
     g_GpuScopeMarkers.Buffer.Reset();
     // After the idle+drain above: the FFX context releases its internal D3D12 resources synchronously, so it
     // must not outlive in-flight work — and must go before the device does.
-    ReleaseFsr3();
+    ReleaseFsr();
     if ( m_FenceEvent ) CloseHandle( m_FenceEvent );
     if ( m_UploadEvent ) CloseHandle( m_UploadEvent );
     if ( m_FrameLatencyWaitableObject ) CloseHandle( m_FrameLatencyWaitableObject );
@@ -1026,6 +1028,18 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 }
 
 
+UINT D3D12GraphicsEngine::AllocateSrvRange( UINT count ) {
+	std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+	if ( count == 0 || m_SrvAllocated + count > m_SrvHeapCapacity ) {
+		Logging::Wrn( "D3D12: SRV heap has no room for {} adjacent descriptors.", count );
+		return UINT_MAX;
+	}
+	const UINT base = m_SrvAllocated;
+	m_SrvAllocated += count;
+	return base;
+}
+
+
 void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	if ( slot == UINT_MAX
 		|| slot == m_WhiteTexture->GetSrvSlot()
@@ -1111,6 +1125,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // [kAoReprojCbOffset,..) UNUSED HOLE                   — was the AO-mask reprojection block; see the header
     // [kSkyIblCbOffset,  ..) UploadSkyIblConstants         — sky-IBL cube indices + intensity
     // [kWetSkyCbOffset,  ..) UploadWetnessConstants        — wet-sky tint + moon direction
+    // [kRtSunCbOffset,  512) UploadRtSunConstants          — the transparents' inline sun ray
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};
@@ -1133,6 +1148,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
         void* mapped = nullptr;
         if ( FAILED( m_ShadowCB[i]->Map( 0, &noRead, &mapped ) ) ) return false;
         m_ShadowCBMapped[i] = static_cast<uint8_t*>( mapped );
+        memset( mapped, 0, 512 );   // blocks a frame skips must read as off, not as stale heap indices
         m_ShadowCBGpu[i] = m_ShadowCB[i]->GetGPUVirtualAddress();
     }
     return true;
@@ -1477,7 +1493,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetDisplayRtv() const {
 }
 
 /** Counts the display-chain passes for this frame; zero means the tonemap resolve renders straight into the
-	real display target. Runs at EXECUTE time, so m_Fsr3RanThisFrame is already final. */
+	real display target. Runs at EXECUTE time, so m_FsrRanThisFrame is already final. */
 void D3D12GraphicsEngine::PlanDisplayChain() {
 	m_DisplaySlot = -1;
 	m_DisplayChainRemaining = 0;
@@ -1573,7 +1589,7 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 
 	// NATIVE viewport over the render-res scene texture: the fullscreen triangle's uv spans [0,1] of
 	// m_SceneColor and s0 is a bilinear clamp sampler, so this draw IS the render-scale up/downscale.
-	// When FSR 3 ran it already produced a display-res image (GetTonemapSourceSrvSlot) and this becomes 1:1.
+	// When an FSR upscaler ran it already produced a display-res image (GetTonemapSourceSrvSlot); this is 1:1.
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_BackbufferResolution.x), static_cast<float>(m_BackbufferResolution.y), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
@@ -1863,31 +1879,34 @@ INT2 D3D12GraphicsEngine::GetAoTargetResolution( INT2 renderSize ) {
 }
 
 
-/** Re-bakes `newBias` into every root signature's static aniso sampler. A static sampler lives in the root
-    signature blob and a PSO binds its root signature at creation, so this is a full rebuild through the
-    shader hot-reload path (backup + rollback included) — seconds, not milliseconds, hence the debounce in
-    ApplyPendingResolutionScale. The caller must have idled the GPU. */
-bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
-    const float previousBias = m_AppliedMipLodBias;
+/** Re-bakes the mip bias + max anisotropy into every root signature's static material sampler. A static sampler
+    lives in the root signature blob and a PSO binds its root signature at creation, so this is a full rebuild
+    through the shader hot-reload path (backup + rollback included) — seconds, not milliseconds, hence the
+    debounces. The caller must have idled the GPU. */
+bool D3D12GraphicsEngine::RebakeMaterialSampler( float newBias, UINT newAnisotropy ) {
     D3D12RootLayout::SetAnisoMipLodBias( newBias );
+    D3D12RootLayout::SetMaterialAnisotropy( newAnisotropy );
 
     D3D12PipelineState backup = m_Pipelines;   // cheap AddRef pass — see ApplyPendingShaderReload
     std::vector<std::string> failedFatal, failedOptional;
     if ( !m_Pipelines.ReloadAll( m_HdrOutputActive, m_SceneEnabled, failedFatal, failedOptional ) ) {
         m_Pipelines = backup;
-        D3D12RootLayout::SetAnisoMipLodBias( previousBias );
+        D3D12RootLayout::SetAnisoMipLodBias( m_AppliedMipLodBias );
+        D3D12RootLayout::SetMaterialAnisotropy( m_AppliedAnisotropy );
         std::string names;
         for ( const auto& n : failedFatal ) { if ( !names.empty() ) names += ", "; names += n; }
-        Logging::Wrn( "D3D12: could not re-bake the texture mip bias ({} failed to rebuild) — keeping the previous pipelines. Textures will look blurrier than they should.",
+        Logging::Wrn( "D3D12: could not re-bake the texture sampler ({} failed to rebuild) — keeping the previous pipelines.",
             names );
         return false;
     }
     if ( !failedOptional.empty() ) {
         std::string names;
         for ( const auto& n : failedOptional ) { if ( !names.empty() ) names += ", "; names += n; }
-        Logging::Wrn( "D3D12: mip-bias rebuild finished with degraded passes ({}).", names );
+        Logging::Wrn( "D3D12: texture-sampler rebuild finished with degraded passes ({}).", names );
     }
+    RebuildRootSignatureDependents();
     m_AppliedMipLodBias = newBias;
+    m_AppliedAnisotropy = D3D12RootLayout::GetMaterialAnisotropy();
     return true;
 }
 
@@ -1903,10 +1922,9 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     // always runs before CreateDisplayResolutionTargets (every call site below), so one Clear() covers both.
     m_AliasArena.Clear();
 
-    // The FFX context is built for one specific (render, display) size pair and its internal resources are
-    // freed immediately by ffxFsr3UpscalerContextDestroy — so it has to go here, on a path whose callers have
-    // already idled the GPU, rather than lazily from the frame. EnsureFsr3Ready rebuilds it next frame.
-    ReleaseFsr3();
+    // The FFX context is built for one (render, display) size pair and frees its resources immediately, so it
+    // goes here, behind the callers' GPU idle. EnsureFsrReady rebuilds it next frame.
+    ReleaseFsr();
     if ( !CreateDepthBuffer( renderSize ) ) return false;
     if ( !CreateSceneColorTarget( renderSize ) ) return false;
     CreateBloomResources( renderSize );
@@ -1942,7 +1960,7 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
 /** Everything sized to the NATIVE backbuffer — the post-tonemap passes. All non-fatal (each guards on its
     own resources); the underwater pair is lazily built, so it is only re-sized here if it is already up. */
 void D3D12GraphicsEngine::CreateDisplayResolutionTargets( INT2 displaySize ) {
-    ReleaseFsr3();                          // display size is half of the pair the FFX context is built for
+    ReleaseFsr();                           // display size is half of the pair the FFX context is built for
     CreateLdrCopyResource( displaySize );   // display-chain scratches; SMAA/sharpen/underwater no-op without them
     // SMAA's edges/blend and the underwater blur pair no longer need a resize hook — both are
     // D3D12RenderGraph-managed transients acquired fresh at the current resolution every call (see
@@ -2020,9 +2038,10 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
     Rhi::Device* device = m_Rhi.Get();
 
     // Fixed RTV slots: 0..kBackBufferMax-1 unused (keeps the offsets below stable), kBackBufferMax scene colour,
-    // +3 HDR display, +4/+5 motion/normal G-buffer (D3D12Motion.cpp), +6/+7 LDR display-chain scratches (D3D12PostFX.cpp).
+    // +3 HDR display, +4/+5 motion/normal G-buffer (D3D12Motion.cpp), +6/+7 LDR display-chain scratches (D3D12PostFX.cpp),
+    // +8 FSR reactive mask (D3D12Fsr.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferMax + 8;
+    rtvHeapDesc.NumDescriptors = kBackBufferMax + 9;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( m_Rhi->CreateDescriptorHeap( &rtvHeapDesc, m_RtvHeap.ReleaseAndGetAddressOf() ) ) )
@@ -2123,6 +2142,12 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     // Same spot, same reasoning, for a render-scale change (ImGui slider / ini).
     ApplyPendingResolutionScale();
+
+    // Same spot, same reasoning, for an anisotropic-filtering change (rebuilds every pipeline).
+    ApplyPendingTextureFiltering();
+
+    // Same spot, same reasoning, for a change of FSR upscaler (its context frees resources immediately).
+    ApplyPendingUpscalerChange();
 
     // Same spot, same reasoning, for an AO-resolution change (ImGui combo / ini).
     ApplyPendingAoResolutionChange();
@@ -2980,7 +3005,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     // and a savegame thumbnail wants the plain SDR image regardless — hence hdrOutput=false below too.
     m_CmdList->SetPipelineState( m_Pipelines.TonemapCapturePSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
-    // Same source the on-screen resolve used: m_Fsr3Output when FSR 3 upscaled this frame, else m_SceneColor.
+    // Same source the on-screen resolve used: m_FsrOutput when FSR upscaled this frame, else m_SceneColor.
     m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( GetTonemapSourceSrvSlot() ) );
     // Brightness/contrast go in here, not through Present's pass: the capture never sees the 2D UI anyway,
     // and D3D11's GetBackbufferData likewise draws HDRBackBuffer through PS_PFX_GammaCorrectInv.
@@ -3139,12 +3164,41 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
     const float newBias = ComputeMipLodBias( m_Resolution, m_BackbufferResolution );
     if ( std::abs( newBias - m_AppliedMipLodBias ) > 0.02f ) {
         Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Applying render scale..." );
-        RebakeMipLodBias( newBias );
+        RebakeMaterialSampler( newBias, m_AppliedAnisotropy );
     }
 
     m_AppliedResolutionScalePercent = requested;
     Logging::Inf( "D3D12 render scale {}% -> rendering at {}x{} (display {}x{}), texture mip bias {}.",
         requested, m_Resolution.x, m_Resolution.y, m_BackbufferResolution.x, m_BackbufferResolution.y, m_AppliedMipLodBias );
+}
+
+
+/** Picks up a change to RendererSettings.AnisotropicFiltering from the top of OnBeginFrame. Debounced because
+    each step of a slider drag would otherwise rebuild every pipeline. */
+void D3D12GraphicsEngine::ApplyPendingTextureFiltering() {
+    if ( !m_SwapChainReady ) return;
+    const int requested = std::clamp( Engine::GAPI->GetRendererState().RendererSettings.AnisotropicFiltering, 1, 16 );
+    if ( static_cast<UINT>( requested ) == m_AppliedAnisotropy ) {
+        m_PendingAnisotropy = 0;
+        m_AnisotropyStableFrames = 0;
+        return;
+    }
+    if ( requested != m_PendingAnisotropy ) {
+        m_PendingAnisotropy = requested;
+        m_AnisotropyStableFrames = 0;
+        return;
+    }
+    if ( ++m_AnisotropyStableFrames < kResolutionScaleDebounceFrames ) return;
+    m_PendingAnisotropy = 0;
+    m_AnisotropyStableFrames = 0;
+
+    Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Applying texture filtering..." );
+    WaitForGpuIdle();   // the old PSOs are still referenced by in-flight frames
+    if ( !RebakeMaterialSampler( m_AppliedMipLodBias, static_cast<UINT>( requested ) ) ) {
+        m_AppliedAnisotropy = static_cast<UINT>( requested );   // don't retry the failed rebuild every frame
+        return;
+    }
+    Logging::Inf( "D3D12 anisotropic filtering -> {}x.", m_AppliedAnisotropy );
 }
 
 
@@ -3286,8 +3340,26 @@ void D3D12GraphicsEngine::ApplyPendingShaderReload() {
         Logging::Wrn( "D3D12: shader reload finished with degraded passes ({}) - those effects are disabled/simplified until fixed and reloaded again.",
                    names );
     }
+    RebuildRootSignatureDependents();
     D3D12ShaderBackend::LogAndResetCacheStats( "reload" );
     Logging::Inf( "D3D12: shaders reloaded." );
+}
+
+
+/** After a successful ReloadAll: rebuilds what was created against the old root signatures outside
+    m_Pipelines (shadow caster PSOs, indirect command signatures). The GPU is idle in both callers. */
+void D3D12GraphicsEngine::RebuildRootSignatureDependents() {
+    if ( !m_SceneEnabled ) return;
+    if ( !m_ShadowMap.CreateCasterPipelines() ) {
+        Logging::Wrn( "D3D12: rebuilding the shadow caster pipelines failed; sun shadows may be missing." );
+    }
+    if ( m_Pipelines.Grass.RootSig && !m_ShadowMap.CreateGrassCaster() ) {
+        Logging::Wrn( "D3D12: rebuilding the grass shadow caster failed; grass casts no shadow." );
+    }
+    if ( m_WorldIndirectCmdSig ) CreateWorldIndirectSignature();
+    if ( m_VobIndirectCmdSig ) CreateVobIndirectSignature();
+    if ( m_SkeletalIndirectCmdSig ) CreateSkeletalIndirectSignature();
+    if ( m_Pipelines.PointShadow.RootSig ) m_PointShadows.CreateCasterSignature();
 }
 
 

@@ -193,6 +193,8 @@ namespace Engine {
         if ( WorkerThreadPool ) WorkerThreadPool->clearAndFlush();
         if ( RenderingThreadPool ) RenderingThreadPool->clearAndFlush();
 
+        // The ImGui DX12/Vulkan backends destroy their pipelines immediately; the last frame may still use them.
+        if ( GraphicsEngine ) GraphicsEngine->WaitForGpuIdle();
         SAFE_DELETE( ImGuiHandle );
         if ( GraphicsEngine ) {
             MyDirectDrawSurface7::ReleaseAllEngineTextures();

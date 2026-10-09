@@ -867,6 +867,9 @@
     <ClInclude Include="MaterialFx.h">
       <Filter>Engine</Filter>
     </ClInclude>
+    <ClInclude Include="CrashDump.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1216,6 +1219,9 @@
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="MaterialFx.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="CrashDump.cpp">
       <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
@@ -1615,7 +1621,7 @@
     <ClCompile Include="D3D12Engine\D3D12VobArena.cpp" />
     <ClCompile Include="include\meshoptimizer\src\simplifier.cpp" />
     <ClCompile Include="MorphGpu.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Fsr3.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Fsr.cpp" />
     <ClCompile Include="PointShadow\PointShadowBatch.cpp" />
     <ClCompile Include="PointLightSlotSelector.cpp" />
     <ClCompile Include="PointShadow\LegacyCubeTechnique.cpp" />

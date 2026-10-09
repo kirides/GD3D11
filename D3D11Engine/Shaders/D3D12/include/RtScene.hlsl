@@ -1,5 +1,6 @@
 // The ray-traced scene shared by WaterRT.hlsl and RtShadows.hlsl: the TLAS, its records and geometry
 // (t0-t12, s0), triangle fetch and the alpha test. Records and bind order: D3D12RayTracing.cpp.
+// Pixel shaders define RT_SCENE_HEAP_BASE and RT_SCENE_SAMPLER instead: the same resources from the heap.
 #ifndef D3D12_RTSCENE_HLSL
 #define D3D12_RTSCENE_HLSL
 
@@ -27,6 +28,30 @@ static const uint kMatAlphaTest = 0x80000000u;
 static const uint kMatNoTexture = 0x40000000u;
 static const uint kMatSlotMask = 0x0000FFFFu;   // MaterialFx packs its table slot above
 
+#ifdef RT_SCENE_HEAP_BASE
+// Heap slot RT_SCENE_HEAP_BASE + n holds what tn holds below (D3D12RayTracing::PixelScene)
+RaytracingAccelerationStructure RtsScene() { RaytracingAccelerationStructure r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE]; return r; }
+StructuredBuffer<RtGeom> RtsGeoms() { StructuredBuffer<RtGeom> r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + 1u]; return r; }
+StructuredBuffer<RtInstance> RtsInstances() { StructuredBuffer<RtInstance> r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + 2u]; return r; }
+StructuredBuffer<uint2> RtsWorldGeoms() { StructuredBuffer<uint2> r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + 3u]; return r; }
+StructuredBuffer<uint> RtsWorldMats() { StructuredBuffer<uint> r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + 4u]; return r; }
+ByteAddressBuffer RtsBuffer( uint t ) { ByteAddressBuffer r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + t]; return r; }
+// Undefined again at the end of this file
+#define Scene      RtsScene()
+#define Geoms      RtsGeoms()
+#define Instances  RtsInstances()
+#define WorldGeoms RtsWorldGeoms()
+#define WorldMats  RtsWorldMats()
+#define WorldVB    RtsBuffer( 5u )
+#define WorldIB    RtsBuffer( 6u )
+#define VobVB      RtsBuffer( 7u )
+#define VobIB      RtsBuffer( 8u )
+#define AttachVB   RtsBuffer( 9u )
+#define AttachIB   RtsBuffer( 10u )
+#define SkinPosUv  RtsBuffer( 11u )
+#define SkelIB     RtsBuffer( 12u )
+#define smpWrap    RT_SCENE_SAMPLER
+#else
 RaytracingAccelerationStructure Scene : register( t0 );
 StructuredBuffer<RtGeom>     Geoms      : register( t1 );
 StructuredBuffer<RtInstance> Instances  : register( t2 );
@@ -42,6 +67,7 @@ ByteAddressBuffer SkinPosUv  : register( t11 );  // 20-byte posed {world pos, uv
 ByteAddressBuffer SkelIB     : register( t12 );
 
 SamplerState smpWrap : register( s0 );
+#endif
 
 uint LoadIndex16( ByteAddressBuffer ib, uint index )
 {
@@ -169,5 +195,22 @@ float TraceVisibility( RayDesc ray, uint mask, bool alphaTest, float coneWidth )
     }
     return TraceBlocker( ray, mask, coneWidth ) < 0.0 ? 1.0 : 0.0;
 }
+
+#ifdef RT_SCENE_HEAP_BASE
+#undef Scene
+#undef Geoms
+#undef Instances
+#undef WorldGeoms
+#undef WorldMats
+#undef WorldVB
+#undef WorldIB
+#undef VobVB
+#undef VobIB
+#undef AttachVB
+#undef AttachIB
+#undef SkinPosUv
+#undef SkelIB
+#undef smpWrap
+#endif
 
 #endif // D3D12_RTSCENE_HLSL

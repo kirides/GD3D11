@@ -106,9 +106,16 @@ static float g_AnisoMipLodBias = 0.0f;
 void D3D12RootLayout::SetAnisoMipLodBias( float bias ) { g_AnisoMipLodBias = bias; }
 float D3D12RootLayout::GetAnisoMipLodBias() { return g_AnisoMipLodBias; }
 
+static UINT g_MaterialAnisotropy = 16;
+
+void D3D12RootLayout::SetMaterialAnisotropy( UINT anisotropy ) { g_MaterialAnisotropy = std::clamp( anisotropy, 1u, 16u ); }
+UINT D3D12RootLayout::GetMaterialAnisotropy() { return g_MaterialAnisotropy; }
+
 D3D12_STATIC_SAMPLER_DESC D3D12RootLayout::SamplerAniso( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,
     UINT maxAnisotropy, D3D12_TEXTURE_ADDRESS_MODE address ) {
-    D3D12_STATIC_SAMPLER_DESC s = MakeSampler( shaderRegister, vis, D3D12_FILTER_ANISOTROPIC, address );
+    if ( maxAnisotropy == 0 ) maxAnisotropy = g_MaterialAnisotropy;
+    D3D12_STATIC_SAMPLER_DESC s = MakeSampler( shaderRegister, vis,
+        maxAnisotropy > 1 ? D3D12_FILTER_ANISOTROPIC : D3D12_FILTER_MIN_MAG_MIP_LINEAR, address );
     s.MaxAnisotropy = maxAnisotropy;
     s.MipLODBias = g_AnisoMipLodBias;
     return s;

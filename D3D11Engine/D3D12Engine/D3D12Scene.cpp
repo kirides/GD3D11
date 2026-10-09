@@ -441,9 +441,8 @@ void D3D12GraphicsEngine::OnLoadWorld()
     // depth-confidence test would reject essentially every pixel while doing it.
     m_TaaHistoryValid = false;
     m_TaaPrevDepthValid = false;
-    // Same argument for FSR 3, whose history lives inside the FFX context where we cannot drop it directly —
-    // the reset flag on the next dispatch is how FSR is told to discard it.
-    m_Fsr3Reset = true;
+    // Same for FSR 2/3, whose history lives inside the FFX context: the next dispatch's reset flag drops it.
+    m_FsrReset = true;
     // Motion vectors: the previous camera belongs to the old world too, so the first frame here must report
     // zero motion rather than reproject through a camera that no longer means anything.
     m_MotionHistoryValid = false;
@@ -1477,8 +1476,37 @@ float D3D12GraphicsEngine::RtSceneVobRadius() const {
 }
 
 
+float D3D12GraphicsEngine::RtSunOnlyRadius() const {
+	const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+	if ( !m_RtSunTraced || !rs.EnableShadows || rs.RayTracedSunShadows == GothicRendererSettings::RT_SHADOWS_OFF )
+		return 0.0f;
+	float radius = rs.RayTracedSunShadowDistance - D3D12RayTracing::SunFadeBand( rs.RayTracedSunShadowDistance );
+	// Grass past Vegetation.hlsl's mask cut-off (7000) shades from the CSM
+	if ( !Engine::GAPI->GetVegetationBoxes().empty() && rs.OutdoorSmallVobDrawRadius > 7000.0f )
+		radius = std::min( radius, 7000.0f );
+	return std::max( radius, 0.0f );
+}
+
+
+void D3D12GraphicsEngine::UploadRtSunConstants() {
+	uint8_t* mapped = m_ShadowCBMapped[m_FrameIndex];
+	if ( !mapped ) return;
+	RtSunCBData cb = {};
+	if ( m_RtSunTraced ) {
+		const UINT base = m_RayTracing->PixelScene();
+		if ( base != UINT_MAX ) {
+			cb.SceneIndex = base + 1;
+			cb.Distance = Engine::GAPI->GetRendererState().RendererSettings.RayTracedSunShadowDistance;
+			cb.FadeBand = D3D12RayTracing::SunFadeBand( cb.Distance );
+		}
+	}
+	memcpy( mapped + kRtSunCbOffset, &cb, sizeof( cb ) );
+}
+
+
 void D3D12GraphicsEngine::TraceRtShadows() {
-	m_RtShadowMaskSlot = UINT_MAX;
+	m_RtShadowMaskSlot = m_RtShadowMaskFrameSlot = UINT_MAX;
+	m_RtSunTraced = false;
 	Engine::GAPI->GetRendererState().RendererInfo.RtPointShadowStatsValid = false;
 	if ( !m_RayTracing || !m_FrameOpen || !m_Pipelines.RtShadows.PSO || !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX
 		|| !m_LightBuffer[m_FrameIndex] || !m_LightGridBuffer ) return;
@@ -1509,7 +1537,10 @@ void D3D12GraphicsEngine::TraceRtShadows() {
 
 	TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 	UINT maskSlot = UINT_MAX;
-	if ( m_RayTracing->TraceShadows( in, maskSlot ) ) m_RtShadowMaskSlot = maskSlot;
+	if ( m_RayTracing->TraceShadows( in, maskSlot ) ) {
+		m_RtShadowMaskSlot = m_RtShadowMaskFrameSlot = maskSlot;
+		m_RtSunTraced = sun;
+	}
 
 	auto& info = Engine::GAPI->GetRendererState().RendererInfo;
 	const D3D12RayTracing::ShadowStats& stats = m_RayTracing->LastShadowStats();
@@ -2604,7 +2635,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// the GPU cull below. Lights and skeletal MOBs keep their frustum tests either way (the light buffer is capped,
 	// and the per-draw skeletal path has no GPU cull yet).
 	// Ray-traced point shadows are decided before the light buffer is built; the scene is built after the prepass
-	m_RtShadowMaskSlot = UINT_MAX;
+	m_RtShadowMaskSlot = m_RtShadowMaskFrameSlot = UINT_MAX;
 	m_RtPointShadowsActive = false;
 	if ( m_RayTracing ) {
 		m_RayTracing->BeginFrame();
@@ -2851,7 +2882,6 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// Water stays out of the queue: it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
-	if ( m_RayTracing ) m_RayTracing->EndFrame();
 
 	// Height fog + god rays BEFORE anything that blends (D3D11's order): fogging afterwards used the depth
 	// behind a transparent surface. Its own graph because it runs mid-scene; arena ranges are name-keyed.
@@ -2880,7 +2910,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		DrawParticleEffects();
 	}
     
+	UploadRtSunConstants();
 	DrawTransparencyQueue();
+	// After the transparents: their sun rays read the scene's buffers
+	if ( m_RayTracing ) m_RayTracing->EndFrame();
 
 	// Rain/snow (D3D12 rain parity, step 2): unlit placeholder billboards, always "wet" — see
 	// DrawRainParticles. Same late-transparency slot D3D11 draws rain in.
@@ -2919,7 +2952,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// declared writes always executes) and every one of these still runs unconditionally, in the same
 	// order, exactly like the flat call sequence this replaces. Each function keeps managing its own
 	// resources and barriers internally, completely unchanged — see the per-function doc comments in
-	// D3D12Fog.cpp/D3D12Taa.cpp/D3D12DoF.cpp/D3D12PostFX.cpp/D3D12Fsr3.cpp/D3D12Underwater.cpp for what
+	// D3D12Fog.cpp/D3D12Taa.cpp/D3D12DoF.cpp/D3D12PostFX.cpp/D3D12Fsr.cpp/D3D12Underwater.cpp for what
 	// each one reads/writes. The payoff here is purely structural: named, GPU-marker-tagged (PIX/RenderDoc)
 	// and Tracy-zoned passes instead of a flat call list, ahead of a follow-up that teaches individual
 	// passes to expose their resources as graph handles — that is what would let Compile() actually
@@ -2964,13 +2997,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderLuminanceAdapt(); };
 		} );
 
-	// FSR 3 temporal upscale (AA_FSR + the FSR 3 upscaler; mutually exclusive with RenderTAA above). Deliberately
-	// AFTER bloom/luminance and immediately before the tonemap resolve, i.e. on the linear HDR scene rather than
-	// on the finished LDR image D3D11 upscales — see D3D12Fsr3.cpp for the reasoning. It writes a DISPLAY-res
-	// target, which ResolveSceneToBackBuffer then samples in place of the render-res scene colour, so the
-	// resolve's implicit bilinear upscale becomes a 1:1 blit. No-op (and the resolve keeps upscaling) otherwise.
-	postFxGraph.AddPass( RG_PASS_NAME( "FSR3 Upscale" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFsr3Upscale(); };
+	// FSR 1/2/3 upscale on the linear HDR scene, after bloom/luminance and before the tonemap resolve, which then
+	// samples its display-res output 1:1 (see D3D12Fsr.cpp). No-op, and the resolve upscales bilinearly, otherwise.
+	postFxGraph.AddPass( RG_PASS_NAME( "FSR Upscale" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFsrUpscale(); };
 		} );
 
 	// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
@@ -3158,6 +3188,29 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 }
 
 
+/** Built on m_Pipelines.World.RootSig, so rebuilt with it (RebuildRootSignatureDependents). */
+bool D3D12GraphicsEngine::CreateWorldIndirectSignature() {
+    D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
+    args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[0].Constant.RootParameterIndex = 10;                 // b6 MaterialCB (world root sig)
+    args[0].Constant.DestOffsetIn32BitValues = 0;
+    args[0].Constant.Num32BitValuesToSet = 4;                 // normal, orm, diffuse, normal-perturb strength
+    args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+    D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+    sigDesc.ByteStride = sizeof( WorldDrawCommand );          // 36 B; MUST match the struct + shader layout
+    sigDesc.NumArgumentDescs = _countof( args );
+    sigDesc.pArgumentDescs = args;
+    // A command that sets root constants must carry the root signature its param index refers to.
+    if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
+        m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: failed to create the world indirect command signature." );
+        return false;
+    }
+    return true;
+}
+
+
 bool D3D12GraphicsEngine::CreateWorldIndirect() {
 	// Command signature + per-frame UPLOAD arg ring for the GPU-driven world mesh (P2.11). One command sets the
 	// b6 material bindless indices (3 root constants @ param 10 of m_Pipelines.World.RootSig) then issues a DrawIndexed. Both
@@ -3167,23 +3220,7 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
 	Rhi::Device* device = m_Rhi.Get();
 	if ( !device || !m_Pipelines.World.RootSig ) return false;
 
-	D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
-	args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
-	args[0].Constant.RootParameterIndex = 10;                 // b6 MaterialCB (world root sig)
-	args[0].Constant.DestOffsetIn32BitValues = 0;
-	args[0].Constant.Num32BitValuesToSet = 4;                 // normal, orm, diffuse, normal-perturb strength
-	args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
-
-	D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
-	sigDesc.ByteStride = sizeof( WorldDrawCommand );          // 36 B; MUST match the struct + shader layout
-	sigDesc.NumArgumentDescs = _countof( args );
-	sigDesc.pArgumentDescs = args;
-	// A command that sets root constants must carry the root signature its param index refers to.
-	if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
-		m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
-		Logging::Wrn( "D3D12: failed to create the world indirect command signature." );
-		return false;
-	}
+	if ( !CreateWorldIndirectSignature() ) return false;
 
 	D3D12MA::ALLOCATION_DESC upload = {};
 	upload.HeapType = DefaultUploadHeapType;
@@ -3554,25 +3591,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 }
 
 
-bool D3D12GraphicsEngine::CreateVobIndirect() {
-    // Command signature + per-frame UPLOAD arg rings for the GPU-driven instanced VOBs (P2.12).
-    //
-    // The signature carries NO buffer views: every static VOB sub-mesh lives in the shared mega-buffers
-    // (D3D12VobArena) and every instance in the one instance buffer the pass binds, so a command is just
-    // material consts + wind consts + DrawIndexed. That is the point of the arena — VBV/IBV arguments are what
-    // make a command an IA state change, and 560 of those per pass dominated the VOB cost. Node attachments
-    // use it too, over the attachment arena. Arg order MUST match VobDrawCommand's member layout. The rings stay
-    // UPLOAD/GENERIC_READ (which includes INDIRECT_ARGUMENT) and are rebuilt each frame.
-    Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Pipelines.World.RootSig ) return false;
-
-    // The trailing 8 bytes (VisualIndex + LodBucket) sit PAST the arguments the GPU reads; ByteStride only has
-    // to cover them, so they are ours (VobCull.hlsl's CSPatchArgs reads both out of the buffer it patches).
-    static_assert( sizeof( VobDrawCommand ) == 48, "VobDrawCommand must match the command signature arg layout (48 B stride)" );
-    static_assert( offsetof( VobDrawCommand, MatNormalIndex ) == 0, "b6 consts lead the VOB command" );
-    static_assert( offsetof( VobDrawCommand, Draw ) == 20, "VobDrawCommand draw args must be last of the indirect arguments" );
-    static_assert( offsetof( VobDrawCommand, VisualIndex ) == 40, "VisualIndex must follow the indirect arguments" );
-
+/** Built on m_Pipelines.World.RootSig, so rebuilt with it (RebuildRootSignatureDependents). */
+bool D3D12GraphicsEngine::CreateVobIndirectSignature() {
     D3D12_INDIRECT_ARGUMENT_DESC args[3] = {};
     args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
     args[0].Constant.RootParameterIndex = 10;                 // b6 MaterialCB { normal, orm, diffuse }
@@ -3594,6 +3614,30 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
         Logging::Wrn( "D3D12: failed to create the VOB indirect command signature." );
         return false;
     }
+    return true;
+}
+
+
+bool D3D12GraphicsEngine::CreateVobIndirect() {
+    // Command signature + per-frame UPLOAD arg rings for the GPU-driven instanced VOBs (P2.12).
+    //
+    // The signature carries NO buffer views: every static VOB sub-mesh lives in the shared mega-buffers
+    // (D3D12VobArena) and every instance in the one instance buffer the pass binds, so a command is just
+    // material consts + wind consts + DrawIndexed. That is the point of the arena — VBV/IBV arguments are what
+    // make a command an IA state change, and 560 of those per pass dominated the VOB cost. Node attachments
+    // use it too, over the attachment arena. Arg order MUST match VobDrawCommand's member layout. The rings stay
+    // UPLOAD/GENERIC_READ (which includes INDIRECT_ARGUMENT) and are rebuilt each frame.
+    Rhi::Device* device = m_Rhi.Get();
+    if ( !device || !m_Pipelines.World.RootSig ) return false;
+
+    // The trailing 8 bytes (VisualIndex + LodBucket) sit PAST the arguments the GPU reads; ByteStride only has
+    // to cover them, so they are ours (VobCull.hlsl's CSPatchArgs reads both out of the buffer it patches).
+    static_assert( sizeof( VobDrawCommand ) == 48, "VobDrawCommand must match the command signature arg layout (48 B stride)" );
+    static_assert( offsetof( VobDrawCommand, MatNormalIndex ) == 0, "b6 consts lead the VOB command" );
+    static_assert( offsetof( VobDrawCommand, Draw ) == 20, "VobDrawCommand draw args must be last of the indirect arguments" );
+    static_assert( offsetof( VobDrawCommand, VisualIndex ) == 40, "VisualIndex must follow the indirect arguments" );
+
+    if ( !CreateVobIndirectSignature() ) return false;
 
     D3D12MA::ALLOCATION_DESC upload = {};
     upload.HeapType = DefaultUploadHeapType;
@@ -3700,8 +3744,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
         barriers.push_back( { c.Src->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
     }
-    // Shader-resource too: the ray-traced reflections build from and read these buffers later in the frame.
-    constexpr D3D12_RESOURCE_STATES kArenaRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    // Shader-resource too: the ray tracing builds from them and its compute and pixel rays read them.
+    constexpr D3D12_RESOURCE_STATES kArenaRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
     if ( vobArena ) {
         barriers.push_back( { m_VobArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST, kArenaRead } );
     }
@@ -4078,20 +4122,8 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
 }
 
 
-bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
-    // T9: command signature + per-frame UPLOAD arg rings for the GPU-driven skeletal base meshes, plus the arg
-    // rings for the node attachments, which submit through m_VobIndirectCmdSig (so this runs after CreateVobIndirect).
-    Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Pipelines.Skeletal.RootSig || !m_Pipelines.World.RootSig ) return false;
-
-    // Root constants and a draw, nothing else: the mesh comes from the arena (Base/StartIndex), the instance
-    // and bones from the skeletal ring row. On Vulkan both constants are push constants, so DGC can run it.
-    static_assert( sizeof( SkeletalDrawCommand ) == 36, "SkeletalDrawCommand must match the command signature arg layout (36 B stride)" );
-    // D3D12 requires the arguments in increasing root-parameter order: b10 (param 2) before b6 (param 11).
-    static_assert( offsetof( SkeletalDrawCommand, InstanceRow ) == 0, "SkeletalDrawCommand b10 must lead" );
-    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 4, "SkeletalDrawCommand b6 consts must follow b10" );
-    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 16, "SkeletalDrawCommand draw args must be last" );
-
+/** Built on m_Pipelines.Skeletal.RootSig, so rebuilt with it (RebuildRootSignatureDependents). */
+bool D3D12GraphicsEngine::CreateSkeletalIndirectSignature() {
     D3D12_INDIRECT_ARGUMENT_DESC args[3] = {};
     args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
     args[0].Constant.RootParameterIndex = 2;                   // b10 SkelDrawCB { SkelInstanceRow }
@@ -4112,6 +4144,25 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
         Logging::Wrn( "D3D12: failed to create the skeletal indirect command signature." );
         return false;
     }
+    return true;
+}
+
+
+bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
+    // T9: command signature + per-frame UPLOAD arg rings for the GPU-driven skeletal base meshes, plus the arg
+    // rings for the node attachments, which submit through m_VobIndirectCmdSig (so this runs after CreateVobIndirect).
+    Rhi::Device* device = m_Rhi.Get();
+    if ( !device || !m_Pipelines.Skeletal.RootSig || !m_Pipelines.World.RootSig ) return false;
+
+    // Root constants and a draw, nothing else: the mesh comes from the arena (Base/StartIndex), the instance
+    // and bones from the skeletal ring row. On Vulkan both constants are push constants, so DGC can run it.
+    static_assert( sizeof( SkeletalDrawCommand ) == 36, "SkeletalDrawCommand must match the command signature arg layout (36 B stride)" );
+    // D3D12 requires the arguments in increasing root-parameter order: b10 (param 2) before b6 (param 11).
+    static_assert( offsetof( SkeletalDrawCommand, InstanceRow ) == 0, "SkeletalDrawCommand b10 must lead" );
+    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 4, "SkeletalDrawCommand b6 consts must follow b10" );
+    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 16, "SkeletalDrawCommand draw args must be last" );
+
+    if ( !CreateSkeletalIndirectSignature() ) return false;
 
     D3D12MA::ALLOCATION_DESC upload = {};
     upload.HeapType = DefaultUploadHeapType;
@@ -4379,6 +4430,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
 void D3D12GraphicsEngine::DrawDepthPrepass() {
     // Forward+ opaque WORLD-MESH depth prepass, before the lit color passes. Writes depth only (color write
     // mask 0). Water is skipped: it is transparent and never writes depth, same as in the opaque pass.
+    m_WorldPrepassDrawn = false;
     if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return;
 
@@ -4441,9 +4493,11 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
         m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
         if ( splitAlpha ) m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
         m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+        m_WorldPrepassDrawn = true;
         return;
     }
     if ( m_WorldDrawCount == 0 ) return;
+    m_WorldPrepassDrawn = true;
     if ( !splitAlpha ) {
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -4617,7 +4671,11 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+    // Opaque run depth-EQUAL against the prepass (no clip, early depth); alpha-tested run keeps PSO's clip.
+    Rhi::PipelineState* opaquePso = m_WorldPrepassDrawn && m_Pipelines.World.OpaquePSO
+        ? m_Pipelines.World.OpaquePSO.Get() : m_Pipelines.World.PSO.Get();
+    m_WorldPrepassDrawn = false;
+    m_CmdList->SetPipelineState( opaquePso );
     BindWorldFrameRootState( viewProj );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
@@ -4639,13 +4697,22 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     if ( m_GpuWorldActive ) {
         if ( m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) {
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
+            m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
         }
         return XR_SUCCESS;
     }
     if ( m_WorldDrawCount == 0 ) return XR_SUCCESS;
-    m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
-        m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+    if ( m_WorldOpaqueDrawCount > 0 ) {
+        m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldOpaqueDrawCount,
+            m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+    }
+    if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
+        m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+        m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
+            m_WorldDrawArgs[m_FrameIndex].Get(),
+            static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );
+    }
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += m_WorldDrawnIndices / 3;
     return XR_SUCCESS;

@@ -135,12 +135,11 @@ float3x3 tangent_frame_explicit( float3 N, float3 T, float sign )
 // geometry that doesn't yet supply a tangent (e.g. VOBs) keep the old behavior.
 float3 perturb_normal( float3 N, float3 V, float4 vertexTangent, Texture2D normalmap, float2 texcoord, SamplerState samplerState, float normalmapDepth = 1.0f )
 {
-    [branch] if ( dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25f )
-    {
-        return perturb_normal( N, V, normalmap, texcoord, samplerState, normalmapDepth );
-    }
-
+    // The tangent test is per pixel, so the derivative frame is built outside it: ddx/ddy in a branch
+    // that splits a quad read inactive lanes and give garbage normals (dark dots along the threshold).
+    float3x3 derivTBN = cotangent_frame( N, -V, texcoord );
     float3 nrmmap = sample_normal_ts( normalmap, texcoord, samplerState, normalmapDepth );
-    float3x3 TBN = tangent_frame_explicit( normalize( N ), vertexTangent.xyz, vertexTangent.w );
+    float3x3 vertexTBN = tangent_frame_explicit( normalize( N ), vertexTangent.xyz, vertexTangent.w );
+    float3x3 TBN = dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25f ? derivTBN : vertexTBN;
     return normalize( mul( nrmmap, TBN ) );
 }

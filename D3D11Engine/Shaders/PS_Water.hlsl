@@ -77,7 +77,7 @@ struct PS_INPUT
 // depth (TX_Depth) and returns the scene color (TX_Scene) at the hit. On a miss the
 // confidence is 0 so the caller falls back to the sky and the static reflection cube.
 //--------------------------------------------------------------------------------------
-// SSR_QUALITY is a compile-time permutation macro: 0=Disabled, 1=Low, 2=Medium, 3=High.
+// SSR_QUALITY is a compile-time permutation macro: 0=Disabled, 1=Low, 2=Medium, 3=High, 4=Ultra.
 // Default to Medium if the macro isn't supplied (e.g. standalone compile).
 #ifndef SSR_QUALITY
 #define SSR_QUALITY 2
@@ -91,9 +91,12 @@ struct PS_INPUT
 #elif SSR_QUALITY == 2      // Medium (balanced quality)
 	#define SSR_MAX_STEPS    24
 	#define SSR_REFINE_STEPS 5
-#else                       // High
+#elif SSR_QUALITY == 3      // High
 	#define SSR_MAX_STEPS    48
 	#define SSR_REFINE_STEPS 6
+#else                       // Ultra
+	#define SSR_MAX_STEPS    128
+	#define SSR_REFINE_STEPS 8
 #endif
 
 #define SSR_MAX_DISTANCE    30000.0f  // view-space units the ray may travel
@@ -137,24 +140,18 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 	float3 originVS = mul( float4(worldPos, 1.0f), RI_View ).xyz;
 	float3 dirVS = normalize( mul( float4(reflectDirWS, 0.0f), RI_View ).xyz );
 
-	// Uniform march; binary search recovers precision at the hit.
-	const float stepLen = SSR_MAX_DISTANCE / (float)SSR_MAX_STEPS;
+	// Quadratic step spacing: short steps near the water catch thin foliage, long ones reach the far shore.
+	// Binary search recovers precision at the hit.
 	float startBias = max( SSR_START_BIAS, originVS.z * 0.002f );
 
 	float3 prevPos = originVS + dirVS * startBias;
-	float2 prevUV;
-	if ( !SSR_ProjectToUV( prevPos, prevUV ) )
-		return float3(0.0f, 0.0f, 0.0f);
-	// delta < 0 => ray is in front of the scene surface at this pixel.
-	// Sky/far pixels have a huge sceneZ, so delta stays very negative there.
-	float prevDelta = prevPos.z - SSR_SceneZ( prevUV );
-	float travelled = startBias;
 
 	[loop]
 	for ( int i = 0; i < SSR_MAX_STEPS; ++i )
 	{
-		float3 curPos = prevPos + dirVS * stepLen;
-		travelled += stepLen;
+		float s = (float)( i + 1 ) / (float)SSR_MAX_STEPS;
+		float travelled = startBias + SSR_MAX_DISTANCE * s * s;
+		float3 curPos = originVS + dirVS * travelled;
 
 		float2 uv;
 		if ( !SSR_ProjectToUV( curPos, uv ) )
@@ -165,20 +162,11 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 		float sceneZ = SSR_SceneZ( uv );
 		float curDelta = curPos.z - sceneZ;
 
-		// Front -> behind crossing between prevPos and curPos: we hit a surface.
-		//
-		// ...but only if the surface sits at or behind where the ray was already in
-		// front (prevPos.z). A genuine continuous surface satisfies sceneZ >= prevPos.z.
-		// If curUV's sceneZ is much NEARER than prevPos.z, the screen-space ray merely
-		// swept BEHIND a foreground silhouette (e.g. the player standing between the
-		// water and the far shore): sceneZ teleports from far-background to near-player,
-		// firing a false crossing. Rejecting these (and continuing the march) stops the
-		// player's dark silhouette from smearing into the water. This must gate the
-		// crossing itself, not the post-refine gap, which binary search always shrinks.
-		if ( prevDelta < 0.0f && curDelta >= 0.0f &&
-		     sceneZ >= prevPos.z - SSR_THICKNESS )
+		// Behind a surface no nearer than the previous sample: a crossing. A much nearer surface is a
+		// foreground occluder (player, thin branches) the ray passes behind; the march continues.
+		if ( curDelta >= 0.0f && sceneZ >= prevPos.z - SSR_THICKNESS )
 		{
-			// Binary-search refine between prevPos (in front) and curPos (behind).
+			// Binary-search refine; samples behind a foreground occluder count as in front.
 			float3 lo = prevPos;
 			float3 hi = curPos;
 			float2 hitUV = uv;
@@ -190,8 +178,9 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 				float2 midUV;
 				if ( !SSR_ProjectToUV( mid, midUV ) )
 					break;
-				float midGap = mid.z - SSR_SceneZ( midUV );
-				if ( midGap >= 0.0f )
+				float midSceneZ = SSR_SceneZ( midUV );
+				float midGap = mid.z - midSceneZ;
+				if ( midGap >= 0.0f && midSceneZ >= lo.z - SSR_THICKNESS )
 				{
 					hi = mid;
 					hitUV = midUV;
@@ -221,7 +210,6 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 		}
 
 		prevPos = curPos;
-		prevDelta = curDelta;
 	}
 
 	return float3(0.0f, 0.0f, 0.0f); // nothing hit -> fall back to cube

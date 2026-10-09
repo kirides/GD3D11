@@ -145,8 +145,7 @@ bool D3D12PipelineState::CreateWorld() {
     // prepass — the only consumer — records anything.
     rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 13: b5 MotionCB
 
-    // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
-    // angles and in the distance, which trilinear alone smears badly.
+    // s0 diffuse: anisotropic per RendererSettings.AnisotropicFiltering (matches D3D11's main texture sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s2: PCF comparison sampler for the CSM depth. Normal-Z map (LESS_EQUAL): SampleCmp returns 1 where the
     // fragment is closer-or-equal to the light than the stored occluder (lit), 0 where behind it (shadowed).
@@ -158,6 +157,8 @@ bool D3D12PipelineState::CreateWorld() {
     // was silently zeroing the ambient term (darker with AO "disabled" than with it on — the opposite of what
     // should happen). CLAMP addressing sidesteps this for both the 1x1 fallback and the real full-res mask.
     rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    // s3: alpha test of the blended VOBs' sun ray (RtSunInline.hlsl)
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 3, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
 
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED enables SM6.6 ResourceDescriptorHeap[...] bindless sampling of the
     // per-material normal/ORM maps out of the shared SRV heap (tier-3; present on the target AMD GPU).
@@ -172,6 +173,11 @@ bool D3D12PipelineState::CreateWorld() {
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSMain", Shadermodel_PS, World.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+    // Non-fatal: without it the opaque run keeps the clipping GREATER_EQUAL PSO.
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSMainOpaque", Shadermodel_PS, World.OpaquePsBlob.ReleaseAndGetAddressOf() ) ) {
+        Logging::Wrn( "D3D12: World.hlsl PSMainOpaque failed to compile — opaque world draws keep the alpha-test shader." );
+        World.OpaquePsBlob.Reset();
+    }
     // Lit quad marks (D3D12Fx.cpp). Non-fatal: DrawQuadMarks falls back to the unlit Fx pipeline if this
     // blob is missing, so a shader edit that breaks it costs the lighting, not the blood splats.
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSQuadMark", Shadermodel_VS, World.QuadMarkVsBlob.ReleaseAndGetAddressOf() ) ) {
@@ -182,6 +188,7 @@ bool D3D12PipelineState::CreateWorld() {
     rs.ValidateShaders( {
         { World.VsBlob.Get(),        "World.hlsl:VSMain",     D3D12_SHADER_VISIBILITY_VERTEX },
         { World.PsBlob.Get(),        "World.hlsl:PSMain",     D3D12_SHADER_VISIBILITY_PIXEL  },
+        { World.OpaquePsBlob.Get(),  "World.hlsl:PSMainOpaque", D3D12_SHADER_VISIBILITY_PIXEL },
         { World.QuadMarkVsBlob.Get(),"World.hlsl:VSQuadMark", D3D12_SHADER_VISIBILITY_VERTEX },
     } );
 
@@ -229,16 +236,9 @@ bool D3D12PipelineState::CreateWorld() {
 
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-    // Reversed-Z: test depth, pass on GREATER_EQUAL (matches Gothic's infinite-far projection).
-    //
-    // Depth write is OFF: the Forward+ depth prepass already laid down this geometry's depth, so a write here
-    // only restores the value already in the buffer. It also lets an alpha-clipping lit shader take plain
-    // early-Z rather than Re-Z, since a `discard` has nothing left to invalidate.
-    //
-    // The test stays GREATER_EQUAL rather than EQUAL: the prepass runs a DIFFERENT vertex shader
-    // (DepthPrepass.hlsl:VSWorld vs World.hlsl:VSMain) and HLSL guarantees no cross-shader SV_Position
-    // invariance, so one ULP under EQUAL makes a whole surface vanish. Same at the VOB/attachment/skeletal
-    // color PSOs.
+    // Reversed-Z GREATER_EQUAL, depth write OFF: the Forward+ depth prepass already laid this geometry's depth.
+    // Serves the alpha-tested run, and everything when OpaquePSO is missing. VOB/skeletal color PSOs stay
+    // GREATER_EQUAL: their prepass VSs are not position-invariant with the lit ones.
     //
     // Does NOT apply to vegetation: DrawVegetationDepthPrepass is range-limited (kVegetationPrepassRange), so
     // distant grass has no prepass depth and must keep writing its own or it stops occluding other grass.
@@ -250,6 +250,18 @@ bool D3D12PipelineState::CreateWorld() {
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, World.PSO.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world)." );
         return false;
+    }
+
+    // Opaque run: EQUAL is safe because VSMain and the prepass VSs compute a `precise` SV_Position from the same
+    // expression. The prepass already cut alpha holes, so no clip and forced early depth.
+    World.OpaquePSO.Reset();
+    if ( World.OpaquePsBlob ) {
+        pso.PS = { World.OpaquePsBlob->GetBufferPointer(), World.OpaquePsBlob->GetBufferSize() };
+        pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, World.OpaquePSO.ReleaseAndGetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world opaque EQUAL) — opaque world draws keep the alpha-test PSO." );
+            World.OpaquePSO.Reset();
+        }
     }
     return true;
 }
@@ -287,6 +299,7 @@ bool D3D12PipelineState::CreateWorldTransparency() {
                           | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     WorldTransparency.RootSig = rs.RootSig();
+    WorldTransparency.BlendPipelines.clear();   // built on the old root sig; DepthFillPSO below comes from this cache
 
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparent", Shadermodel_VS, WorldTransparency.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -1332,7 +1345,10 @@ bool D3D12PipelineState::CreateVob() {
     // layout as the indirect color PSO above (so a peeled material sways exactly as it did in the opaque set),
     // but PSAlphaBlendBindless and blended-without-depth-write state. Non-fatal on failure: both PSOs stay null
     // and BuildVobDrawCommands then leaves these materials in the opaque set (i.e. today's behaviour).
-    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSAlphaBlendBindless", Shadermodel_PS, World.VobAlphaPsBlob.ReleaseAndGetAddressOf() ) ) {
+    // With ray queries the blended surfaces trace their own sun ray (RtSunInline.hlsl)
+    const D3D_SHADER_MACRO rtSunDefines[] = { { "RT_SUN_INLINE", device->GetCaps().RayQuery ? "1" : "0" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSAlphaBlendBindless", Shadermodel_PS, World.VobAlphaPsBlob.ReleaseAndGetAddressOf(),
+        rtSunDefines ) ) {
         Logging::Wrn( "D3D12: PSAlphaBlendBindless failed to compile — blended VOBs stay alpha-clipped in the opaque pass." );
         World.VobAlphaPsBlob.Reset();
         return true;
@@ -1660,6 +1676,8 @@ bool D3D12PipelineState::CreateDecal() {
     // ComputeSunShadow / SampleScreenSpaceAO hard-code those registers.
     rs.AddStaticSampler( D3D12RootLayout::SamplerComparison( 2, D3D12_SHADER_VISIBILITY_PIXEL ) );
     rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    // s3: alpha test of the blended decals' sun ray (RtSunInline.hlsl)
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 3, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
 
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED: the shared lighting helpers reach the SSAO mask, the sky-IBL cubes
     // and the sky-occlusion map through ResourceDescriptorHeap[...].
@@ -1674,7 +1692,10 @@ bool D3D12PipelineState::CreateDecal() {
     if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "PSMainLit", Shadermodel_PS, Decal.LitPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "PSMainBlend", Shadermodel_PS, Decal.BlendPsBlob.ReleaseAndGetAddressOf() ) ) {
+    // With ray queries the blended decals trace their own sun ray (RtSunInline.hlsl)
+    const D3D_SHADER_MACRO rtSunDefines[] = { { "RT_SUN_INLINE", device->GetCaps().RayQuery ? "1" : "0" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "PSMainBlend", Shadermodel_PS, Decal.BlendPsBlob.ReleaseAndGetAddressOf(),
+        rtSunDefines ) ) {
         return false;
     }
 
@@ -1821,8 +1842,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
     rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b8 AOCB { AoMaskIndex }
 
-    // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
-    // angles and in the distance, which trilinear alone smears badly.
+    // s0 diffuse: anisotropic per RendererSettings.AnisotropicFiltering (matches D3D11's main texture sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s2 PCF (see world root sig).
     rs.AddStaticSampler( D3D12RootLayout::SamplerComparison( 2, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -2692,6 +2712,26 @@ bool D3D12PipelineState::CreateRainDraw() {
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, RainDraw.PSO.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (rain draw)." );
         return false;
+    }
+
+    // FSR 2/3 variant: + R8 reactive mask, MAX so overlapping flakes keep the strongest value.
+    RainDraw.ReactivePSO.Reset();
+    if ( m_Shaders->CompileFromFile( "Rain.hlsl", "PSMainReactive", Shadermodel_PS, RainDraw.ReactivePsBlob.ReleaseAndGetAddressOf() ) ) {
+        pso.PS = { RainDraw.ReactivePsBlob->GetBufferPointer(), RainDraw.ReactivePsBlob->GetBufferSize() };
+        pso.NumRenderTargets = 2;
+        pso.RTVFormats[1] = kFsrReactiveFormat;
+        pso.BlendState.IndependentBlendEnable = TRUE;
+        D3D12_RENDER_TARGET_BLEND_DESC& reactive = pso.BlendState.RenderTarget[1];
+        reactive.BlendEnable = TRUE;
+        reactive.SrcBlend = reactive.DestBlend = D3D12_BLEND_ONE;
+        reactive.BlendOp = D3D12_BLEND_OP_MAX;
+        reactive.SrcBlendAlpha = reactive.DestBlendAlpha = D3D12_BLEND_ONE;
+        reactive.BlendOpAlpha = D3D12_BLEND_OP_MAX;
+        reactive.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, RainDraw.ReactivePSO.ReleaseAndGetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (rain draw, FSR reactive mask)." );
+            RainDraw.ReactivePSO.Reset();
+        }
     }
     return true;
 }
@@ -4273,8 +4313,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     runFatal( "World", &D3D12PipelineState::CreateWorld );
     World.QuadMarkPipelines.clear();
     runFatal( "DepthPrepass", &D3D12PipelineState::CreateDepthPrepass );
-    runOptional( "WorldTransparency", &D3D12PipelineState::CreateWorldTransparency );
-    WorldTransparency.BlendPipelines.clear();
+    runOptional( "WorldTransparency", &D3D12PipelineState::CreateWorldTransparency );   // clears its own cache
     runFatal( "LightCull", &D3D12PipelineState::CreateLightCull );
     runFatal( "Vob", &D3D12PipelineState::CreateVob );
     runOptional( "Cull", &D3D12PipelineState::CreateCull );

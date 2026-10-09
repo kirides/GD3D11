@@ -10,7 +10,7 @@ cbuffer MaterialCB : register(b6) { uint _matN; uint _matO; uint MatDiffuseIndex
 // World mesh: single stream, packed 36-byte ExVertexStructGPU. Only Position (@0) + TexCoord0 (@20) are
 // fetched here; the normal/tangent/uv2/color fields are not needed for a depth+alpha-clip pass.
 struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
+struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };   // precise: see World.hlsl VS_OUT
 
 VS_OUT VSWorld( VS_IN i )
 {
@@ -54,7 +54,7 @@ void PSShadowClip( VS_OUT i )
 struct VS_GBUF_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; };
 struct VS_GBUF_OUT
 {
-    float4 clip     : SV_POSITION;
+    precise float4 clip : SV_POSITION;   // see World.hlsl VS_OUT
     float2 uv       : TEXCOORD0;
     float3 wnrm     : TEXCOORD1;   // decoded world-space normal, interpolated as a plain vector
     float4 currClip : TEXCOORD2;

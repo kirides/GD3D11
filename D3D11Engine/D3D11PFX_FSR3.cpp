@@ -6,20 +6,22 @@
 #include "D3D11GraphicsEngine.h"
 #include "Engine.h"
 #include <FidelityFX/backend/dx11/ffx_dx11.h>
+#include <FidelityFX/upscalers/fsr3/include/ffx_fsr2.h>
 #include <FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h>
 
-// Since FFX SDK 2.3.0 the FSR3 Upscaler component lives inside each backend library, so
-// there is one DLL per backend instead of the old backend+component split. Only the DX11
-// one is imported here; the DX12 side is loaded on demand (see D3D12Fsr3.cpp).
+// One DLL per backend carries FSR 1, 2 and 3. Only the DX11 one is imported here; the DX12 and
+// Vulkan ones are loaded on demand (see D3D12Fsr.cpp).
 #pragma comment(lib, "ffx_fsr3upscaler_dx11_x86.lib")
 
 D3D11PFX_FSR3::D3D11PFX_FSR3( D3D11PfxRenderer* renderer )
     : Renderer( renderer )
+    , Fsr2Context( nullptr )
+    , Context( nullptr )
     , ScratchMemory( nullptr )
     , MaxInputSize( 0, 0 )
     , MaxOutputSize( 0, 0 )
-    , Initialized( false )
-    , Context(nullptr) {
+    , Version( EVersion::Fsr3 )
+    , Initialized( false ) {
 }
 
 D3D11PFX_FSR3::~D3D11PFX_FSR3() {
@@ -31,7 +33,7 @@ static void Ffx_log( FfxApiMsgType type,
     Logging::Err( "FFX3 Error ({}): {}", static_cast<int>( type ), Toolbox::ToMultiByte( message ) );
 }
 
-bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) {
+bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize, EVersion version ) {
     if ( Initialized ) {
         return true;
     }
@@ -41,11 +43,16 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
 
     MaxInputSize = maxInputSize;
     MaxOutputSize = maxOutputSize;
+    Version = version;
+    const char* name = version == EVersion::Fsr2 ? "FSR2" : "FSR3";
 
-    // 1. Setup the DX11 Interface
-    const int maxContexts = FFX_FSR3UPSCALER_CONTEXT_COUNT;
+    // 1. Setup the DX11 Interface. The scratch must be zeroed: the backend reads its refcount before init.
+    const int maxContexts = version == EVersion::Fsr2 ? FFX_FSR2_CONTEXT_COUNT : FFX_FSR3UPSCALER_CONTEXT_COUNT;
     const size_t scratchBufferSize = ffxGetScratchMemorySizeDX11( maxContexts );
-    ScratchMemory = malloc( scratchBufferSize );
+    ScratchMemory = calloc( 1, scratchBufferSize );
+    if ( !ScratchMemory ) {
+        return false;
+    }
 
     FfxInterface ffxInterface;
     FfxErrorCode errorCode = ffxGetInterfaceDX11(
@@ -57,10 +64,40 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
     );
 
     if ( errorCode != FFX_OK ) {
-        Logging::Err( "FSR3: Failed to get DX11 interface." );
+        Logging::Err( "{}: Failed to get DX11 interface.", name );
         free( ScratchMemory );
         ScratchMemory = nullptr;
         return false;
+    }
+
+    if ( version == EVersion::Fsr2 ) {
+        FfxFsr2ContextDescription fsr2Desc = {};
+        fsr2Desc.flags = FFX_FSR2_ENABLE_HIGH_DYNAMIC_RANGE
+            | FFX_FSR2_ENABLE_AUTO_EXPOSURE
+            | FFX_FSR2_ENABLE_DEPTH_INVERTED
+            | FFX_FSR2_ENABLE_DEPTH_INFINITE
+            | FFX_FSR2_ENABLE_DYNAMIC_RESOLUTION;
+#ifdef DEBUG_D3D11
+        fsr2Desc.flags |= FFX_FSR2_ENABLE_DEBUG_CHECKING;
+        fsr2Desc.fpMessage = &Ffx_log;
+#endif
+        fsr2Desc.maxRenderSize.width = maxInputSize.x;
+        fsr2Desc.maxRenderSize.height = maxInputSize.y;
+        fsr2Desc.displaySize.width = maxOutputSize.x;
+        fsr2Desc.displaySize.height = maxOutputSize.y;
+        fsr2Desc.backendInterface = ffxInterface;
+
+        Fsr2Context = new FfxFsr2Context{};
+        errorCode = ffxFsr2ContextCreate( Fsr2Context, &fsr2Desc );
+        if ( errorCode != FFX_OK ) {
+            Logging::Err( "FSR2: Failed to create context ({}).", static_cast<int>( errorCode ) );
+            free( ScratchMemory );
+            ScratchMemory = nullptr;
+            SAFE_DELETE( Fsr2Context );
+            return false;
+        }
+        Initialized = true;
+        return true;
     }
 
     // 2. Setup the FSR3 Context Description
@@ -103,8 +140,14 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
 
 void D3D11PFX_FSR3::Destroy() {
     if ( Initialized ) {
-        ffxFsr3UpscalerContextDestroy( Context );
-        SAFE_DELETE(Context);
+        if ( Fsr2Context ) {
+            ffxFsr2ContextDestroy( Fsr2Context );
+            SAFE_DELETE( Fsr2Context );
+        }
+        if ( Context ) {
+            ffxFsr3UpscalerContextDestroy( Context );
+            SAFE_DELETE( Context );
+        }
 
         if ( ScratchMemory ) {
             free( ScratchMemory );
@@ -139,6 +182,7 @@ namespace {
 }
 
 XRESULT D3D11PFX_FSR3::Apply(
+    EVersion version,
     ID3D11ShaderResourceView* color,
     ID3D11ShaderResourceView* depth,
     ID3D11ShaderResourceView* motionVectors,
@@ -156,10 +200,10 @@ XRESULT D3D11PFX_FSR3::Apply(
     bool enableSharpening,
     float sharpness ) {
 
-    if ( !Initialized || (MaxInputSize != inputSize || MaxOutputSize != outputSize) ) {
+    if ( !Initialized || Version != version || MaxInputSize != inputSize || MaxOutputSize != outputSize ) {
         Destroy();
-        if (!Init( inputSize, outputSize )) {
-            Logging::Err( "FSR3: Failed to initialize" );
+        if ( !Init( inputSize, outputSize, version ) ) {
+            Logging::Err( "{}: Failed to initialize", version == EVersion::Fsr2 ? "FSR2" : "FSR3" );
             return XR_FAILED;
         }
     }
@@ -179,6 +223,40 @@ XRESULT D3D11PFX_FSR3::Apply(
     context->VSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
     context->PSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
     context->CSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
+
+    // With DEPTH_INVERTED | DEPTH_INFINITE, near/far are the inverted metrics the caller passes.
+    if ( version == EVersion::Fsr2 ) {
+        FfxFsr2DispatchDescription fsr2 = {};
+        fsr2.commandList = ffxGetCommandListDX11( context );
+        fsr2.color = GetAsFfxResource( color, L"FSR2_InputColor" );
+        fsr2.depth = GetAsFfxResource( depth, L"FSR2_InputDepth" );
+        fsr2.motionVectors = GetAsFfxResource( motionVectors, L"FSR2_InputMotionVectors" );
+        fsr2.output = GetAsFfxResource( output, L"FSR2_OutputColor" );
+        if ( reactiveMask ) {
+            fsr2.reactive = GetAsFfxResource( reactiveMask, L"FSR2_ReactiveMask" );
+        }
+        fsr2.renderSize.width = inputSize.x;
+        fsr2.renderSize.height = inputSize.y;
+        fsr2.jitterOffset.x = jitterOffset.x;
+        fsr2.jitterOffset.y = jitterOffset.y;
+        fsr2.motionVectorScale.x = motionVectorScale.x;
+        fsr2.motionVectorScale.y = motionVectorScale.y;
+        fsr2.reset = resetAccumulation;
+        fsr2.enableSharpening = enableSharpening;
+        fsr2.sharpness = std::clamp( sharpness, 0.0f, 1.0f );
+        fsr2.frameTimeDelta = deltaTimeMs >= 1.0f ? deltaTimeMs : 1.0f;
+        fsr2.preExposure = 1.0f;
+        fsr2.viewSpaceToMetersFactor = 0.01f;
+        fsr2.cameraFovAngleVertical = XMConvertToRadians( cameraFovAngleVertical );
+        fsr2.cameraNear = cameraNear;
+        fsr2.cameraFar = cameraFar;
+
+        if ( ffxFsr2ContextDispatch( Fsr2Context, &fsr2 ) != FFX_OK ) {
+            Logging::Err( "FSR2: Context dispatch failed." );
+            return XR_FAILED;
+        }
+        return XR_SUCCESS;
+    }
 
     FfxFsr3UpscalerDispatchDescription dispatchDesc = {};
     dispatchDesc.commandList = ffxGetCommandListDX11( context );

@@ -192,6 +192,9 @@ public:
         }
     }
 
+    /** Blocks until the GPU has finished all submitted work. D3D11 tracks object lifetimes itself. */
+    virtual void WaitForGpuIdle() {}
+
     /** Called to set the current viewport */
     virtual XRESULT SetViewport( const ViewportInfo& viewportInfo ) PURE;
 

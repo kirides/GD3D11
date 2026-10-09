@@ -46,10 +46,10 @@ namespace VulkanRhi {
         VkImage image = m_OwnsImage ? m_Image : VK_NULL_HANDLE;
         VmaAllocation allocation = m_Allocation;
         const uint32_t id = m_BufferId;
-        const bool hostMapped = m_HostPointer.load() != nullptr;
-        device->DeferDestroy( [device, views = std::move( views ), buffer, image, allocation, id, hostMapped]() {
+        const uint32_t mapCount = m_MapCount.load() + ( m_HostPointer.load() ? 1u : 0u );
+        device->DeferDestroy( [device, views = std::move( views ), buffer, image, allocation, id, mapCount]() {
             for ( VkImageView v : views ) vkDestroyImageView( device->Vk(), v, nullptr );
-            if ( hostMapped ) vmaUnmapMemory( device->Allocator(), allocation );
+            for ( uint32_t i = 0; i < mapCount; ++i ) vmaUnmapMemory( device->Allocator(), allocation );
             if ( buffer ) vmaDestroyBuffer( device->Allocator(), buffer, allocation );
             else if ( image && allocation ) vmaDestroyImage( device->Allocator(), image, allocation );
             else if ( image ) vkDestroyImage( device->Vk(), image, nullptr );
@@ -61,6 +61,7 @@ namespace VulkanRhi {
         if ( !m_Allocation || m_HeapType == D3D12_HEAP_TYPE_DEFAULT ) return E_INVALIDARG;
         void* mapped = nullptr;
         if ( m_Device->CheckResult( vmaMapMemory( m_Device->Allocator(), m_Allocation, &mapped ), "vmaMapMemory" ) ) return E_OUTOFMEMORY;
+        m_MapCount.fetch_add( 1 );
         if ( !readRange || readRange->End > readRange->Begin )
             vmaInvalidateAllocation( m_Device->Allocator(), m_Allocation, readRange ? readRange->Begin : 0,
                 readRange ? readRange->End - readRange->Begin : VK_WHOLE_SIZE );
@@ -70,6 +71,10 @@ namespace VulkanRhi {
 
     void ResourceImpl::Unmap( UINT, const D3D12_RANGE* writtenRange ) {
         if ( !m_Allocation ) return;
+        for ( uint32_t n = m_MapCount.load(); ; ) {
+            if ( n == 0 ) return;   // unbalanced Unmap; VMA would assert
+            if ( m_MapCount.compare_exchange_weak( n, n - 1 ) ) break;
+        }
         if ( !writtenRange || writtenRange->End > writtenRange->Begin )
             vmaFlushAllocation( m_Device->Allocator(), m_Allocation, writtenRange ? writtenRange->Begin : 0,
                 writtenRange ? writtenRange->End - writtenRange->Begin : VK_WHOLE_SIZE );
@@ -1419,6 +1424,23 @@ namespace VulkanRhi {
         outLayout = general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
         return true;
     }
+    uint64_t NativeImage( Rhi::Resource* resource, VkImageCreateInfo* outInfo ) {
+        const ResourceImpl* r = ToImpl( resource );
+        if ( !r || !r->m_Image ) return 0;
+        if ( outInfo ) {
+            *outInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            outInfo->imageType = r->m_Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+            outInfo->format = r->m_Format;
+            outInfo->extent = r->m_Extent;
+            outInfo->mipLevels = r->m_Mips;
+            outInfo->arrayLayers = r->m_Layers;
+            outInfo->samples = VK_SAMPLE_COUNT_1_BIT;
+            outInfo->tiling = VK_IMAGE_TILING_OPTIMAL;
+            outInfo->usage = r->m_Usage;
+        }
+        return VkUtil::HandleToU64( r->m_Image );
+    }
+
     Microsoft::WRL::ComPtr<Rhi::Device> CreateDevice() {
         ComPtr<DeviceImpl> device;
         device.Attach( new DeviceImpl() );
