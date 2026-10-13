@@ -39,6 +39,47 @@ namespace CrashDump {
             return std::format( "{}", address );
         }
 
+        /** Memory around the crashed thread's registers; IndirectlyReferencedMemory only follows stack pointers. */
+        struct RegisterMemory {
+            static constexpr uintptr_t Radius = 512;
+            std::array<std::pair<ULONG64, ULONG>, 9> Ranges = {};
+            size_t Count = 0;
+            size_t Next = 0;
+
+            void Add( uintptr_t center ) {
+                MEMORY_BASIC_INFORMATION mbi;
+                if ( !VirtualQuery( reinterpret_cast<void*>( center ), &mbi, sizeof( mbi ) ) || mbi.State != MEM_COMMIT ) return;
+                constexpr DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                    PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+                if ( !( mbi.Protect & readable ) || ( mbi.Protect & PAGE_GUARD ) ) return;
+
+                // Clipped to the region so the dump never touches an unreadable neighbour.
+                const uintptr_t regionLo = reinterpret_cast<uintptr_t>( mbi.BaseAddress );
+                const uintptr_t regionHi = regionLo + mbi.RegionSize;
+                const uintptr_t lo = std::max( center > Radius ? center - Radius : 0, regionLo );
+                const uintptr_t hi = std::min( center < UINTPTR_MAX - Radius ? center + Radius : UINTPTR_MAX, regionHi );
+                if ( hi > lo && Count < Ranges.size() ) {
+                    Ranges[Count++] = { lo, static_cast<ULONG>( hi - lo ) };
+                }
+            }
+
+            explicit RegisterMemory( const CONTEXT& ctx ) {
+                for ( DWORD reg : { ctx.Eax, ctx.Ebx, ctx.Ecx, ctx.Edx, ctx.Esi, ctx.Edi, ctx.Ebp, ctx.Esp, ctx.Eip } ) {
+                    Add( reg );
+                }
+            }
+        };
+
+        BOOL CALLBACK DumpCallback( void* param, PMINIDUMP_CALLBACK_INPUT input, PMINIDUMP_CALLBACK_OUTPUT output ) {
+            if ( input->CallbackType != MemoryCallback ) return TRUE;
+            RegisterMemory& memory = *static_cast<RegisterMemory*>( param );
+            if ( memory.Next >= memory.Count ) return FALSE; // no more ranges
+            output->MemoryBase = memory.Ranges[memory.Next].first;
+            output->MemorySize = memory.Ranges[memory.Next].second;
+            ++memory.Next;
+            return TRUE;
+        }
+
         /** Own thread: MiniDumpWriteDump wants the crashed thread stopped, and a stack overflow leaves it no stack. */
         DWORD WINAPI WriteDump( void* param ) {
             const Crash& crash = *static_cast<Crash*>( param );
@@ -54,8 +95,10 @@ namespace CrashDump {
                 const DWORD type = MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithDataSegs | MiniDumpWithHandleData |
                     MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules;
                 MINIDUMP_EXCEPTION_INFORMATION exception = { crash.ThreadId, crash.Info, FALSE };
+                RegisterMemory memory( *crash.Info->ContextRecord );
+                MINIDUMP_CALLBACK_INFORMATION callback = { &DumpCallback, &memory };
                 written = g_writeDump( GetCurrentProcess(), GetCurrentProcessId(), file, static_cast<MINIDUMP_TYPE>( type ),
-                    &exception, nullptr, nullptr );
+                    &exception, nullptr, &callback );
                 CloseHandle( file );
                 if ( !written ) {
                     DeleteFileW( path.c_str() );
