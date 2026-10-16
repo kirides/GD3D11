@@ -13,9 +13,11 @@ std::array<uint32_t, kMaxSkinnedSubmeshes> g_SkinDst;
 
 namespace {
     // A reservation; the arena range is resolved at dispatch, after the frame's last arena flush, which is also
-    // what every draw checks — so a sub-mesh is drawn exactly when its job ran.
+    // what every draw checks — so a sub-mesh is drawn exactly when its job ran. Holds no mesh pointer: the
+    // dispatch must not depend on the mesh still being alive or unchanged.
     struct PendingSkin {
-        const SkeletalMeshInfo* Mesh;
+        uint32_t ArenaSlot;
+        uint32_t VertexCount;   // posed vertices reserved at DstBase
         uint32_t DstBase;
         uint32_t InstanceRow;
     };
@@ -126,7 +128,7 @@ uint32_t D3D12GraphicsEngine::ReserveSkinned( const SkeletalMeshVisualInfo* visu
                 if ( m_SkinnedPosUv && m_SkinnedUsed + count <= m_SkinnedCapacity ) {
                     dst = m_SkinnedUsed;
                     m_SkinnedUsed += count;
-                    g_PendingSkins.push_back( { mesh.get(), dst, instanceRow } );
+                    g_PendingSkins.push_back( { mesh->ArenaSlot.Get(), count, dst, instanceRow } );
                 } else if ( !m_SkinnedOverflowLogged ) {
                     Logging::Wrn( "D3D12: posed skinned-vertex streams full ({} vertices); growing them next frame.", m_SkinnedCapacity );
                     m_SkinnedOverflowLogged = true;
@@ -150,9 +152,10 @@ void D3D12GraphicsEngine::DispatchSkinning() {
     SkinGroupGPU* groups = reinterpret_cast<SkinGroupGPU*>( m_SkinJobRingPtr[frame] + kSkinJobBytes );
     UINT jobCount = 0, groupCount = 0, vertexCount = 0;
     for ( const PendingSkin& p : g_PendingSkins ) {
-        const D3D12MeshArena::Range* range = m_SkelArena->Find( p.Mesh->ArenaSlot );
+        const D3D12MeshArena::Range* range = m_SkelArena->Find( p.ArenaSlot );
         if ( !range ) continue;   // not uploaded yet — no pass draws it either
-        const UINT count = static_cast<UINT>( p.Mesh->Vertices.size() );
+        // Root descriptors are not bounds-checked: stay inside both the arena range and the reservation.
+        const UINT count = std::min( p.VertexCount, range->VertexCount );
         jobs[jobCount] = { range->BaseVertex, count, p.DstBase, p.InstanceRow };
         for ( UINT v = 0; v < count; v += kSkinThreadGroup )
             groups[groupCount++] = { jobCount, v };

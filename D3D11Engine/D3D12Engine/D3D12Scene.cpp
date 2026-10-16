@@ -5349,11 +5349,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 memcpy( ringBase + boneOff + boneSize, prevBones.data(), boneSize );
                 m_SkeletalCBBufferOffset = boneOff + boneSize * 2;
 
-                entry.instRow = instOff / kSkeletalRowBytes;
-                entry.skinFirst = ReserveSkinned( visual, entry.instRow );
-                entry.hasBaseMesh = true;
-
                 // Into the skinned-mesh arena on first sight; drawn from there once the next flush landed it.
+                // Before ReserveSkinned, which records each mesh's slot.
                 for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
                     for ( auto const& mesh : meshList ) {
                         if ( !mesh ) continue;
@@ -5361,6 +5358,10 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             mesh->Indices.data(), static_cast<UINT>( mesh->Indices.size() ) );
                     }
                 }
+
+                entry.instRow = instOff / kSkeletalRowBytes;
+                entry.skinFirst = ReserveSkinned( visual, entry.instRow );
+                entry.hasBaseMesh = true;
             }
 
             // Node attachments (weapons/heads/lamps/held items): world = modelWorld * boneMatrix[node]. Upload

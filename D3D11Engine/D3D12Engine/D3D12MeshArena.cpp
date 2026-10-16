@@ -106,7 +106,11 @@ void D3D12MeshArena::Forget( GpuArenaSlot& slot ) {
 
 
 const D3D12MeshArena::Range* D3D12MeshArena::Find( const GpuArenaSlot& slot ) const {
-    const uint32_t index = slot.Get();
+    return Find( slot.Get() );
+}
+
+
+const D3D12MeshArena::Range* D3D12MeshArena::Find( uint32_t index ) const {
     if ( index >= m_Published.size() ) return nullptr;
     const Range& r = m_Published[index];
     return r.IndexCount ? &r : nullptr;
@@ -258,7 +262,7 @@ bool D3D12MeshArena::FlushLocked( D3D12GraphicsEngine* engine ) {
     m_Published.resize( m_Records.size() );
     for ( uint32_t index : uploads ) {
         const Record& r = m_Records[index];
-        m_Published[index] = { r.BaseVertex, r.StartIndex, r.IndexCount };
+        m_Published[index] = { r.BaseVertex, r.StartIndex, r.IndexCount, r.VertexCount };
     }
     return true;
 }

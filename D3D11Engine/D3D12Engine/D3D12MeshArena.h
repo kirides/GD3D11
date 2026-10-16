@@ -27,6 +27,7 @@ public:
         UINT BaseVertex = 0;
         UINT StartIndex = 0;
         UINT IndexCount = 0;   // 0 = not resident
+        UINT VertexCount = 0;
     };
 
     D3D12MeshArena( UINT vertexStride, const wchar_t* vbName, const wchar_t* ibName, const char* logName );
@@ -44,6 +45,9 @@ public:
 
     /** nullptr until the mesh's upload has been flushed. */
     const Range* Find( const GpuArenaSlot& slot ) const;
+    /** By a slot index read earlier (GpuArenaSlot::Get). Across at most one Flush it never names another mesh:
+        a slot that Flush released reads as not resident until a later Flush publishes its reuse. */
+    const Range* Find( uint32_t slotIndex ) const;
 
     bool Ready() const { return m_VertexBuffer != nullptr && m_IndexBuffer != nullptr; }
     Rhi::Resource* GetVertexBuffer() const { return m_VertexBuffer.Get(); }
