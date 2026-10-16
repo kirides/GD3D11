@@ -765,8 +765,8 @@ struct D3D12RayTracing::Impl {
         const D3D12_GPU_VIRTUAL_ADDRESS vbVa = arena->GetVertexBuffer()->GetGPUVirtualAddress();
         const D3D12_GPU_VIRTUAL_ADDRESS ibVa = arena->GetIndexBuffer()->GetGPUVirtualAddress();
         for ( const FrameAttachDraw& a : draws ) {
-            if ( !a.mesh || a.mesh->Vertices.empty() ) continue;
-            const D3D12MeshArena::Range* r = arena->Find( a.mesh->ArenaSlot );
+            if ( !a.mesh ) continue;   // still the BLAS cache key below
+            const D3D12MeshArena::Range* r = arena->Find( a.arenaSlot );
             if ( !r || r->IndexCount == 0 ) continue;
 
             CachedBlas& b = Attachments[a.mesh];
@@ -774,7 +774,7 @@ struct D3D12RayTracing::Impl {
             if ( !b.Mem.Valid() ) {
                 GeomDescs.clear();
                 GeomDescs.push_back( TriangleGeometry( vbVa + static_cast<UINT64>( r->BaseVertex ) * arena->VertexStride(), arena->VertexStride(),
-                    static_cast<UINT>( a.mesh->Vertices.size() ), ibVa + static_cast<UINT64>( r->StartIndex ) * sizeof( uint16_t ),
+                    r->VertexCount, ibVa + static_cast<UINT64>( r->StartIndex ) * sizeof( uint16_t ),
                     DXGI_FORMAT_R16_UINT, r->IndexCount, !a.alphaTested ) );
                 if ( !BuildCached( s, b, OwnerKind::Attachment, a.mesh, r->IndexCount / 3 ) ) continue;
             }
@@ -801,29 +801,24 @@ struct D3D12RayTracing::Impl {
 
         static std::vector<RtGeomGPU> records;
         for ( const FrameSkelDraw& d : draws ) {
-            if ( !d.visual ) continue;
             GeomDescs.clear();
             records.clear();
-            uint32_t sub = 0, matIndex = 0;
-            for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
+            for ( uint32_t k = 0; k < d.skinCount; ++k ) {
+                const SkinnedSubmesh& sub = g_SkinSubmeshes[d.skinFirst + k];
+                if ( sub.Posed == kNoSkinnedOutput ) continue;
+                const D3D12MeshArena::Range* r = arena->Find( sub.ArenaSlot );
+                if ( !r || r->IndexCount == 0 ) continue;
                 uint32_t material = kMatNoTexture;
                 bool alpha = true;
-                if ( matIndex < d.matCount ) {
-                    const SkelMatSlot& m = g_SkelMatSlots[d.matFirst + matIndex];
+                if ( sub.MatIndex < d.matCount ) {
+                    const SkelMatSlot& m = g_SkelMatSlots[d.matFirst + sub.MatIndex];
                     material = ( m.slot & kMatSlotMask ) | ( m.alphaTested ? kMatAlphaTest : 0u );
                     alpha = m.alphaTested;
                 }
-                ++matIndex;
-                for ( auto const& mesh : meshList ) {
-                    const uint32_t base = SkinnedBase( d, sub++ );
-                    if ( !mesh || base == kNoSkinnedOutput ) continue;
-                    const D3D12MeshArena::Range* r = arena->Find( mesh->ArenaSlot );
-                    if ( !r || r->IndexCount == 0 ) continue;
-                    GeomDescs.push_back( TriangleGeometry( posedVa + static_cast<UINT64>( base ) * D3D12GraphicsEngine::kSkinnedPosUvStride,
-                        D3D12GraphicsEngine::kSkinnedPosUvStride, static_cast<UINT>( mesh->Vertices.size() ),
-                        ibVa + static_cast<UINT64>( r->StartIndex ) * sizeof( uint16_t ), DXGI_FORMAT_R16_UINT, r->IndexCount, !alpha ) );
-                    records.push_back( { base, r->StartIndex, material, kKindSkinned } );
-                }
+                GeomDescs.push_back( TriangleGeometry( posedVa + static_cast<UINT64>( sub.Posed ) * D3D12GraphicsEngine::kSkinnedPosUvStride,
+                    D3D12GraphicsEngine::kSkinnedPosUvStride, r->VertexCount,
+                    ibVa + static_cast<UINT64>( r->StartIndex ) * sizeof( uint16_t ), DXGI_FORMAT_R16_UINT, r->IndexCount, !alpha ) );
+                records.push_back( { sub.Posed, r->StartIndex, material, kKindSkinned } );
             }
             if ( GeomDescs.empty() ) continue;
 

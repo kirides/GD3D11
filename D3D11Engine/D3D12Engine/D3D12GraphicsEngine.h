@@ -1082,7 +1082,7 @@ private:
 
     // ---- Compute skinning (D3D12Skinning.cpp, Shaders/D3D12/SkinVertices.hlsl) ----------------------------------
     // PrepareFrameSkeletals reserves each prepared sub-mesh a range of the two posed streams (ReserveSkinned,
-    // g_SkinDst); DispatchSkinning poses them all in one dispatch before the depth prepass. Every pass but the
+    // g_SkinSubmeshes); DispatchSkinning poses them all in one dispatch before the depth prepass. Every pass but the
     // ghost one then draws them as world-space geometry with the skeletal arena's indices.
     static constexpr UINT kSkinnedPosUvStride = 20;     // float3 pos, float2 uv
     static constexpr UINT kSkinnedNrmPrevStride = 16;   // snorm16x2 octahedral normal, float3 previous pos
@@ -1096,8 +1096,9 @@ private:
     uint8_t* m_SkinJobRingPtr[kBackBufferMax] = {};
     bool CreateSkinningResources();
     void BeginSkinningFrame();   // before the frame's first PrepareFrameSkeletals
-    /** Reserves posed ranges for every sub-mesh of `visual`; returns the FrameSkelDraw::skinFirst to record. */
-    uint32_t ReserveSkinned( const SkeletalMeshVisualInfo* visual, uint32_t instanceRow );
+    /** Reserves posed ranges for every sub-mesh of `visual` and snapshots them into g_SkinSubmeshes; returns
+        FrameSkelDraw::skinFirst and sets `count` to its skinCount. */
+    uint32_t ReserveSkinned( const SkeletalMeshVisualInfo* visual, uint32_t instanceRow, uint32_t& count );
     void DispatchSkinning();     // after the frame's last PrepareFrameSkeletals, before the depth prepass
     D3D12_VERTEX_BUFFER_VIEW SkinnedPosUvView() const;
     /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1. */

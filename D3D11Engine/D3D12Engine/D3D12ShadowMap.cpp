@@ -1144,7 +1144,7 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 
 
 void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
-	// Pool-thread safe: reads the main-thread snapshots (g_SkelMatSlots, g_SkinDst, FrameAttachDraw) and the
+	// Pool-thread safe: reads the main-thread snapshots (g_SkelMatSlots, g_SkinSubmeshes, FrameAttachDraw) and the
 	// arenas' lock-free Find. Both sets are partitioned opaque-first, like the main view's.
 	const UINT c = cascade;
 	const UINT frame = m_E->m_FrameIndex;
@@ -1166,37 +1166,28 @@ void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
 		alphaSkel.clear();
 		bool full = false;
 		for ( const FrameSkelDraw& d : SkelDraws[c] ) {
-			if ( !d.visual ) continue;
 			// Per-instance diffuse slots snapshotted on the main thread (see [[skeletal-texani-shared-slots]]).
-			uint32_t matIdx = 0;
-			uint32_t sub = 0;   // index into this vob's g_SkinDst entries
-			for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-				const bool haveSlot = matIdx < d.matCount;
-				const SkelMatSlot* snap = haveSlot ? &g_SkelMatSlots[d.matFirst + matIdx] : nullptr;
-				const UINT diffuseSlot = snap ? snap->slot : blackSlot;
+			for ( uint32_t k = 0; k < d.skinCount; ++k ) {
+				const SkinnedSubmesh& sub = g_SkinSubmeshes[d.skinFirst + k];
+				if ( sub.Posed == kNoSkinnedOutput ) continue;
+				const D3D12MeshArena::Range* range = m_E->m_SkelArena->Find( sub.ArenaSlot );
+				if ( !range ) continue;
+				if ( count + alphaSkel.size() >= kMaxSkelCasterCommands ) { full = true; break; }
+				const SkelMatSlot* snap = sub.MatIndex < d.matCount ? &g_SkelMatSlots[d.matFirst + sub.MatIndex] : nullptr;
 				// No snapshot -> assume it clips: a missed cutout is a solid shadow, a needless clip only slower.
 				const bool alphaTested = !snap || snap->alphaTested;
-				++matIdx;
-				for ( auto const& mesh : meshList ) {
-					const uint32_t posed = SkinnedBase( d, sub++ );
-					if ( !mesh || posed == kNoSkinnedOutput ) continue;
-					const D3D12MeshArena::Range* range = m_E->m_SkelArena->Find( mesh->ArenaSlot );
-					if ( !range ) continue;
-					if ( count + alphaSkel.size() >= kMaxSkelCasterCommands ) { full = true; break; }
-					SkelCmd cmd{};
-					cmd.InstanceRow = d.instRow;
-					cmd.MatNormalIndex = 0xFFFFFFFFu;
-					cmd.MatOrmIndex = defaultOrm;
-					cmd.MatDiffuseIndex = diffuseSlot;
-					cmd.Draw.IndexCountPerInstance = range->IndexCount;
-					cmd.Draw.InstanceCount = 1;
-					cmd.Draw.StartIndexLocation = range->StartIndex;
-					cmd.Draw.BaseVertexLocation = static_cast<INT>( posed );   // arena indices over the posed vertices
-					cmd.Draw.StartInstanceLocation = 0;
-					if ( alphaTested ) alphaSkel.push_back( cmd );
-					else               cmds[count++] = cmd;
-				}
-				if ( full ) break;
+				SkelCmd cmd{};
+				cmd.InstanceRow = d.instRow;
+				cmd.MatNormalIndex = 0xFFFFFFFFu;
+				cmd.MatOrmIndex = defaultOrm;
+				cmd.MatDiffuseIndex = snap ? snap->slot : blackSlot;
+				cmd.Draw.IndexCountPerInstance = range->IndexCount;
+				cmd.Draw.InstanceCount = 1;
+				cmd.Draw.StartIndexLocation = range->StartIndex;
+				cmd.Draw.BaseVertexLocation = static_cast<INT>( sub.Posed );   // arena indices over the posed vertices
+				cmd.Draw.StartInstanceLocation = 0;
+				if ( alphaTested ) alphaSkel.push_back( cmd );
+				else               cmds[count++] = cmd;
 			}
 			if ( full ) break;
 		}
@@ -1217,8 +1208,7 @@ void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
 		UINT count = 0;
 		alphaAttach.clear();
 		for ( const FrameAttachDraw& a : AttachDraws[c] ) {
-			if ( !a.mesh ) continue;
-			const D3D12MeshArena::Range* range = m_E->m_AttachArena->Find( a.mesh->ArenaSlot );
+			const D3D12MeshArena::Range* range = m_E->m_AttachArena->Find( a.arenaSlot );
 			if ( !range ) continue;
 			if ( count + alphaAttach.size() >= kMaxAttachCasterCommands ) {
 				logOverflow( "attachment", kMaxAttachCasterCommands );

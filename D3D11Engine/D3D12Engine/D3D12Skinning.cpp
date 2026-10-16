@@ -9,7 +9,7 @@
 #include "../WorldObjects.h"
 #include "../Logger.h"
 
-std::array<uint32_t, kMaxSkinnedSubmeshes> g_SkinDst;
+std::array<SkinnedSubmesh, kMaxSkinnedSubmeshes> g_SkinSubmeshes;
 
 namespace {
     // A reservation; the arena range is resolved at dispatch, after the frame's last arena flush, which is also
@@ -22,7 +22,7 @@ namespace {
         uint32_t InstanceRow;
     };
     std::vector<PendingSkin> g_PendingSkins;   // main thread only
-    uint32_t g_SkinDstCount = 0;
+    uint32_t g_SkinSubmeshCount = 0;
 
     // Mirror SkinVertices.hlsl.
     struct SkinJobGPU {
@@ -74,7 +74,7 @@ bool D3D12GraphicsEngine::CreateSkinningResources() {
 
 void D3D12GraphicsEngine::BeginSkinningFrame() {
     g_PendingSkins.clear();
-    g_SkinDstCount = 0;
+    g_SkinSubmeshCount = 0;
 
     // Grow to what last frame asked for; a frame that outgrew the streams drops the excess once.
     if ( !m_SkinnedPosUv || ( m_SkinnedDemand > m_SkinnedCapacity && m_SkinnedCapacity < kMaxSkinnedVertices ) ) {
@@ -108,35 +108,38 @@ void D3D12GraphicsEngine::BeginSkinningFrame() {
 }
 
 
-uint32_t D3D12GraphicsEngine::ReserveSkinned( const SkeletalMeshVisualInfo* visual, uint32_t instanceRow ) {
+uint32_t D3D12GraphicsEngine::ReserveSkinned( const SkeletalMeshVisualInfo* visual, uint32_t instanceRow, uint32_t& count ) {
+    count = 0;
     size_t entries = 0;
     for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) entries += meshList.size();
-    if ( g_SkinDstCount + entries > kMaxSkinnedSubmeshes ) {
+    if ( g_SkinSubmeshCount + entries > kMaxSkinnedSubmeshes ) {
         static bool logged = false;
         if ( !std::exchange( logged, true ) )
             Logging::Wrn( "D3D12: more than {} skinned sub-meshes in one frame; the rest are not drawn.", kMaxSkinnedSubmeshes );
         return kNoSkinnedOutput;
     }
 
-    const uint32_t first = g_SkinDstCount;
+    const uint32_t first = g_SkinSubmeshCount;
+    uint32_t matIndex = 0;
     for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
         for ( auto const& mesh : meshList ) {
-            uint32_t dst = kNoSkinnedOutput;
-            if ( mesh && !mesh->Indices.empty() ) {
-                const UINT count = static_cast<UINT>( mesh->Vertices.size() );
-                m_SkinnedDemand += count;
-                if ( m_SkinnedPosUv && m_SkinnedUsed + count <= m_SkinnedCapacity ) {
-                    dst = m_SkinnedUsed;
-                    m_SkinnedUsed += count;
-                    g_PendingSkins.push_back( { mesh->ArenaSlot.Get(), count, dst, instanceRow } );
-                } else if ( !m_SkinnedOverflowLogged ) {
-                    Logging::Wrn( "D3D12: posed skinned-vertex streams full ({} vertices); growing them next frame.", m_SkinnedCapacity );
-                    m_SkinnedOverflowLogged = true;
-                }
+            SkinnedSubmesh& sub = g_SkinSubmeshes[g_SkinSubmeshCount++];
+            sub = { kNoSkinnedOutput, mesh ? mesh->ArenaSlot.Get() : GpuArenaSlot::kNone, matIndex, mat };
+            if ( !mesh || mesh->Indices.empty() ) continue;
+            const UINT vertices = static_cast<UINT>( mesh->Vertices.size() );
+            m_SkinnedDemand += vertices;
+            if ( m_SkinnedPosUv && m_SkinnedUsed + vertices <= m_SkinnedCapacity ) {
+                sub.Posed = m_SkinnedUsed;
+                m_SkinnedUsed += vertices;
+                g_PendingSkins.push_back( { sub.ArenaSlot, vertices, sub.Posed, instanceRow } );
+            } else if ( !m_SkinnedOverflowLogged ) {
+                Logging::Wrn( "D3D12: posed skinned-vertex streams full ({} vertices); growing them next frame.", m_SkinnedCapacity );
+                m_SkinnedOverflowLogged = true;
             }
-            g_SkinDst[g_SkinDstCount++] = dst;
         }
+        ++matIndex;
     }
+    count = g_SkinSubmeshCount - first;
     return first;
 }
 

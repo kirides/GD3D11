@@ -582,25 +582,20 @@ namespace {
 	// null and draws them with the black fallback, as it is redrawn every frame.
 	bool StageSkinned( const FrameSkelDraw& sd, std::vector<zCTexture*>* missing ) {
 		bool staged = false;
-		uint32_t matIdx = 0;
-		uint32_t sub = 0;   // index into this vob's g_SkinDst entries
-		for ( auto const& [mat, meshList] : sd.visual->SkeletalMeshes ) {
-			const SkelMatSlot* snap = matIdx < sd.matCount ? &g_SkelMatSlots[sd.matFirst + matIdx] : nullptr;
-			++matIdx;
+		uint32_t missingMat = UINT32_MAX;   // last material whose texture went into `missing`
+		for ( uint32_t k = 0; k < sd.skinCount; ++k ) {
+			const SkinnedSubmesh& sub = g_SkinSubmeshes[sd.skinFirst + k];
+			const SkelMatSlot* snap = sub.MatIndex < sd.matCount ? &g_SkelMatSlots[sd.matFirst + sub.MatIndex] : nullptr;
 			const bool unresolved = !snap || ( snap->tex && snap->slot == g_In.blackSlot );
 			if ( missing && unresolved ) {
-				if ( snap ) missing->push_back( snap->tex );
-				sub += static_cast<uint32_t>( meshList.size() );
+				if ( snap && sub.MatIndex != missingMat ) missing->push_back( snap->tex );
+				missingMat = sub.MatIndex;
 				continue;
 			}
-			for ( auto const& mesh : meshList ) {
-				const uint32_t posed = SkinnedBase( sd, sub++ );
-				const D3D12MeshArena::Range* range = ( mesh && posed != kNoSkinnedOutput )
-					? g_In.skelArena->Find( mesh->ArenaSlot ) : nullptr;
-				if ( !range ) continue;
-				StageCaster( snap ? snap->slot : g_In.blackSlot, !snap || snap->alphaTested, *range, static_cast<INT>( posed ), 0 );
-				staged = true;
-			}
+			const D3D12MeshArena::Range* range = sub.Posed != kNoSkinnedOutput ? g_In.skelArena->Find( sub.ArenaSlot ) : nullptr;
+			if ( !range ) continue;
+			StageCaster( snap ? snap->slot : g_In.blackSlot, !snap || snap->alphaTested, *range, static_cast<INT>( sub.Posed ), 0 );
+			staged = true;
 		}
 		return staged;
 	}
@@ -1122,8 +1117,8 @@ void D3D12PointShadows::BakeMobs( const FrameLight& ps, bool tableOnGpu ) {
 	if ( !m_E->m_Pipelines.PointShadow.CasterVobPSO ) return;
 	const zCVob* lastOwner = nullptr;
 	for ( const FrameAttachDraw& a : AttachScratch ) {
-		if ( !a.mesh || !a.owner ) continue;
-		const D3D12MeshArena::Range* range = g_In.attachArena->Find( a.mesh->ArenaSlot );
+		if ( !a.owner ) continue;
+		const D3D12MeshArena::Range* range = g_In.attachArena->Find( a.arenaSlot );
 		if ( !range ) continue;
 		if ( a.tex && a.srvSlot == g_In.blackSlot ) {
 			s_missing.push_back( a.tex );
@@ -1171,8 +1166,8 @@ void D3D12PointShadows::ResolveOverlay( const FrameLight& ps ) {
 		// Node attachments (weapons, torches, heads) through the VOB caster PSO, 6 face instances each.
 		if ( m_E->m_Pipelines.PointShadow.CasterVobPSO ) {
 			for ( const FrameAttachDraw& a : AttachScratch ) {
-				if ( !a.mesh || ( a.owner && excluded( a.owner ) ) ) continue;
-				const D3D12MeshArena::Range* range = g_In.attachArena->Find( a.mesh->ArenaSlot );
+				if ( a.owner && excluded( a.owner ) ) continue;
+				const D3D12MeshArena::Range* range = g_In.attachArena->Find( a.arenaSlot );
 				if ( !range ) continue;
 				StageCaster( a.srvSlot, a.alphaTested, *range, static_cast<INT>( range->BaseVertex ), a.instIndex );
 			}

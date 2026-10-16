@@ -128,7 +128,8 @@ namespace {
     // addresses / attachment records into its own destination list. Cleared each frame alongside g_FrameSkelDraws.
     struct SkelUploadCache {
         uint32_t instRow = 0;   // SkeletalInstanceGPU row in the skeletal ring
-        uint32_t skinFirst = kNoSkinnedOutput;   // -> g_SkinDst
+        uint32_t skinFirst = kNoSkinnedOutput;   // -> g_SkinSubmeshes
+        uint32_t skinCount = 0;
         bool hasBaseMesh = false;
         uint32_t matFirst = 0;   // -> g_SkelMatSlots, see FrameSkelDraw::matFirst
         uint32_t matCount = 0;
@@ -3676,8 +3677,11 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     // (UpdateMorphMeshVisual) or by the GPU morph fold into its DEFAULT UAV (DispatchMorphFold). The arena
     // copy uploaded at registration is only the conversion pose, so mirror the live buffer into it here.
     if ( !m_FrameOpen ) return;
+    // The source resource, not its D3D12VertexBuffer: the mesh may die before the copy is recorded, and only the
+    // resource's release is fence-deferred.
     struct Copy {
-        D3D12VertexBuffer* Src;
+        Rhi::Resource* Src;
+        bool SrcUav;
         Rhi::Resource* Dst;
         UINT64 DstOffset;
         UINT64 Bytes;
@@ -3687,7 +3691,7 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     barriers.clear();
     copies.clear();
 
-    auto collect = [&]( MeshInfo* mi, Rhi::Resource* dst, UINT baseVertex, UINT stride ) {
+    auto collect = [&]( MeshInfo* mi, Rhi::Resource* dst, UINT baseVertex, UINT vertexCount, UINT stride ) {
         if ( !mi->GetMeshVertexBuffer() ) return;
         D3D12VertexBuffer* src = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
         if ( !src->GetResource() ) return;
@@ -3701,19 +3705,18 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
         }
         // Same wedge order the arena copy was uploaded in (a morph sub-mesh deliberately skips
         // OptimizeVertices), so this is a straight range overwrite. min() guards a shorter buffer.
-        const UINT64 bytes = std::min<UINT64>( src->GetSizeInBytes(), static_cast<UINT64>( mi->Vertices.size() ) * stride );
-        copies.push_back( { src, dst, static_cast<UINT64>( baseVertex ) * stride, bytes } );
+        const UINT64 bytes = std::min<UINT64>( src->GetSizeInBytes(), static_cast<UINT64>( vertexCount ) * stride );
+        copies.push_back( { src->GetResource(), src->IsUavCapable(), dst, static_cast<UINT64>( baseVertex ) * stride, bytes } );
     };
 
     bool vobArena = false;
     if ( m_VobArena->Ready() ) {
-        for ( MeshInfo* mi : m_VobArena->DynamicMeshes() ) {
-            const D3D12VobArena::Range* range = m_VobArena->Find( mi );
-            if ( !range ) continue;
+        m_VobArena->ForEachDynamic( [&]( MeshInfo* mi, const D3D12VobArena::Range& range ) {
             const size_t before = copies.size();
-            collect( mi, m_VobArena->GetVertexBuffer(), range->BaseVertex, D3D12VobArena::VertexStride() );
+            collect( mi, m_VobArena->GetVertexBuffer(), range.BaseVertex, static_cast<UINT>( mi->Vertices.size() ),
+                D3D12VobArena::VertexStride() );
             vobArena |= copies.size() != before;
-        }
+        } );
     }
     bool attachArena = false;
     if ( m_AttachArena->Ready() ) {
@@ -3725,7 +3728,7 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
             const D3D12MeshArena::Range* range = m_AttachArena->Find( mi->ArenaSlot );
             if ( !range ) continue;
             const size_t before = copies.size();
-            collect( mi, m_AttachArena->GetVertexBuffer(), range->BaseVertex, m_AttachArena->VertexStride() );
+            collect( mi, m_AttachArena->GetVertexBuffer(), range->BaseVertex, range->VertexCount, m_AttachArena->VertexStride() );
             attachArena |= copies.size() != before;
         }
     }
@@ -3734,14 +3737,14 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     DX_ZONE( m_CmdList.Get(), "Morph arena refresh" );
     m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
     for ( const Copy& c : copies )
-        m_CmdList->CopyBufferRegion( c.Dst, c.DstOffset, c.Src->GetResource(), 0, c.Bytes );
+        m_CmdList->CopyBufferRegion( c.Dst, c.DstOffset, c.Src, 0, c.Bytes );
 
     // Hand the fold buffers back to the state DispatchMorphFold expects next frame, and the arenas back to the
     // IA — they promoted into COPY_DEST implicitly and need an explicit barrier out before the prepass reads them.
     barriers.clear();
     for ( const Copy& c : copies ) {
-        if ( !c.Src->IsUavCapable() ) continue;
-        barriers.push_back( { c.Src->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+        if ( !c.SrcUav ) continue;
+        barriers.push_back( { c.Src, D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
     }
     // Shader-resource too: the ray tracing builds from them and its compute and pixel rays read them.
@@ -4239,40 +4242,42 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             // incorrect textures if not done correctly.
             model->UpdateMeshLibTexAniState();
 
-            uint32_t sub = 0;   // index into this vob's g_SkinDst entries
-            for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-                zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
-                // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig. The
-                // depth-prepass PS reads only the diffuse index (alpha clip) and ignores the other two, so one
-                // resolved material set serves both passes.
-                UINT mats[3];
-                ResolveMaterialMapSlots( tex, mats );
-                mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat );
-                // Alpha-test partition — same predicate as the world/VOB builds (see m_WorldOpaqueDrawCount).
-                const bool alphaTested = ( tex && tex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() );
+            UINT mats[3] = {};
+            bool alphaTested = false;
+            uint32_t resolvedMat = UINT32_MAX;
+            for ( uint32_t k = 0; k < d.skinCount; ++k ) {
+                const SkinnedSubmesh& sub = g_SkinSubmeshes[d.skinFirst + k];
+                if ( sub.Posed == kNoSkinnedOutput ) continue;
+                const D3D12MeshArena::Range* range = m_SkelArena->Find( sub.ArenaSlot );
+                if ( !range ) continue;   // requested this frame, not uploaded yet (and not posed)
+                if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) { logOverflow( "base-mesh", kMaxSkeletalDrawCommands ); break; }
 
-                for ( auto const& mesh : meshList ) {
-                    const uint32_t posed = SkinnedBase( d, sub++ );
-                    if ( !mesh || posed == kNoSkinnedOutput ) continue;
-                    const D3D12MeshArena::Range* range = m_SkelArena->Find( mesh->ArenaSlot );
-                    if ( !range ) continue;   // requested this frame, not uploaded yet (and not posed)
-                    if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) { logOverflow( "base-mesh", kMaxSkeletalDrawCommands ); break; }
-
-                    SkeletalDrawCommand c{};
-                    c.MatNormalIndex  = mats[0];
-                    c.MatOrmIndex     = mats[1];
-                    c.MatDiffuseIndex = mats[2];
-                    c.InstanceRow     = d.instRow;
-                    c.Draw.IndexCountPerInstance = range->IndexCount;
-                    c.Draw.InstanceCount         = 1;
-                    c.Draw.StartIndexLocation    = range->StartIndex;
-                    c.Draw.BaseVertexLocation    = static_cast<INT>( posed );   // arena indices, posed vertices
-                    c.Draw.StartInstanceLocation = 0;
-                    if ( alphaTested ) alphaSkelCmds.push_back( c );
-                    else               cmds[count++] = c;
-                    m_SkeletalDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                if ( sub.MatIndex != resolvedMat ) {
+                    resolvedMat = sub.MatIndex;
+                    zCMaterial* mat = sub.Material;
+                    zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
+                    // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig. The
+                    // depth-prepass PS reads only the diffuse index (alpha clip) and ignores the other two, so one
+                    // resolved material set serves both passes.
+                    ResolveMaterialMapSlots( tex, mats );
+                    mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat );
+                    // Alpha-test partition — same predicate as the world/VOB builds (see m_WorldOpaqueDrawCount).
+                    alphaTested = ( tex && tex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() );
                 }
-                if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) break;
+
+                SkeletalDrawCommand c{};
+                c.MatNormalIndex  = mats[0];
+                c.MatOrmIndex     = mats[1];
+                c.MatDiffuseIndex = mats[2];
+                c.InstanceRow     = d.instRow;
+                c.Draw.IndexCountPerInstance = range->IndexCount;
+                c.Draw.InstanceCount         = 1;
+                c.Draw.StartIndexLocation    = range->StartIndex;
+                c.Draw.BaseVertexLocation    = static_cast<INT>( sub.Posed );   // arena indices, posed vertices
+                c.Draw.StartInstanceLocation = 0;
+                if ( alphaTested ) alphaSkelCmds.push_back( c );
+                else               cmds[count++] = c;
+                m_SkeletalDrawnTriangles += range->IndexCount / 3;
             }
             if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) break;
         }
@@ -4334,17 +4339,15 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         size_t unbatchable = 0;   // actively morphing .MMS only — forced singletons, see the plots below
 
         for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
-            if ( !a.mesh ) continue;
-            const D3D12MeshArena::Range* range = m_AttachArena->Find( a.mesh->ArenaSlot );
+            const D3D12MeshArena::Range* range = m_AttachArena->Find( a.arenaSlot );
             if ( !range ) continue;   // requested this frame, not uploaded yet
 
             UINT mats[3];
             ResolveMaterialMapSlots( a.tex, mats );
             mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( a.tex ), a.mat );
-            // Alpha-test partition. FrameAttachDraw carries only the texture, not the material, which costs
-            // nothing: the prepass cutout is `clip(diffuse.a - 0.5)` and can only discard where the diffuse
-            // actually has an alpha channel.
-            const bool alphaTested = a.tex && a.tex->HasAlphaChannel();
+            // Alpha-test partition, resolved at prepare: the prepass cutout is `clip(diffuse.a - 0.5)` and can
+            // only discard where the diffuse actually has an alpha channel.
+            const bool alphaTested = a.alphaTested;
 
             // !batchable = an actively morphing .MMS (see FrameAttachDraw::batchable). Its own singleton
             // command, never entered into the index, so nothing can join it either.
@@ -4366,7 +4369,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             }
             batches[bi].members.push_back( &a );
             if ( !batchable ) ++unbatchable;
-            m_SkeletalDrawnTriangles += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
+            m_SkeletalDrawnTriangles += range->IndexCount / 3;
         }
 
         // "in" vs "batches" is the collapse ratio; "unbatch" is how much of the gap is structural rather than
@@ -5360,7 +5363,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 }
 
                 entry.instRow = instOff / kSkeletalRowBytes;
-                entry.skinFirst = ReserveSkinned( visual, entry.instRow );
+                entry.skinFirst = ReserveSkinned( visual, entry.instRow, entry.skinCount );
                 entry.hasBaseMesh = true;
             }
 
@@ -5505,7 +5508,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             // must not do.
                             g_SkelAttachPool.push_back( { attMesh.get(), attTex, instOffset / instBytes, vi->Vob,
                                 PackMaterialFx( ResolveShadowDiffuseSlot( attTex ), attMat ),
-                                attTex && attTex->HasAlphaChannel(), vii, attBatchable, attMat } );
+                                attTex && attTex->HasAlphaChannel(), vii, attBatchable, attMat, attMesh->ArenaSlot.Get() } );
                         }
                     }
                 }
@@ -5522,12 +5525,12 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             for ( UINT fi = 0; fi < numCascades; ++fi ) {
                 if ( (cascadeMask & (1u << fi)) == 0 ) continue;
                 if ( cached.hasBaseMesh )
-                    m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst } );
+                    m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst, cached.skinCount } );
                 m_ShadowMap.AttachDraws[fi].insert( m_ShadowMap.AttachDraws[fi].end(), cachedAttach.begin(), cachedAttach.end() );
             }
         } else {
             if ( cached.hasBaseMesh )
-                outSkel.push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst } );
+                outSkel.push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst, cached.skinCount } );
             outAttach.insert( outAttach.end(), cachedAttach.begin(), cachedAttach.end() );
         }
     }

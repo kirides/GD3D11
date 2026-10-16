@@ -62,7 +62,8 @@ struct FrameVobUpload {
 // vob's visual->SkeletalMeshes, snapshotted on the main thread while the model's shared texani slots were still
 // set for THIS instance. A pool-thread recorder (the MT cascades) must use it instead of calling
 // UpdateMeshLibTexAniState + GetAniTexture itself (Gothic's texani state is per-MODEL shared, not thread-safe).
-// skinFirst indexes g_SkinDst (below): where this vob's sub-meshes were posed this frame.
+// [skinFirst, skinFirst + skinCount) in g_SkinSubmeshes (below): this vob's sub-meshes as posed this frame.
+// Consumers walk those, never visual->SkeletalMeshes, so no record reads the live mesh after the prepare.
 struct FrameSkelDraw {
     SkeletalVobInfo*          vobInfo;
     SkeletalMeshVisualInfo*   visual;
@@ -70,18 +71,22 @@ struct FrameSkelDraw {
     uint32_t                  matFirst;
     uint32_t                  matCount;   // 0 when the snapshot pool ran out
     uint32_t                  skinFirst;
+    uint32_t                  skinCount;  // 0 when the snapshot pool ran out
 };
 
-// Compute skinning (D3D12Skinning.cpp). g_SkinDst[skinFirst + k] is the first posed vertex of the k-th entry of
-// visual->SkeletalMeshes (iteration order, null entries counted), or kNoSkinnedOutput. A draw also needs the
-// mesh resident in the skeletal arena, the same test the dispatch makes. Fixed capacity and appended only on the
-// main thread, so the cascade recorders may read it while the point-light prepare is still appending.
+// Compute skinning (D3D12Skinning.cpp). One entry per sub-mesh of visual->SkeletalMeshes (iteration order, null
+// entries counted), taken by ReserveSkinned. A draw also needs ArenaSlot resident in the skeletal arena, the same
+// test the dispatch makes. Fixed capacity and appended only on the main thread, so the cascade recorders may
+// read it while the point-light prepare is still appending.
 inline constexpr uint32_t kNoSkinnedOutput = 0xFFFFFFFFu;
 inline constexpr uint32_t kMaxSkinnedSubmeshes = 8192;
-extern std::array<uint32_t, kMaxSkinnedSubmeshes> g_SkinDst;
-inline uint32_t SkinnedBase( const FrameSkelDraw& d, uint32_t sub ) {
-    return d.skinFirst == kNoSkinnedOutput ? kNoSkinnedOutput : g_SkinDst[d.skinFirst + sub];
-}
+struct SkinnedSubmesh {
+    uint32_t    Posed;       // first posed vertex, or kNoSkinnedOutput
+    uint32_t    ArenaSlot;   // skeletal arena slot index (GpuArenaSlot::Get)
+    uint32_t    MatIndex;    // its material's entry in visual->SkeletalMeshes -> g_SkelMatSlots[matFirst + MatIndex]
+    zCMaterial* Material;    // for the main view, which reads texani state live
+};
+extern std::array<SkinnedSubmesh, kMaxSkinnedSubmeshes> g_SkinSubmeshes;
 
 // owner = the skeletal vob this attachment hangs off of (its NPC/MOB) — needed so point-shadow self-shadow
 // exclusion (D3D12PointShadows::BuildExcludeList) can skip a torch-holding NPC's own attachments too, not
@@ -110,6 +115,7 @@ struct FrameAttachDraw {
     // shared rest mesh (MeshVisualInfo::RestVisual) and becomes batchable like anything else.
     bool                        batchable;
     zCMaterial*                 mat;
+    uint32_t                    arenaSlot;   // attachment arena slot index, so consumers never read `mesh`
 };
 
 // GPULight (per-frame GPU point light) and its shadow-tier bit constants now live in
@@ -128,7 +134,7 @@ extern std::vector<VobInfo*> g_FrameVobs;
 // Per-vob snapshot of the diffuse SRV heap SLOT for each entry of visual->SkeletalMeshes, in that map's
 // iteration order — see FrameSkelDraw::matFirst. Slots, not descriptor handles: the shaders index
 // ResourceDescriptorHeap[] with these. Defined in D3D12Scene.cpp (PrepareFrameSkeletals appends to it).
-// Fixed capacity, like g_SkinDst: the CSM cascade jobs read their records' ranges while the main thread is still
+// Fixed capacity, like g_SkinSubmeshes: the CSM cascade jobs read their records' ranges while the main thread is still
 // appending (the point-shadow prepare runs after they launch), so it must never reallocate, and readers never
 // look at the fill count.
 // alphaTested rides along for the same reason it does on FrameAttachDraw: the shadow/depth casters want to skip

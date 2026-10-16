@@ -35,6 +35,7 @@ void D3D12VobArena::Reset() {
     std::lock_guard<std::mutex> lock( m_PendingMutex );
     m_Pending.clear();
     m_NotYetReady.clear();
+    m_Forgotten.clear();
     m_Ranges.clear();
     m_Resident.clear();
     m_Dynamic.clear();
@@ -62,7 +63,7 @@ void D3D12VobArena::QueueVisual( MeshVisualInfo* visual ) {
     }
 
     // Animated static VOBs (.MMS): their vertices are rewritten every frame, so the arena copy is only the
-    // conversion pose and has to be refreshed per frame — see DynamicMeshes(). Only the VISUAL knows this;
+    // conversion pose and has to be refreshed per frame — see ForEachDynamic(). Only the VISUAL knows this;
     // the MeshInfo looks static from here.
     const bool dynamic = visual->MorphMeshVisual != nullptr;
 
@@ -70,7 +71,9 @@ void D3D12VobArena::QueueVisual( MeshVisualInfo* visual ) {
     for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
         for ( MeshInfo* mi : meshList ) {
             if ( !mi || mi->Vertices.empty() || mi->Indices.empty() ) continue;
-            if ( m_Ranges.find( mi ) != m_Ranges.end() ) continue;
+            // A forgotten mesh's range lingers until Flush; a new mesh at its recycled address still needs queueing.
+            if ( m_Ranges.find( mi ) != m_Ranges.end()
+                && std::find( m_Forgotten.begin(), m_Forgotten.end(), mi ) == m_Forgotten.end() ) continue;
             // O(n) over the pending list, which only holds one frame's newly added vobs — the Ranges check
             // above is what keeps world load (where it holds everything once) from going quadratic.
             const auto same = [mi]( const PendingMesh& p ) { return p.Mesh == mi; };
@@ -198,11 +201,16 @@ bool D3D12VobArena::Flush( D3D12GraphicsEngine* engine ) {
 
     RetryNotYetReady();
 
-    std::vector<PendingMesh> pending;
-    {
-        std::lock_guard<std::mutex> lock( m_PendingMutex );
-        pending.swap( m_Pending );
+    // Held to the end: Forget() must not free a mesh while this re-uploads from its vectors.
+    std::lock_guard<std::mutex> lock( m_PendingMutex );
+    for ( const MeshInfo* mesh : m_Forgotten ) {
+        m_Ranges.erase( mesh );
+        std::erase( m_Resident, mesh );
     }
+    m_Forgotten.clear();
+
+    std::vector<PendingMesh> pending;
+    pending.swap( m_Pending );
 
     if ( pending.empty() )
         return m_VertexBuffer != nullptr && !m_AllocFailed;

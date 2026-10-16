@@ -84,7 +84,7 @@ public:
 
     /** Look up a sub-mesh's range. nullptr = not resident (never queued, or its upload failed); the
         command build skips such a sub-mesh for the frame. Lock-free: only Flush() mutates the map, and it
-        runs before any reader. */
+        runs before any reader. A mesh forgotten since the last Flush still reads as resident. */
     const Range* Find( const MeshInfo* mesh ) const {
         auto it = m_Ranges.find( mesh );
         return it == m_Ranges.end() ? nullptr : &it->second;
@@ -97,23 +97,25 @@ public:
         walks m_Resident and re-uploads from freed memory - a use-after-free that surfaces as a garbage
         `sizeInBytes` in UploadBufferData. Leaves the mesh's reserved vertex/index range as dead space in the
         buffers (no compaction) rather than reflow every later range; cheap and safe, and the next full world
-        reload (Reset()) reclaims it anyway. Safe to call from any thread - takes the same lock QueueVisual
-        does and only otherwise touches state that only Flush() (main thread) mutates, exactly like Find(). */
+        reload (Reset()) reclaims it anyway. Any thread: m_Ranges/m_Resident are read lock-free, so the
+        mesh is only recorded here and dropped from them by the next Flush(); m_Dynamic goes at once. */
     void Forget( const MeshInfo* mesh ) {
-        {
-            std::lock_guard<std::mutex> lock( m_PendingMutex );
-            std::erase_if( m_Pending, [mesh]( const PendingMesh& p ) { return p.Mesh == mesh; } );
-        }
-        m_Ranges.erase( mesh );
-        std::erase( m_Resident, mesh );
+        std::lock_guard<std::mutex> lock( m_PendingMutex );
+        std::erase_if( m_Pending, [mesh]( const PendingMesh& p ) { return p.Mesh == mesh; } );
         std::erase( m_Dynamic, mesh );
+        m_Forgotten.push_back( mesh );
     }
 
-    /** Sub-meshes whose vertices are rewritten every frame (animated static VOBs built from an .MMS —
-        either ZENGIN's CPU deform or the GPU morph fold). Their arena range holds the CONVERSION pose
-        after upload and has to be refreshed from the mesh's own vertex buffer once per frame; the engine
-        does that right after DispatchMorphFold. Empty in the overwhelmingly common case. */
-    const std::vector<MeshInfo*>& DynamicMeshes() const { return m_Dynamic; }
+    /** Calls fn( mesh, range ) for every sub-mesh whose vertices are rewritten every frame (animated static
+        VOBs built from an .MMS — ZENGIN's CPU deform or the GPU morph fold). Their arena range holds the
+        CONVERSION pose and is refreshed from the mesh's own vertex buffer once per frame, right after
+        DispatchMorphFold. Holds the lock, so no listed mesh can be destroyed while fn reads it. */
+    template<typename Fn> void ForEachDynamic( Fn&& fn ) {
+        std::lock_guard<std::mutex> lock( m_PendingMutex );
+        for ( MeshInfo* mesh : m_Dynamic ) {
+            if ( const Range* range = Find( mesh ) ) fn( mesh, *range );
+        }
+    }
 
     bool Ready() const { return m_VertexBuffer != nullptr && m_IndexBuffer != nullptr && m_VertexCursor > 0; }
     Rhi::Resource* GetVertexBuffer() const { return m_VertexBuffer.Get(); }
@@ -147,7 +149,7 @@ private:
 
     gtl::flat_hash_map<const MeshInfo*, Range> m_Ranges;
     std::vector<MeshInfo*> m_Resident;     // insertion order — re-upload order on growth
-    std::vector<MeshInfo*> m_Dynamic;      // subset of m_Resident, see DynamicMeshes()
+    std::vector<MeshInfo*> m_Dynamic;      // subset of m_Resident, see ForEachDynamic()
 
     // Queued-but-not-yet-uploaded. `Dynamic` rides along from QueueVisual because only the VISUAL knows it
     // (MeshVisualInfo::MorphMeshVisual); the MeshInfo itself looks static.
@@ -155,8 +157,11 @@ private:
         MeshInfo* Mesh;
         bool Dynamic;
     };
-    std::mutex m_PendingMutex;             // guards m_Pending and m_NotYetReady; the rest is main-thread/Flush-only
+    // Guards m_Pending, m_NotYetReady, m_Forgotten and m_Dynamic, and is held across Flush() so Forget() blocks
+    // while Flush re-uploads from mesh vectors. m_Ranges/m_Resident change only inside Flush.
+    std::mutex m_PendingMutex;
     std::vector<PendingMesh> m_Pending;
+    std::vector<const MeshInfo*> m_Forgotten;   // destroyed since the last Flush; their ranges are still in m_Ranges
 
     // Visuals QueueVisual() saw while their background extraction was still running. Retried once per
     // frame - see RetryNotYetReady().
