@@ -4,6 +4,7 @@
 
 #include <dxgi1_6.h>
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -113,13 +114,56 @@ namespace {
         }
         if ( seen > kMaxRepeats ) return VK_FALSE;
         const char* suffix = seen == kMaxRepeats ? " (further repeats suppressed)" : "";
+        std::string objects;
+        for ( uint32_t i = 0; data && i < data->objectCount; ++i ) {
+            if ( !data->pObjects[i].pObjectName ) continue;
+            objects += objects.empty() ? " [objects: " : ", ";
+            objects += data->pObjects[i].pObjectName;
+        }
+        if ( !objects.empty() ) objects += "]";
 
         if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ) {
-            Logging::Err( "Vulkan validation [{}]: {}{}", id, msg, suffix );
+            Logging::Err( "Vulkan validation [{}]: {}{}{}", id, msg, objects, suffix );
         } else if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ) {
-            Logging::Wrn( "Vulkan validation [{}]: {}{}", id, msg, suffix );
+            Logging::Wrn( "Vulkan validation [{}]: {}{}{}", id, msg, objects, suffix );
         }
         return VK_FALSE;
+    }
+
+    // VK_EXT_device_address_binding_report: every GPU VA range by object, so a device-fault address can be named.
+    struct AddressBinding { uint64_t Size; VkObjectType Type; uint64_t Handle; bool Bound; uint32_t Seq; };
+    std::mutex s_BindingMutex;
+    std::map<uint64_t, AddressBinding> s_Bindings;   // base address -> last bind/unbind there
+    std::unordered_map<uint64_t, std::string> s_ObjectNames;   // handle -> last debug name
+    uint32_t s_BindingSeq = 0;
+    constexpr size_t kMaxBindings = 200000;
+
+    VKAPI_ATTR VkBool32 VKAPI_CALL AddressBindingCallback( VkDebugUtilsMessageSeverityFlagBitsEXT,
+        VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* data, void* ) {
+        if ( !( type & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT ) || !data ) return VK_FALSE;
+        for ( auto* p = static_cast<const VkBaseInStructure*>( data->pNext ); p; p = p->pNext ) {
+            if ( p->sType != VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT ) continue;
+            const auto* b = reinterpret_cast<const VkDeviceAddressBindingCallbackDataEXT*>( p );
+            const VkDebugUtilsObjectNameInfoEXT* obj = data->objectCount ? &data->pObjects[0] : nullptr;
+            std::lock_guard<std::mutex> lock( s_BindingMutex );
+            if ( s_Bindings.size() >= kMaxBindings )
+                std::erase_if( s_Bindings, []( const auto& e ) { return !e.second.Bound; } );
+            s_Bindings[b->baseAddress] = { b->size, obj ? obj->objectType : VK_OBJECT_TYPE_UNKNOWN, obj ? obj->objectHandle : 0,
+                b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_BIND_EXT, ++s_BindingSeq };
+        }
+        return VK_FALSE;
+    }
+
+    const char* ObjectTypeName( VkObjectType type ) {
+        switch ( type ) {
+        case VK_OBJECT_TYPE_BUFFER: return "buffer";
+        case VK_OBJECT_TYPE_IMAGE: return "image";
+        case VK_OBJECT_TYPE_DEVICE_MEMORY: return "memory";
+        case VK_OBJECT_TYPE_QUERY_POOL: return "query pool";
+        case VK_OBJECT_TYPE_COMMAND_BUFFER: return "command buffer";
+        case VK_OBJECT_TYPE_DESCRIPTOR_POOL: return "descriptor pool";
+        default: return "object";
+        }
     }
 
     VkDebugUtilsMessengerCreateInfoEXT MessengerCreateInfo() {
@@ -236,6 +280,7 @@ namespace {
         VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT Mutable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
         VkPhysicalDeviceRobustness2FeaturesKHR Robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR };
         VkPhysicalDeviceFaultFeaturesEXT Fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
+        VkPhysicalDeviceAddressBindingReportFeaturesEXT AddressBinding = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };
         VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT Dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
         VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT DgcProps = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT };
         VkPhysicalDeviceMaintenance5FeaturesKHR Maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
@@ -328,6 +373,7 @@ namespace {
         if ( info.MutableExtension ) { *tail = &info.Mutable; tail = &info.Mutable.pNext; }
         if ( info.Robustness2Extension ) { *tail = &info.Robustness2; tail = &info.Robustness2.pNext; }
         if ( info.Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) ) { *tail = &info.Fault; tail = &info.Fault.pNext; }
+        if ( info.Has( VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME ) ) { *tail = &info.AddressBinding; tail = &info.AddressBinding.pNext; }
         if ( info.Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) ) { *tail = &info.Dgc; tail = &info.Dgc.pNext; }
         if ( info.Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) ) { *tail = &info.Maintenance5; tail = &info.Maintenance5.pNext; }
         if ( info.Has( VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME ) ) { *tail = &info.MemoryPriority; tail = &info.MemoryPriority.pNext; }
@@ -502,7 +548,7 @@ namespace {
             VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
             VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
             VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME, VK_AMD_ANTI_LAG_EXTENSION_NAME, VK_NV_LOW_LATENCY_2_EXTENSION_NAME,
-            VK_KHR_MAINTENANCE_6_EXTENSION_NAME,
+            VK_KHR_MAINTENANCE_6_EXTENSION_NAME, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME,
         };
         std::string present, absent;
         for ( const char* ext : kOptionalExtensions ) {
@@ -587,6 +633,10 @@ void VulkanDevice::Shutdown() {
         vkDeviceWaitIdle( m_Device );
         vkDestroyDevice( m_Device, nullptr );
         m_Device = VK_NULL_HANDLE;
+    }
+    if ( m_BindingMessenger ) {
+        vkDestroyDebugUtilsMessengerEXT( m_Instance, m_BindingMessenger, nullptr );
+        m_BindingMessenger = VK_NULL_HANDLE;
     }
     if ( m_Messenger ) {
         vkDestroyDebugUtilsMessengerEXT( m_Instance, m_Messenger, nullptr );
@@ -673,6 +723,19 @@ bool VulkanDevice::Init() {
             VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME );
     }
     m_Caps.DeviceFault = enableIf( info->Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) && info->Fault.deviceFault, VK_EXT_DEVICE_FAULT_EXTENSION_NAME );
+    m_Caps.AddressBindingReport = enableIf( m_Messenger && info->Has( VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME )
+        && info->AddressBinding.reportAddressBinding, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME );
+    if ( m_Caps.AddressBindingReport ) {
+        VkDebugUtilsMessengerCreateInfoEXT mci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+        mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+        mci.pfnUserCallback = &AddressBindingCallback;
+        if ( VkUtil::Failed( vkCreateDebugUtilsMessengerEXT( m_Instance, &mci, nullptr, &m_BindingMessenger ), "vkCreateDebugUtilsMessengerEXT (address binding)" ) ) {
+            m_BindingMessenger = VK_NULL_HANDLE;
+            m_Caps.AddressBindingReport = false;
+            extensions.pop_back();
+        }
+    }
     m_Caps.BufferMarkerAMD = enableIf( info->Has( VK_AMD_BUFFER_MARKER_EXTENSION_NAME ), VK_AMD_BUFFER_MARKER_EXTENSION_NAME );
     m_Caps.DiagnosticCheckpointsNV = enableIf( info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ),
         VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
@@ -776,6 +839,8 @@ bool VulkanDevice::Init() {
     robustness2.nullDescriptor = VK_TRUE;
     VkPhysicalDeviceFaultFeaturesEXT fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
     fault.deviceFault = VK_TRUE;
+    VkPhysicalDeviceAddressBindingReportFeaturesEXT addressBinding = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };
+    addressBinding.reportAddressBinding = VK_TRUE;
     VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
     maintenance5.maintenance5 = VK_TRUE;
     VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
@@ -822,6 +887,7 @@ bool VulkanDevice::Init() {
     if ( core14 ) { *tail = &f14; tail = &f14.pNext; }
     if ( m_Caps.NullDescriptor ) { *tail = &robustness2; tail = &robustness2.pNext; }
     if ( m_Caps.DeviceFault ) { *tail = &fault; tail = &fault.pNext; }
+    if ( m_Caps.AddressBindingReport ) { *tail = &addressBinding; tail = &addressBinding.pNext; }
     if ( m_Caps.Maintenance5 && !core14 ) { *tail = &maintenance5; tail = &maintenance5.pNext; }
     if ( m_Caps.DeviceGeneratedCommands ) { *tail = &dgc; tail = &dgc.pNext; }
     if ( m_Caps.MemoryPriority ) { *tail = &memoryPriority; tail = &memoryPriority.pNext; }
@@ -902,4 +968,39 @@ void VulkanDevice::SetObjectName( VkObjectType type, uint64_t handle, const char
     info.objectHandle = handle;
     info.pObjectName = name;
     vkSetDebugUtilsObjectNameEXT( m_Device, &info );
+    if ( m_Caps.AddressBindingReport ) {
+        std::lock_guard<std::mutex> lock( s_BindingMutex );
+        s_ObjectNames[handle] = name;
+    }
+}
+
+std::string VulkanDevice::GetObjectName( uint64_t handle ) const {
+    if ( !m_Caps.AddressBindingReport || !handle ) return {};
+    std::lock_guard<std::mutex> lock( s_BindingMutex );
+    const auto it = s_ObjectNames.find( handle );
+    return it != s_ObjectNames.end() ? it->second : std::string();
+}
+
+void VulkanDevice::LogAddressOwners( uint64_t address, uint64_t precision ) const {
+    if ( !m_Caps.AddressBindingReport ) {
+        Logging::Wrn( "Vulkan: VK_EXT_device_address_binding_report is unavailable; the fault address can't be named." );
+        return;
+    }
+    std::lock_guard<std::mutex> lock( s_BindingMutex );
+    const uint64_t lo = address > precision ? address - precision : 0;
+    const uint64_t hi = address + precision;
+    auto describe = [&]( uint64_t base, const AddressBinding& b, const char* relation ) {
+        const auto name = s_ObjectNames.find( b.Handle );
+        Logging::Err( "  {} {} {} 0x{:X} '{}' at [0x{:X}, 0x{:X}), {} KiB, binding #{} of {}", relation, b.Bound ? "bound" : "FREED",
+            ObjectTypeName( b.Type ), b.Handle, name != s_ObjectNames.end() ? name->second : "", base, base + b.Size, b.Size / 1024,
+            b.Seq, s_BindingSeq );
+    };
+    bool any = false;
+    for ( const auto& [base, b] : s_Bindings ) {
+        if ( base < hi && base + b.Size > lo ) { describe( base, b, "covered by" ); any = true; }
+    }
+    if ( any ) return;
+    const auto above = s_Bindings.lower_bound( address );
+    if ( above != s_Bindings.begin() ) { const auto below = std::prev( above ); describe( below->first, below->second, "nothing; below:" ); }
+    if ( above != s_Bindings.end() ) describe( above->first, above->second, "nothing; above:" );
 }

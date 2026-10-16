@@ -549,6 +549,8 @@ namespace VulkanRhi {
             VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
             VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_DEPTH_BIAS,
         };
+        // Without vertex bindings there is no stride to set; keeping it dynamic trips VUID-vkCmdDraw-pStrides-04913.
+        if ( vbBindings.empty() ) std::erase( dynamics, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE );
         const VulkanDeviceCaps& caps = VkCaps();
         if ( caps.DynamicBlend ) {
             dynamics.insert( dynamics.end(), { VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,

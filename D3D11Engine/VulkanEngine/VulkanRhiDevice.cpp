@@ -513,10 +513,29 @@ namespace VulkanRhi {
         counts.vendorBinarySize = 0;   // the binary dump is vendor tooling input; skip it
         if ( vkGetDeviceFaultInfoEXT( Vk(), &counts, &info ) < VK_SUCCESS ) return;
         Logging::Err( "Vulkan device fault: {}", info.description );
-        for ( const VkDeviceFaultAddressInfoEXT& a : addresses )
+        for ( const VkDeviceFaultAddressInfoEXT& a : addresses ) {
             Logging::Err( "  address 0x{:016X} (+/-0x{:X}), kind {}", a.reportedAddress, a.addressPrecision, static_cast<int>( a.addressType ) );
+            m_Vk.LogAddressOwners( a.reportedAddress, a.addressPrecision );
+            LogBufferOwners( a.reportedAddress, a.addressPrecision );
+        }
         for ( const VkDeviceFaultVendorInfoEXT& v : vendor )
             Logging::Err( "  vendor: {} (code 0x{:X}, data 0x{:X})", v.description, v.vendorFaultCode, v.vendorFaultData );
+    }
+
+    void DeviceImpl::LogBufferOwners( uint64_t address, uint64_t precision ) const {
+        // Live RHI buffers only (device addresses exist with device-generated commands).
+        const uint64_t lo = address > precision ? address - precision : 0;
+        const uint64_t hi = address + precision;
+        for ( uint32_t id = 1; id < m_NextBufferId && ( id >> kPageBits ) < kPageCount; ++id ) {
+            ResourceImpl** entries = m_BufferPages[id >> kPageBits].load( std::memory_order_acquire );
+            if ( !entries ) continue;
+            const ResourceImpl* r = entries[id & ( ( 1u << kPageBits ) - 1 )];
+            if ( !r || !r->m_DeviceAddress ) continue;
+            if ( r->m_DeviceAddress < hi && r->m_DeviceAddress + r->m_Size > lo )
+                Logging::Err( "  live RHI buffer #{} '{}' at [0x{:X}, 0x{:X}), heap type {}", id,
+                    m_Vk.GetObjectName( VkUtil::HandleToU64( r->m_Buffer ) ), r->m_DeviceAddress, r->m_DeviceAddress + r->m_Size,
+                    static_cast<int>( r->m_HeapType ) );
+        }
     }
 
     // ---- Scope breadcrumbs ----------------------------------------------------------------------

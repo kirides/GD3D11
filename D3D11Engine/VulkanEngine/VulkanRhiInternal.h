@@ -569,6 +569,7 @@ namespace VulkanRhi {
     private:
         bool CreateBindlessLayout();
         void LogDeviceFault() const;
+        void LogBufferOwners( uint64_t address, uint64_t precision ) const;
         void CreateScopeMarkers();
         void LogScopeMarkers() const;
         void ReleaseHeldGarbageLocked();   // caller holds m_GarbageMutex

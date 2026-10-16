@@ -28,6 +28,7 @@ struct VulkanDeviceCaps {
     bool MemoryPriority = false;       // allocations carry a residency priority
     bool PageableMemory = false;       // the OS may page device-local memory out under pressure, like D3D12
     bool DeviceFault = false;
+    bool AddressBindingReport = false;  // GPU VA ranges reported per object, to name a device-fault address
     bool BufferMarkerAMD = false;
     bool DiagnosticCheckpointsNV = false;
     bool FragmentStoresAndAtomics = false;
@@ -103,10 +104,14 @@ public:
 
     /** Debug-utils object name (no-op without VK_EXT_debug_utils). */
     void SetObjectName( VkObjectType type, uint64_t handle, const char* name ) const;
+    std::string GetObjectName( uint64_t handle ) const;
+    /** Logs the objects whose GPU VA range covers address +/- precision, bound or freed (address binding report). */
+    void LogAddressOwners( uint64_t address, uint64_t precision ) const;
 
 private:
     VkInstance               m_Instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT m_Messenger = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT m_BindingMessenger = VK_NULL_HANDLE;
     VkPhysicalDevice         m_PhysicalDevice = VK_NULL_HANDLE;
     VkDevice                 m_Device = VK_NULL_HANDLE;
     VkQueue                  m_GraphicsQueue = VK_NULL_HANDLE;
