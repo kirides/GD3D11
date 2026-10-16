@@ -21,10 +21,15 @@ namespace {
     }
 }
 
-bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
+bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine, bool aliasing ) {
     m_Engine = &engine;
     m_Device = engine.GetRhi();
+    m_Aliasing = aliasing;
     if ( !m_Device ) return false;
+    if ( !m_Aliasing ) {
+        Logging::Inf( "D3D12AliasedTextureArena: transient aliasing off, render-graph textures are committed." );
+        return m_RtvHeap.Init( engine.GetRhi(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxSlots, L"D3D12AliasedTextureArena_RTV" );
+    }
 
     D3D12_HEAP_DESC heapDesc = {};
     heapDesc.SizeInBytes = kArenaCapacityBytes;
@@ -47,13 +52,15 @@ bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
 
 UINT64 D3D12AliasedTextureArena::ReserveNamedRange( const std::wstring& name, UINT64 size, UINT64 alignment ) {
     auto it = m_NamedRanges.find( name );
-    if ( it != m_NamedRanges.end() ) return it->second;
+    if ( it != m_NamedRanges.end() && it->second.Size >= size ) return it->second.Offset;
 
+    // A grown name (e.g. AO Half -> Full without a resize) moves to a fresh range rather than spilling into its
+    // neighbour; the old range stays unused until Clear().
     const UINT64 offset = alignment ? ( ( m_BumpOffset + alignment - 1 ) / alignment ) * alignment : m_BumpOffset;
     if ( offset + size > kArenaCapacityBytes ) return UINT64_MAX;
     m_BumpOffset = offset + size;
 
-    m_NamedRanges.emplace( name, offset );
+    m_NamedRanges[name] = { offset, size };
     return offset;
 }
 
@@ -79,7 +86,7 @@ D3D12AliasedTextureArena::Slot* D3D12AliasedTextureArena::FindOrCreateSlot( UINT
 
 D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT width, UINT height, DXGI_FORMAT format,
     bool needsUav, D3D12CmdList& cmdList ) {
-    if ( !m_Device || !m_Heap ) return nullptr;
+    if ( !m_Device || ( m_Aliasing && !m_Heap ) ) return nullptr;
 
     Slot* slot = FindOrCreateSlot( slotOffset );
     const bool matches = slot->Texture && slot->Width == width && slot->Height == height
@@ -92,8 +99,10 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
 
     Microsoft::WRL::ComPtr<Rhi::Resource> newResource;
     // Layout-tracked from creation on enhanced-barrier devices (see Rhi::Device::CreatePlacedRenderTarget).
-    const HRESULT hr = m_Device->CreatePlacedRenderTarget( m_Heap.Get(), slotOffset, &desc, &clear,
-        newResource.ReleaseAndGetAddressOf() );
+    const HRESULT hr = m_Aliasing
+        ? m_Device->CreatePlacedRenderTarget( m_Heap.Get(), slotOffset, &desc, &clear, newResource.ReleaseAndGetAddressOf() )
+        : m_Device->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+            newResource.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT );
     if ( FAILED( hr ) ) {
         if ( !m_LoggedExhaustion ) {
             Logging::Wrn( "D3D12AliasedTextureArena: failed to place a {}x{} transient texture at offset {}.", width, height, slotOffset );
@@ -110,7 +119,7 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
             slot->Texture.reset();
             return nullptr;
         }
-        cmdList.AliasingBarrier( nullptr, D3D12_RESOURCE_STATE_COMMON, newResource.Get() );
+        if ( m_Aliasing ) cmdList.AliasingBarrier( nullptr, D3D12_RESOURCE_STATE_COMMON, newResource.Get() );
     } else {
         Rhi::Resource* oldResource = slot->Texture->GetResource();
         const D3D12_RESOURCE_STATES oldState = slot->Texture->State;
@@ -118,7 +127,7 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
             return nullptr;   // old resource/views stay bound to what was there before — still valid, just stale
         // oldResource is kept alive by ReplaceResource's deferred-release queue, so it is still a valid
         // pointer here even though slot->Texture no longer holds its own reference to it.
-        cmdList.AliasingBarrier( oldResource, oldState, newResource.Get() );
+        if ( m_Aliasing ) cmdList.AliasingBarrier( oldResource, oldState, newResource.Get() );
     }
 
     slot->Width = width;

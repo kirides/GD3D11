@@ -994,6 +994,15 @@ namespace VulkanRhi {
         if ( IsTypeless( desc->Format ) ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         if ( CheckResult( vkCreateImage( Vk(), &ii, nullptr, &r->m_Image ), "vkCreateImage (placed)" ) ) return E_OUTOFMEMORY;
+        VkMemoryRequirements req = {};
+        vkGetImageMemoryRequirements( Vk(), r->m_Image, &req );
+        if ( offset + req.size > h->m_Size || ( req.alignment && offset % req.alignment ) ) {
+            Logging::Err( "Vulkan: placed image {}x{} ({} bytes, align {}) does not fit the heap at offset {} (heap {} bytes).",
+                ii.extent.width, ii.extent.height, req.size, req.alignment, offset, h->m_Size );
+            vkDestroyImage( Vk(), r->m_Image, nullptr );
+            r->m_Image = VK_NULL_HANDLE;
+            return E_INVALIDARG;
+        }
         if ( CheckResult( vmaBindImageMemory2( m_Allocator, h->m_Allocation, offset, r->m_Image, nullptr ), "vmaBindImageMemory2" ) ) {
             vkDestroyImage( Vk(), r->m_Image, nullptr );
             r->m_Image = VK_NULL_HANDLE;

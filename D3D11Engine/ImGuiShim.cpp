@@ -2345,6 +2345,14 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                         Engine::GraphicsEngine->GetDeviceCapabilities().LayeredRendering,
                         "Render the shadow cascades in one layered pass instead of one draw per cascade." );
 
+                    if ( Engine::IsModernBackend() ) {
+                        FeatureOverrideRow( "Alias Transient Textures", settings,
+                            settings.DebugSettings.FeatureSet.UseTransientAliasingOverride,
+                            settings.DebugSettings.FeatureSet.UseTransientAliasing,
+                            Engine::GraphicsEngine->GetDeviceCapabilities().TransientAliasing,
+                            "D3D12/Vulkan: place render-graph scratch textures in one aliased heap instead of\ncommitted textures. Auto is off on NVIDIA.\nRequires restart." );
+                    }
+
                     ImGui::Checkbox("Use Tiled Lighting", &settings.EnableTiledLighting );
                     ImGui::SetItemTooltip( "Uses compute shader light culling for point lights. Reduces draw calls and overdraw." );
                 }
