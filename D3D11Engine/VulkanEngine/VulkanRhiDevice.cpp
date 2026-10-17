@@ -579,6 +579,11 @@ namespace VulkanRhi {
         return slot;
     }
 
+    const wchar_t* DeviceImpl::InternName( const wchar_t* name ) {
+        std::lock_guard<std::mutex> lock( m_NameMutex );
+        return m_Names.emplace( name ? name : L"" ).first->c_str();
+    }
+
     void DeviceImpl::EndScopeMarker( VkCommandBuffer cmd, uint32_t slot ) {
         if ( slot == kNoMarker ) return;
         if ( m_MarkerCpu )
@@ -618,7 +623,7 @@ namespace VulkanRhi {
         if ( !m_MarkerCpu ) return;
         // Scopes whose begin landed but whose end did not: what the GPU was inside when it stopped.
         constexpr uint32_t kWindow = 4096;   // only the most recent markers; older ring slots may hold stale values
-        constexpr size_t kCompletedShown = 6;
+        constexpr size_t kCompletedShown = 12;
         const uint32_t next = m_NextMarker.load();
         const uint32_t count = std::min( next, kWindow );
         std::vector<uint32_t> open, completed;
@@ -814,10 +819,12 @@ namespace VulkanRhi {
         VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer( slot->Cmd, &bi );
+        const uint32_t marker = BeginScopeMarker( slot->Cmd, L"Initial image layouts" );
         VkDependencyInfo dep = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
         dep.imageMemoryBarrierCount = static_cast<uint32_t>( m_InitBarriers.size() );
         dep.pImageMemoryBarriers = m_InitBarriers.data();
         vkCmdPipelineBarrier2( slot->Cmd, &dep );
+        EndScopeMarker( slot->Cmd, marker );
         vkEndCommandBuffer( slot->Cmd );
         m_InitBarriers.clear();
         slot->Serial = serial;

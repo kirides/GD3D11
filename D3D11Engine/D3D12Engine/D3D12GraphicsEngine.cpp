@@ -2281,7 +2281,10 @@ GraphicsEventRecord D3D12GraphicsEngine::RecordGraphicsEvent( GraphicsEventName 
 
 XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
-    FlushUI2D();
+    {
+        DX_ZONE( m_CmdList.Get(), "UI 2D flush (end of frame)" );
+        FlushUI2D();
+    }
     Present();
     m_FrameOpen = false;
     m_PresentPending = false;
@@ -2537,12 +2540,16 @@ XRESULT D3D12GraphicsEngine::Present() {
 
     // Brightness/contrast over the finished image (scene + Gothic's 2D UI/HUD), before the ImGui overlay —
     // the same point D3D11 applies it. No-op at the default 1.0/1.0.
-    ApplyDisplayGammaCorrection();
+    {
+        DX_ZONE( m_CmdList.Get(), "Display gamma correction" );
+        ApplyDisplayGammaCorrection();
+    }
 
     // Draw the ImGui overlay last, on top of the 2D UI, while the backbuffer is still a render target.
     // The SRV heap is bound (OnBeginFrame); re-bind the RTV defensively in case a draw changed it.
     if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
         TracyD3D12ZoneCGX( m_CmdList.Get(), "ImGui" );
+        DX_ZONE( m_CmdList.Get(), "ImGui" );
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
         m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
         if ( m_Api == Rhi::Backend::Vulkan ) {
@@ -2568,7 +2575,10 @@ XRESULT D3D12GraphicsEngine::Present() {
     // Submit any batched texture/buffer uploads accumulated this frame and insert the single
     // copy->direct cross-queue wait BEFORE the frame's graphics execute, so everything sampled below
     // is ready. Cheap no-op when nothing was cached in.
-    FlushTextureUploads();
+    {
+        DX_ZONE( m_CmdList.Get(), "Texture upload flush (end of frame)" );
+        FlushTextureUploads();
+    }
 
     if ( FAILED( m_CmdList->Close() ) ) return XR_FAILED;
 

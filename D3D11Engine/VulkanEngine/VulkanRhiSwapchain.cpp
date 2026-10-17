@@ -61,6 +61,8 @@ namespace VulkanRhi {
         bool m_VSync = true;
         ComPtr<Rhi::Resource> m_StandIn;
         bool m_OnStandIn = false;
+        // -VKNOPRESENT: every frame renders into the stand-in and nothing is presented (isolates presentation faults).
+        const bool m_NoPresent = strstr( GetCommandLineA(), "-VKNOPRESENT" ) || strstr( GetCommandLineA(), "-vknopresent" );
 
         UINT m_MaxFrameLatency = 3;   // DXGI's default
         uint64_t m_PresentCount = 0;
@@ -82,6 +84,7 @@ namespace VulkanRhi {
         if ( !m_Swapchain.Create( m_Device->Base(), desc.Window, INT2( desc.Width, desc.Height ), desc.BufferCount, m_VSync, false ) )
             return false;
         SyncWrappers();
+        if ( m_NoPresent ) Logging::Wrn( "Vulkan: -VKNOPRESENT: frames render off-screen and are never presented." );
         return true;
     }
 
@@ -228,6 +231,10 @@ namespace VulkanRhi {
     }
 
     UINT SwapchainImpl::GetCurrentBackBufferIndex() {
+        if ( m_NoPresent ) {
+            UseStandIn();
+            return m_ImageIndex;
+        }
         if ( !m_Acquired && !Acquire() ) UseStandIn();
         return m_ImageIndex;
     }
@@ -238,9 +245,15 @@ namespace VulkanRhi {
             m_VSync = vsync;
             m_NeedsRebuild = true;   // present mode is fixed per swapchain
         }
+        QueueImpl* queue = m_Device->Queue();
+        if ( m_NoPresent ) {
+            m_PresentSerials[++m_PresentCount % kMaxFrameLatency] = queue->SubmittedSerial();
+            m_Device->CollectGarbage();
+            m_Device->NotePresent();
+            return m_Device->IsDeviceLost() ? DXGI_ERROR_DEVICE_REMOVED : S_OK;
+        }
         if ( !m_Acquired ) return m_Device->IsDeviceLost() ? DXGI_ERROR_DEVICE_REMOVED : S_OK;
 
-        QueueImpl* queue = m_Device->Queue();
         const VkSemaphoreSubmitInfo signal = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr,
             m_Swapchain.GetPresentSemaphore( m_ImageIndex ), 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
         if ( queue->Submit( nullptr, 0, nullptr, 0, &signal, 1, nullptr, 0 ) != VK_SUCCESS ) return DXGI_ERROR_DEVICE_REMOVED;

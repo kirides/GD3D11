@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace VulkanRhi {
@@ -244,6 +245,7 @@ namespace VulkanRhi {
         ComPtr<RootSignatureImpl> m_RootSig;
         uint32_t m_ColorCount = 0;   // attachments the rendering scope must present to this pipeline
         bool m_HasDepth = false;
+        bool m_DynamicStride = true;   // false without vertex bindings: binding it invalidates the strides set so far
         uint32_t m_UboFallback = 0;  // push-constant parameters some stage still reads as a uniform buffer
 
         /** Graphics state set at bind time, so PSOs that differ only here share one VkPipeline. */
@@ -518,6 +520,8 @@ namespace VulkanRhi {
         static constexpr uint32_t kNoMarker = UINT32_MAX;
         uint32_t BeginScopeMarker( VkCommandBuffer cmd, const wchar_t* name );
         void EndScopeMarker( VkCommandBuffer cmd, uint32_t slot );
+        /** A stable copy of `name` for marker names that must outlive the caller's string. */
+        const wchar_t* InternName( const wchar_t* name );
 
         /** Opaque GPU addresses: (buffer id << 32) | offset. Lookups are lock-free. */
         uint32_t RegisterBuffer( ResourceImpl* resource );
@@ -585,6 +589,8 @@ namespace VulkanRhi {
 
         // Scope breadcrumb ring: 1 = begun (top of pipe), 2 = ended (bottom of pipe). Cached host memory survives loss.
         static constexpr uint32_t kMarkerSlots = 16384;
+        std::mutex m_NameMutex;
+        std::unordered_set<std::wstring> m_Names;
         VkBuffer m_MarkerBuffer = VK_NULL_HANDLE;
         VmaAllocation m_MarkerAllocation = VK_NULL_HANDLE;
         volatile uint32_t* m_MarkerCpu = nullptr;

@@ -579,6 +579,7 @@ namespace VulkanRhi {
         pso->m_BindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         pso->m_RootSig = rs;
         pso->m_ColorCount = rtCount;
+        pso->m_DynamicStride = !vbBindings.empty();
         pso->m_HasDepth = desc->DSVFormat != DXGI_FORMAT_UNKNOWN;
         pso->m_UboFallback = uboFallback;
         PipelineStateImpl::Dynamic& dy = pso->m_Dynamic;

@@ -737,8 +737,9 @@ bool VulkanDevice::Init() {
         }
     }
     m_Caps.BufferMarkerAMD = enableIf( info->Has( VK_AMD_BUFFER_MARKER_EXTENSION_NAME ), VK_AMD_BUFFER_MARKER_EXTENSION_NAME );
-    m_Caps.DiagnosticCheckpointsNV = enableIf( info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ),
-        VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
+    // Checkpoints and timestamps are GPU writes into driver memory; -VKNOCHECKPOINTS / -VKNOTIMESTAMPS rule them out.
+    m_Caps.DiagnosticCheckpointsNV = enableIf( !CommandLineHas( "-VKNOCHECKPOINTS", "-vknocheckpoints" )
+        && info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ), VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
     m_Caps.HdrMetadata = enableIf( m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
     // Frame pacing waits on GPU completion. Present wait is opt-in (-VKPRESENTWAIT / GD3D11_VULKAN_PRESENT_WAIT=1):
@@ -825,7 +826,7 @@ bool VulkanDevice::Init() {
     f12.samplerMirrorClampToEdge = sup12.samplerMirrorClampToEdge;
     f12.bufferDeviceAddress = m_Caps.DeviceGeneratedCommands;
     m_Caps.HeapUniformBuffers = HeapUniformBuffersSupported( *info );
-    m_Caps.TimestampQueries = info->TimestampQueries;
+    m_Caps.TimestampQueries = info->TimestampQueries && !CommandLineHas( "-VKNOTIMESTAMPS", "-vknotimestamps" );
 
     VkPhysicalDeviceVulkan13Features f13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
     f13.dynamicRendering = VK_TRUE;
@@ -837,6 +838,16 @@ bool VulkanDevice::Init() {
     mutableFeatures.mutableDescriptorType = VK_TRUE;
     VkPhysicalDeviceRobustness2FeaturesKHR robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR };
     robustness2.nullDescriptor = VK_TRUE;
+    // D3D12 bounds-checks every descriptor access (stray writes dropped, reads 0) and the shaders rely on it;
+    // NVIDIA does neither without these. -VKNOROBUST turns them off for A/B tests.
+    const bool robust = !CommandLineHas( "-VKNOROBUST", "-vknorobust" );
+    f.robustBufferAccess = robust && sup.robustBufferAccess;
+    f13.robustImageAccess = robust && info->Features13.robustImageAccess;
+    robustness2.robustBufferAccess2 = f.robustBufferAccess && info->Robustness2.robustBufferAccess2;
+    robustness2.robustImageAccess2 = f13.robustImageAccess && info->Robustness2.robustImageAccess2;
+    Logging::Inf( "Vulkan: robust buffer access {}{}, robust image access {}{}.", f.robustBufferAccess ? "on" : "off",
+        m_Caps.NullDescriptor && robustness2.robustBufferAccess2 ? " (2)" : "", f13.robustImageAccess ? "on" : "off",
+        m_Caps.NullDescriptor && robustness2.robustImageAccess2 ? " (2)" : "" );
     VkPhysicalDeviceFaultFeaturesEXT fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
     fault.deviceFault = VK_TRUE;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT addressBinding = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };

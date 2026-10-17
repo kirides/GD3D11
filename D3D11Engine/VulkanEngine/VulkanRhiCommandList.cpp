@@ -71,7 +71,7 @@ namespace VulkanRhi {
         HRESULT Reset( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) override;
         /** Reset without holding garbage for the list: CreateCommandList's open list is often closed unused. */
         HRESULT Begin( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState );
-        void SetName( LPCWSTR ) override {}
+        void SetName( LPCWSTR name ) override { m_Name = m_Device->InternName( name ); }
 
         void SetPipelineState( Rhi::PipelineState* pso ) override;
         void SetGraphicsRootSignature( Rhi::RootSignature* rs ) override { SetRootSignature( m_Gfx, rs ); }
@@ -229,6 +229,8 @@ namespace VulkanRhi {
         uint32_t m_LabelDepth = 0;   // open BeginEvent scopes of this list
         static constexpr uint32_t kMaxMarkerDepth = 64;
         uint32_t m_MarkerSlots[kMaxMarkerDepth] = {};   // their breadcrumb slots
+        const wchar_t* m_Name = L"unnamed command list";
+        uint32_t m_ListMarker = DeviceImpl::kNoMarker;   // whole-list breadcrumb, so device loss names the submit
         RecordStats m_Stats;   // handed to the device at Close
         std::vector<uint8_t> m_ReplayScratch;   // ExecuteIndirect commands copied out of host memory; grows only
         bool m_InIndirect = false;     // draws replayed by ExecuteIndirect count as its time
@@ -306,6 +308,7 @@ namespace VulkanRhi {
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if ( m_Device->CheckResult( vkBeginCommandBuffer( m_Cmd, &bi ), "vkBeginCommandBuffer" ) ) return E_FAIL;
         ResetState();
+        m_ListMarker = m_Device->BeginScopeMarker( m_Cmd, m_Name );
         if ( initialState ) SetPipelineState( initialState );
         return S_OK;
     }
@@ -316,6 +319,8 @@ namespace VulkanRhi {
         m_Device->AddRecordStats( m_Stats );
         m_Stats = {};
         while ( m_LabelDepth > 0 ) EndEvent();   // a scope still open continues unrecorded in the next list
+        m_Device->EndScopeMarker( m_Cmd, m_ListMarker );
+        m_ListMarker = DeviceImpl::kNoMarker;
         return m_Device->CheckResult( vkEndCommandBuffer( m_Cmd ), "vkEndCommandBuffer" ) ? E_FAIL : S_OK;
     }
 
@@ -503,6 +508,11 @@ namespace VulkanRhi {
         if ( b.PsoDirty ) {
             vkCmdBindPipeline( m_Cmd, point, b.Pso->m_Pipeline );
             if ( point == VK_PIPELINE_BIND_POINT_GRAPHICS ) ApplyDynamicState( *b.Pso );
+            // A static-stride pipeline discards the strides; rebind the vertex buffers before the next draw.
+            if ( point == VK_PIPELINE_BIND_POINT_GRAPHICS && !b.Pso->m_DynamicStride ) {
+                for ( uint32_t i = 0; i < kMaxVertexBuffers; ++i )
+                    if ( m_Vbs[i].BufferLocation ) m_VbDirtyMask |= 1u << i;
+            }
             b.PsoDirty = false;
         }
         if ( b.HeapDirty && m_Heap ) {
