@@ -18,8 +18,7 @@ using D3D12CmdList = Rhi::CmdList;
     therefore no longer needs to check/transition a graph resource into the state it declared for itself
     — only for state changes it makes MID-callback that no other pass's declaration models (e.g. DoF's
     composite pass transitioning its UAV-written scratch to COPY_SOURCE right before copying it out; see
-    D3D12DoF.cpp). External (imported) handles are skipped — the graph never tracks their state, exactly
-    as before. */
+    D3D12DoF.cpp). Imported handles are tracked through the state they were imported with. */
 struct RGResourceUsage {
     RGResourceHandle Handle;
     D3D12_RESOURCE_STATES State;

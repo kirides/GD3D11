@@ -46,33 +46,51 @@ void D3D12RGBuilder::TransitionExternalAfter( Rhi::Resource* resource, D3D12_RES
     m_pass.m_postTransitions.push_back( { resource, before, after } );
 }
 
-RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, D3D12RenderTarget* externalTarget ) {
-    uint32_t index = m_nextHandle++;
-
+RGResourceHandle D3D12RenderGraph::AddHandle( bool isExternal ) {
+    const uint32_t index = m_nextHandle++;
     m_externalTextures.resize( m_nextHandle, nullptr );
+    m_externalResources.resize( m_nextHandle );
     m_activeTextures.resize( m_nextHandle, nullptr );
     m_resourceDescs.resize( m_nextHandle );
     m_resourceOffsets.resize( m_nextHandle, 0 );
     m_resourceHasOffset.resize( m_nextHandle, false );
+    return D3D12MakeHandle( index, isExternal );   // external handles have the low bit set
+}
 
+RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, D3D12RenderTarget* externalTarget ) {
+    const RGResourceHandle handle = AddHandle( true );
+    const uint32_t index = D3D12GetHandleIndex( handle );
     m_externalTextures[index] = externalTarget;
     m_resourceDescs[index] = { 0, 0, 0, name }; // Dummy desc for name tracking
+    return handle;
+}
 
-    return D3D12MakeHandle( index, true ); // Sets the first bit to 1
+RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, Rhi::Resource* resource, D3D12_RESOURCE_STATES* state ) {
+    const RGResourceHandle handle = AddHandle( true );
+    const uint32_t index = D3D12GetHandleIndex( handle );
+    m_externalResources[index] = { resource, state };
+    m_resourceDescs[index] = { 0, 0, 0, name };
+    return handle;
 }
 
 RGResourceHandle D3D12RenderGraph::RegisterResource( const RGTextureDesc& desc ) {
-    uint32_t index = m_nextHandle++;
+    const RGResourceHandle handle = AddHandle( false );
+    m_resourceDescs[D3D12GetHandleIndex( handle )] = desc;
+    return handle;
+}
 
-    m_externalTextures.resize( m_nextHandle, nullptr );
-    m_activeTextures.resize( m_nextHandle, nullptr );
-    m_resourceDescs.resize( m_nextHandle );
-    m_resourceOffsets.resize( m_nextHandle, 0 );
-    m_resourceHasOffset.resize( m_nextHandle, false );
-
-    m_resourceDescs[index] = desc;
-
-    return D3D12MakeHandle( index, false ); // First bit remains 0
+bool D3D12RenderGraph::TrackedState( RGResourceHandle handle, Rhi::Resource*& resource, D3D12_RESOURCE_STATES*& state ) const {
+    const uint32_t index = D3D12GetHandleIndex( handle );
+    if ( D3D12IsExternalHandle( handle ) && m_externalResources[index].Resource ) {
+        resource = m_externalResources[index].Resource;
+        state = m_externalResources[index].State;
+        return state != nullptr;
+    }
+    D3D12RenderTarget* tex = GetPhysicalTexture( handle );
+    if ( !tex ) return false;   // skipped resource (arena exhausted, creation failed)
+    resource = tex->GetResource();
+    state = &tex->State;
+    return resource != nullptr;
 }
 
 void D3D12RenderGraph::Compile() {
@@ -113,7 +131,7 @@ void D3D12RenderGraph::Compile() {
     if ( !m_arena ) return;
 
     for ( uint32_t i = 0; i < m_nextHandle; ++i ) {
-        if ( m_externalTextures[i] != nullptr ) continue;   // external resources are never arena-backed
+        if ( IsExternalIndex( i ) ) continue;   // external resources are never arena-backed
         if ( !m_resourceLifetimes[i].isRead ) continue;      // never allocated at all (Execute kills the pass)
 
         const RGTextureDesc& desc = m_resourceDescs[i];
@@ -168,7 +186,7 @@ void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
 void D3D12RenderGraph::AllocateResourcesForPass( size_t passIndex, D3D12CmdList& cmdList ) {
     for ( uint32_t i = 0; i < m_resourceLifetimes.size(); ++i ) {
         if ( m_resourceLifetimes[i].firstPass != (uint32_t)passIndex ) continue;
-        if ( m_externalTextures[i] != nullptr ) continue;
+        if ( IsExternalIndex( i ) ) continue;
         if ( !m_resourceLifetimes[i].isRead ) continue;
         if ( !m_resourceHasOffset[i] ) continue;   // Compile() couldn't fit it — leave m_activeTextures[i] null
 
@@ -197,18 +215,18 @@ void D3D12RenderGraph::TransitionPassResources( const D3D12RenderPass& pass, D3D
     UINT n = 0;
 
     auto consider = [&]( const RGResourceUsage& usage ) {
-        if ( D3D12IsExternalHandle( usage.Handle ) ) return;   // not graph-tracked; caller manages state manually
-        D3D12RenderTarget* tex = GetPhysicalTexture( usage.Handle );
-        if ( !tex || tex->State == usage.State ) return;       // absent (skipped resource) or already there
-        PushTransition( cmdList, transitions, n, { tex->GetResource(), tex->State, usage.State } );
-        tex->State = usage.State;
+        Rhi::Resource* resource = nullptr;
+        D3D12_RESOURCE_STATES* state = nullptr;
+        if ( !TrackedState( usage.Handle, resource, state ) || *state == usage.State ) return;
+        PushTransition( cmdList, transitions, n, { resource, *state, usage.State } );
+        *state = usage.State;
         };
 
     for ( const RGResourceUsage& write : pass.m_writes ) consider( write );
     for ( const RGResourceUsage& read : pass.m_reads ) consider( read );
 
-    // Non-graph-tracked transitions folded into this same batch (D3D12RGBuilder::TransitionExternal) — skip
-    // true no-ops exactly like the tex->State check above; `Before` stays the caller's responsibility.
+    // Untracked transitions folded into this same batch (D3D12RGBuilder::TransitionExternal) — skip
+    // true no-ops like the state check above; `Before` stays the caller's responsibility.
     for ( const D3D12ResourceTransition& ext : pass.m_preTransitions ) {
         if ( ext.Before == ext.After ) continue;
         PushTransition( cmdList, transitions, n, ext );

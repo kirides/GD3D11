@@ -95,14 +95,17 @@ private:
     — immediately before that pass's callback runs, then updates D3D12RenderTarget::State. A callback only
     needs to barrier manually for a state change IT makes mid-callback that no Read/Write models (DoF's
     composite pass transitioning its scratch to COPY_SOURCE right before copying it out is exactly that —
-    nothing else in the graph ever reads it, so there is no Read() to hang that transition off of). External
-    (imported) handles are untouched by this — the graph has never tracked their state, and still doesn't. */
+    nothing else in the graph ever reads it, so there is no Read() to hang that transition off of). Imported
+    handles get the same treatment through the state variable they were imported with. */
 class D3D12RenderGraph {
 public:
     D3D12RenderGraph( D3D12AliasedTextureArena* arena ) : m_arena( arena ) {}
 
-    // Bring an existing engine resource (e.g. the scene-color target) into the graph
+    // Bring an existing engine resource (e.g. the scene-color target) into the graph; tracks its State.
     RGResourceHandle ImportResource( const std::wstring& name, D3D12RenderTarget* externalTarget );
+    // Same for a plain resource whose state the engine keeps in `state`: the graph reads it to transition
+    // at execute time and writes it back, so code outside the graph sees the same value.
+    RGResourceHandle ImportResource( const std::wstring& name, Rhi::Resource* resource, D3D12_RESOURCE_STATES* state );
 
     // Add a pass using modern C++ lambdas
     template<typename SetupFunc>
@@ -143,7 +146,13 @@ private:
     // there is nothing for this graph to release.
     std::vector<D3D12RenderTarget*> m_activeTextures;
     std::vector<D3D12RenderTarget*> m_externalTextures;
+    struct ExternalResource { Rhi::Resource* Resource = nullptr; D3D12_RESOURCE_STATES* State = nullptr; };
+    std::vector<ExternalResource> m_externalResources;   // plain imports (no D3D12RenderTarget)
 
+    RGResourceHandle AddHandle( bool isExternal );
+    bool IsExternalIndex( uint32_t index ) const { return m_externalTextures[index] || m_externalResources[index].Resource; }
+    /** The resource behind a handle and the state variable tracking it; false if it has none (skipped). */
+    bool TrackedState( RGResourceHandle handle, Rhi::Resource*& resource, D3D12_RESOURCE_STATES*& state ) const;
     void AllocateResourcesForPass( size_t passIndex, D3D12CmdList& cmdList );
     void TransitionPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList );
     /** Issues pass.m_postTransitions (see D3D12RGBuilder::TransitionExternalAfter) immediately after
