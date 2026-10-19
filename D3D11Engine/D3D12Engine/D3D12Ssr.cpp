@@ -105,14 +105,11 @@ void D3D12GraphicsEngine::CaptureSsrOpaqueHistory() {
 
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
-    const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
-        ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-    Rhi::ResourceTransition pre[4] = {
-        { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
-        { m_SsrPrevColor.Get(), kSsrPrevReadState, D3D12_RESOURCE_STATE_COPY_DEST },
-        { m_SsrPrevDepth.Get(), kSsrPrevReadState, D3D12_RESOURCE_STATE_COPY_DEST },
-    };
-    UINT preCount = 3;
+    Rhi::ResourceTransition pre[4];
+    UINT preCount = 0;
+    if ( SceneColorTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[preCount] ) ) ++preCount;
+    pre[preCount++] = { m_SsrPrevColor.Get(), kSsrPrevReadState, D3D12_RESOURCE_STATE_COPY_DEST };
+    pre[preCount++] = { m_SsrPrevDepth.Get(), kSsrPrevReadState, D3D12_RESOURCE_STATE_COPY_DEST };
     if ( SceneDepthTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[preCount] ) ) ++preCount;
     m_CmdList->TransitionBarriers( pre, preCount );
 
@@ -120,12 +117,12 @@ void D3D12GraphicsEngine::CaptureSsrOpaqueHistory() {
     m_CmdList->CopyResource( m_SsrPrevDepth.Get(), m_DepthBuffer.Get() );
 
     // The depth stays readable: the low-cloud march and the water copy read it next.
-    m_CmdList->TransitionBarriers( {
-        { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-        { m_SsrPrevColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSsrPrevReadState },
-        { m_SsrPrevDepth.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSsrPrevReadState },
-        } );
-    m_SceneColorInPixelState = false;
+    Rhi::ResourceTransition post[3];
+    UINT postCount = 0;
+    if ( SceneColorTransition( D3D12_RESOURCE_STATE_RENDER_TARGET, post[postCount] ) ) ++postCount;
+    post[postCount++] = { m_SsrPrevColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSsrPrevReadState };
+    post[postCount++] = { m_SsrPrevDepth.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSsrPrevReadState };
+    m_CmdList->TransitionBarriers( post, postCount );
 
     BindSceneColorTarget();
     m_SsrHistoryValid = true;

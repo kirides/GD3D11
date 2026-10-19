@@ -302,6 +302,11 @@ private:
     // unless `exact`. SceneDepthTransition fills `out` and returns false when no barrier is needed.
     bool SceneDepthTransition( D3D12_RESOURCE_STATES access, Rhi::ResourceTransition& out, bool exact = false );
     void TransitionSceneDepth( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES access, bool exact = false );
+    // Scene color state, exact: SceneColorTransition fills `out` and returns false when it is already in `state`.
+    bool SceneColorTransition( D3D12_RESOURCE_STATES state, Rhi::ResourceTransition& out,
+        D3D12_BARRIER_SYNC syncAfter = Rhi::kBarrierSyncUnspecified );
+    void TransitionSceneColor( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES state,
+        D3D12_BARRIER_SYNC syncAfter = Rhi::kBarrierSyncUnspecified );
     D3D12_CPU_DESCRIPTOR_HANDLE SceneDsv() const;   // the read-only view while the depth is in a read state
     void ResolveSceneToBackBuffer();  // tonemap the HDR scene onto the display target, then rebind it for the 2D UI
 
@@ -514,7 +519,7 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Resource>       m_SceneColor;           // R16G16B16A16_FLOAT, resolution-sized
     D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferMax
     UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
-    bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
+    D3D12_RESOURCE_STATES m_SceneColorState = D3D12_RESOURCE_STATE_RENDER_TARGET;   // exact; see SceneColorTransition
     // Which RTV format/target DrawVertexArray is currently rendering into — true while the HDR scene-color
     // target is bound (BindSceneColorTarget, i.e. during OnStartWorldRendering incl. DrawSky), false once
     // ResolveSceneToBackBuffer/OnBeginFrame bind the swapchain backbuffer for the later 2D UI/HUD draws.
@@ -1583,7 +1588,7 @@ private:
     UINT m_VelocityUavSlot = UINT_MAX;    // UAV the FillCameraVelocity compute pass writes through (bindless)
     UINT m_NormalSrvSlot = UINT_MAX;      // SRV for the debug overlay + future XeGTAO
     bool m_MotionResourcesReady = false;  // false disables the whole feature (prepass falls back to depth-only)
-    bool m_VelocityInPixelState = false;  // mirrors m_SceneColorInPixelState: tracks RT vs shader-read rest state
+    bool m_VelocityInPixelState = false;  // tracks RT vs shader-read rest state
     // The combined shader-read state m_VelocityBuffer rests in once FillCameraVelocity has run — the debug
     // overlay reads it from a pixel shader, TAA and FSR3 from compute. Named because FSR3 has to narrow it to
     // the plain NON_PIXEL state for the duration of its dispatch and put it back (see D3D12Fsr.cpp).

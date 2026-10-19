@@ -164,18 +164,17 @@ UINT D3D12GraphicsEngine::CaptureTransparencyBackdrop() {
 
     DX_ZONE( m_CmdList.Get(), "Transparency backdrop" );
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-    const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
-        ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-    m_CmdList->TransitionBarriers( {
-        { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
-        { m_TransparencyBackdrop.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
-        } );
+    Rhi::ResourceTransition pre[2];
+    UINT n = 0;
+    if ( SceneColorTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[n] ) ) ++n;
+    pre[n++] = { m_TransparencyBackdrop.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST };
+    m_CmdList->TransitionBarriers( pre, n );
     m_CmdList->CopyResource( m_TransparencyBackdrop.Get(), m_SceneColor.Get() );
-    m_CmdList->TransitionBarriers( {
-        { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-        { m_TransparencyBackdrop.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
-        } );
-    m_SceneColorInPixelState = false;
+    Rhi::ResourceTransition post[2];
+    n = 0;
+    if ( SceneColorTransition( D3D12_RESOURCE_STATE_RENDER_TARGET, post[n] ) ) ++n;
+    post[n++] = { m_TransparencyBackdrop.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+    m_CmdList->TransitionBarriers( post, n );
     return m_TransparencyBackdropSrvSlot;
 }
 
@@ -329,10 +328,9 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
 
             // Scene color must be readable by the mask CS; compute can't run with it bound as an RTV. Not
             // graph-tracked, so declared via TransitionExternal to fold it into maskHandle's own batch.
-            if ( !m_SceneColorInPixelState ) {
-                builder.TransitionExternal( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-                m_SceneColorInPixelState = true;
-            }
+            Rhi::ResourceTransition toRead;
+            if ( SceneColorTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, toRead ) )
+                builder.TransitionExternal( toRead.Resource, toRead.Before, toRead.After );
 
             pass.m_executeCallback = [this, gx, gy, maskHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
                 D3D12RenderTarget* mask = g.GetPhysicalTexture( maskHandle );
@@ -463,10 +461,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
     graph.AddPass( RG_PASS_NAME( "Fog Composition" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
         pass.m_executeCallback = [this, heightFog, godRays, godRayZoomSrvSlot]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             // Scene color back to RENDER_TARGET (the god-ray mask pass may have flipped it to a read state).
-            if ( m_SceneColorInPixelState ) {
-                cmdList.TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-                m_SceneColorInPixelState = false;
-            }
+            TransitionSceneColor( cmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
             const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
             const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };

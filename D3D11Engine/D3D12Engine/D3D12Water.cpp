@@ -423,24 +423,24 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
                 // Both sources must leave their bound states, so drop the render targets first.
                 cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
-                const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
-                    ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-                Rhi::ResourceTransition pre[2] = { { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE } };
-                UINT preCount = 1;
+                Rhi::ResourceTransition pre[2];
+                UINT preCount = 0;
+                if ( SceneColorTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[preCount] ) ) ++preCount;
                 if ( SceneDepthTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[preCount] ) ) ++preCount;
                 cmdList.TransitionBarriers( pre, preCount );
 
                 cmdList.CopyResource( scene->GetResource(), m_SceneColor.Get() );
                 cmdList.CopyResource( depth->GetResource(), m_DepthBuffer.Get() );
 
-                cmdList.TransitionBarriers( {
-                    { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+                Rhi::ResourceTransition post[3] = {
                     { scene->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
                     { depth->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
-                    } );
+                };
+                UINT postCount = 2;
+                if ( SceneColorTransition( D3D12_RESOURCE_STATE_RENDER_TARGET, post[postCount] ) ) ++postCount;
+                cmdList.TransitionBarriers( post, postCount );
                 scene->State = kWaterCopyReadState;
                 depth->State = kWaterCopyReadState;
-                m_SceneColorInPixelState = false;   // the scene target is back to RENDER_TARGET regardless of before
                 };
             } );
 

@@ -1385,7 +1385,7 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 	}
 	m_SceneColor->SetName( kSceneColorFormat == DXGI_FORMAT_R11G11B10_FLOAT
 		? L"SceneColorHDR(R11G11B10)" : L"SceneColorHDR(R16F)" );
-	m_SceneColorInPixelState = false;
+	m_SceneColorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
 	// RTV in the extra heap slot (index kBackBufferMax, past the swapchain RTVs - the heap always reserves
 	// the max slot count regardless of the actually configured kBackBufferCount, so this offset never moves).
@@ -1411,13 +1411,10 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 
 
 void D3D12GraphicsEngine::BindSceneColorTarget() {
-	// Make the HDR scene-color target the world pass's render target (+ keep the shared depth buffer). Transitions
-	// it back from PIXEL_SHADER_RESOURCE (last frame's resolve left it there) to RENDER_TARGET when needed.
+	// Make the HDR scene-color target the world pass's render target (+ keep the shared depth buffer), moving it
+	// back to RENDER_TARGET from wherever the last reader left it (last frame's resolve: PIXEL_SHADER_RESOURCE).
 	if ( !m_SceneColor || !m_CmdList ) return;
-	if ( m_SceneColorInPixelState ) {
-		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-		m_SceneColorInPixelState = false;
-	}
+	TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	// A narrower read state (a copy source, FSR3's exact compute read) can't back a DSV; widen it.
 	if ( m_DepthState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_READ );
 	const D3D12_CPU_DESCRIPTOR_HANDLE dsv = SceneDsv();
@@ -1441,6 +1438,20 @@ bool D3D12GraphicsEngine::SceneDepthTransition( D3D12_RESOURCE_STATES access, Rh
 void D3D12GraphicsEngine::TransitionSceneDepth( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES access, bool exact ) {
 	Rhi::ResourceTransition t;
 	if ( SceneDepthTransition( access, t, exact ) ) cmdList->TransitionBarrier( t.Resource, t.Before, t.After );
+}
+
+bool D3D12GraphicsEngine::SceneColorTransition( D3D12_RESOURCE_STATES state, Rhi::ResourceTransition& out,
+	D3D12_BARRIER_SYNC syncAfter ) {
+	if ( !m_SceneColor || state == m_SceneColorState ) return false;
+	out = { m_SceneColor.Get(), m_SceneColorState, state };
+	out.SyncAfter = syncAfter;
+	m_SceneColorState = state;
+	return true;
+}
+
+void D3D12GraphicsEngine::TransitionSceneColor( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES state, D3D12_BARRIER_SYNC syncAfter ) {
+	Rhi::ResourceTransition t;
+	if ( SceneColorTransition( state, t, syncAfter ) ) cmdList->TransitionBarriers( &t, 1 );
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::SceneDsv() const {
@@ -1569,10 +1580,7 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	if ( !m_SceneColor || !m_Pipelines.Tonemap.PSO || !m_Pipelines.Tonemap.RootSig || !m_CmdList ) return;
 	DX_ZONE( m_CmdList.Get(), "Tonemap resolve (HDR->display)" );
 
-	if ( !m_SceneColorInPixelState ) {
-		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		m_SceneColorInPixelState = true;
-	}
+	TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 
 	// Nothing lives in the scratches yet this frame, so this is the safe spot to initialize fresh ones.
 	if ( m_LdrScratchNeedsDiscard && m_LdrCopyReady ) {
@@ -2999,8 +3007,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     device->CreateRenderTargetView( captureTex.Get(), nullptr, captureRtv );
     m_CmdList.InvalidateRenderTargets();
 
-    // m_SceneColor was left in PIXEL_SHADER_RESOURCE state by OnStartWorldRendering's ResolveSceneToBackBuffer
-    // call (now genuinely true on the GPU after the flush above) — safe to sample without re-transitioning.
+    // ResolveSceneToBackBuffer normally left the scene color in PIXEL_SHADER_RESOURCE already.
+    TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
     m_CmdList->OMSetRenderTargets( 1, &captureRtv, FALSE, nullptr );
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( buffersize.x ), static_cast<float>( buffersize.y ), 0.0f, 1.0f };
     const D3D12_RECT     sc = { 0, 0, buffersize.x, buffersize.y };

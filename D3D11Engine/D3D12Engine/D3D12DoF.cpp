@@ -219,15 +219,11 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
             cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
             D3D12ResourceTransition pre[3];
             UINT n = 0;
-            if ( !m_SceneColorInPixelState ) {
-                pre[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-            }
+            if ( SceneColorTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[n] ) ) ++n;
             if ( SceneDepthTransition( kDoFDepthRead, pre[n] ) ) ++n;
             pre[n++] = { m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
             cmdList.TransitionBarriers( pre, n );
-            m_SceneColorInPixelState = true;
             };
         } );
 
@@ -313,10 +309,7 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
         pass.m_executeCallback = [this, cb, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
             // Unconditional, and before the early-out below: the blur pass read the scene colour from compute
             // and "DoF Restore" no longer touches it, so this is the only thing that puts it back.
-            cmdList.TransitionBarriers( {
-                { m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-                } );
-            m_SceneColorInPixelState = false;
+            TransitionSceneColor( cmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
             D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
             if ( !half ) return;   // arena exhausted or creation failed (logged once by the arena) — leave the scene sharp

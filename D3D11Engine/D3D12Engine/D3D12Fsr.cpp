@@ -667,8 +667,7 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
     if ( temporal ) TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, true );
     Rhi::ResourceTransition pre[3];
     UINT n = 0;
-    pre[n++] = { m_SceneColor.Get(), m_SceneColorInPixelState ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-        : D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+    if ( SceneColorTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[n] ) ) ++n;
     if ( temporal ) {
         pre[n++] = { m_VelocityBuffer.Get(), m_VelocityInPixelState ? kVelocityReadState : D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
@@ -679,7 +678,6 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
     m_CmdList->TransitionBarriers( pre, n );
     TransitionFsrOutput( m_FsrOutputInUavState ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
         : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-    m_SceneColorInPixelState = true;   // corrected to PIXEL_SHADER_RESOURCE on the way out
     m_FsrOutputInUavState = true;
 
     // FFX's Vulkan backend reads COMPUTE_READ inputs in SHADER_READ_ONLY_OPTIMAL; our read state is READ_ONLY_OPTIMAL.
@@ -809,7 +807,7 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
     // state, the reactive mask back to RENDER_TARGET. The FSR 3 shared resources are left alone (see CreateFsr3SharedResources).
     Rhi::ResourceTransition post[3];
     n = 0;
-    post[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+    if ( SceneColorTransition( D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, post[n] ) ) ++n;
     if ( temporal ) {
         post[n++] = { m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, kVelocityReadState };
     }

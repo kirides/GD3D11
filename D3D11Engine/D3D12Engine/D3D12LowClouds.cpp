@@ -184,10 +184,7 @@ void D3D12GraphicsEngine::AddLowCloudCompositePass( D3D12RenderGraph& graph ) {
     graph.AddPass( RG_PASS_NAME( "Low Cloud Composite" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
         pass.m_executeCallback = [this, consts]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             DX_ZONE( cmdList.Get(), "Low cloud composite" );
-            if ( m_SceneColorInPixelState ) {
-                cmdList.TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-                m_SceneColorInPixelState = false;
-            }
+            TransitionSceneColor( cmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
             const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
             const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
