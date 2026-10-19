@@ -1459,6 +1459,10 @@ uint32_t D3D12GraphicsEngine::ImportSceneColor( D3D12RenderGraph& graph ) {
 	return graph.ImportResource( L"SceneColor", m_SceneColor.Get(), &m_SceneColorState );
 }
 
+uint32_t D3D12GraphicsEngine::ImportSceneDepth( D3D12RenderGraph& graph ) {
+	return graph.ImportResource( L"SceneDepth", m_DepthBuffer.Get(), &m_DepthState, m_DepthReadState );
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::SceneDsv() const {
 	D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
 	if ( !m_DepthBuffer || !m_DsvHeap ) return dsv;

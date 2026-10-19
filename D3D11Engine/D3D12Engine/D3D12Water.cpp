@@ -401,9 +401,9 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         RGResourceHandle depthHandle = RG_INVALID_HANDLE;
 
         waterGraph.AddPass( RG_PASS_NAME( "Water Copy" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-            // CreateTexture()'s state param gets both into COPY_DEST automatically before this callback
-            // runs, so the callback itself never needs to check/transition scene->State or depth->State on
-            // entry — only m_SceneColor/m_DepthBuffer (not graph-tracked) still need a manual transition.
+            // The graph moves the copies to COPY_DEST and both sources to COPY_SOURCE in one batch.
+            builder.Read( ImportSceneColor( waterGraph ), D3D12_RESOURCE_STATE_COPY_SOURCE );
+            builder.Read( ImportSceneDepth( waterGraph ), D3D12_RESOURCE_STATE_COPY_SOURCE );
             sceneHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
                 static_cast<int>( kSceneColorFormat ), L"WaterSceneCopy", 0u }, D3D12_RESOURCE_STATE_COPY_DEST );
             // Plain R32_FLOAT, not R32_TYPELESS+ALLOW_DEPTH_STENCIL: CopyResource only needs format-FAMILY
@@ -420,14 +420,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
                 D3D12RenderTarget* depth = g.GetPhysicalTexture( depthHandle );
                 if ( !scene || !depth ) return;
 
-                // Both sources must leave their bound states, so drop the render targets first.
+                // Both sources left their bound states, so drop the render targets.
                 cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-
-                Rhi::ResourceTransition pre[2];
-                UINT preCount = 0;
-                if ( SceneColorTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[preCount] ) ) ++preCount;
-                if ( SceneDepthTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[preCount] ) ) ++preCount;
-                cmdList.TransitionBarriers( pre, preCount );
 
                 cmdList.CopyResource( scene->GetResource(), m_SceneColor.Get() );
                 cmdList.CopyResource( depth->GetResource(), m_DepthBuffer.Get() );
@@ -554,6 +548,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
     // The copies above and the passes before left the depth readable; the Z-prepass writes it.
     TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+    TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );   // a skipped copy leaves it COPY_SOURCE
     {
         const D3D12_CPU_DESCRIPTOR_HANDLE dsv = SceneDsv();
         m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &dsv );

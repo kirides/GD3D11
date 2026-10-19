@@ -209,21 +209,16 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     RGResourceHandle halfHandle = RG_INVALID_HANDLE;
     RGResourceHandle gaussHHandle = RG_INVALID_HANDLE;   // Gaussian only: horizontal pass output
 
-    // --- Prepare: scene colour RENDER_TARGET -> compute-readable, depth out of DEPTH_WRITE, previous focus
-    // UAV -> readable. The DSV/RTV must be unbound first: a resource cannot be bound as a render target while
-    // read through an SRV (same dance RenderTAA / RenderBloom / RenderFogAndGodRays do). None of this touches
-    // graph resources, so it is its own tiny pass with no Read/Write, exactly like "Debug Lines"/"TAA".
-    graph.AddPass( RG_PASS_NAME( "DoF Prepare" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-        pass.m_executeCallback = [this, prevIdx]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+    // --- Prepare: scene colour and depth readable from compute, previous focus UAV -> readable, and the
+    // RTV/DSV unbound (a resource cannot stay a bound render target while read through an SRV).
+    graph.AddPass( RG_PASS_NAME( "DoF Prepare" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        builder.Read( ImportSceneColor( graph ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        builder.Read( ImportSceneDepth( graph ), kDoFDepthRead );
+        builder.TransitionExternal( m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             DX_ZONE( cmdList.Get(), "Depth of Field" );
             cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-            D3D12ResourceTransition pre[3];
-            UINT n = 0;
-            if ( SceneColorTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[n] ) ) ++n;
-            if ( SceneDepthTransition( kDoFDepthRead, pre[n] ) ) ++n;
-            pre[n++] = { m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-            cmdList.TransitionBarriers( pre, n );
             };
         } );
 

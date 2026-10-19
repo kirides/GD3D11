@@ -293,10 +293,10 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
 
     graph.AddPass( RG_PASS_NAME( "Fog Setup" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
         builder.Write( ImportSceneColor( graph ), D3D12_RESOURCE_STATE_RENDER_TARGET );
+        builder.Read( ImportSceneDepth( graph ), kDepthRead );
         pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             DX_ZONE( cmdList.Get(), "Height fog + god rays" );
             cmdList.OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );
-            TransitionSceneDepth( cmdList, kDepthRead );
             };
         } );
 

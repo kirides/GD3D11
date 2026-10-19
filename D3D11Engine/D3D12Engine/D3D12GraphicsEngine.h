@@ -308,6 +308,7 @@ private:
     void TransitionSceneColor( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES state,
         D3D12_BARRIER_SYNC syncAfter = Rhi::kBarrierSyncUnspecified );
     uint32_t ImportSceneColor( class D3D12RenderGraph& graph );   // RGResourceHandle tracked by m_SceneColorState
+    uint32_t ImportSceneDepth( class D3D12RenderGraph& graph );   // tracked by m_DepthState, reads widen to m_DepthReadState
     D3D12_CPU_DESCRIPTOR_HANDLE SceneDsv() const;   // the read-only view while the depth is in a read state
     void ResolveSceneToBackBuffer();  // tonemap the HDR scene onto the display target, then rebind it for the 2D UI
 
