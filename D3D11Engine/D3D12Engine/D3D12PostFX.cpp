@@ -53,14 +53,6 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 
-namespace {
-    // Swapchain/backbuffer format — duplicated per-TU (internal linkage, no ODR concern), kept in sync with
-    // the copies in D3D12GraphicsEngine.cpp / D3D12PipelineState.cpp. SMAA's color copy + neighborhood pass
-    // target this format.
-    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
-}
-
-
 bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 	// Bloom pyramid (mirrors D3D11PFX_Bloom's mip-chain sizing exactly): mip i is size >> (i+1), stop once the
 	// shorter side drops below kBloomMinMipSize. Recreated on every resize; SRV/UAV heap slots are allocated
@@ -475,7 +467,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	dd.DepthOrArraySize = 1;
 	dd.MipLevels = 1;
 	// Must match the display target byte-for-byte - a scratch stands in for it; with real HDR output that
-	// target is the FP16 extended-sRGB buffer rather than the R10G10B10A2 swapchain.
+	// target is the FP16 extended-sRGB buffer rather than the swapchain.
 	dd.Format = m_Pipelines.DisplayFormat;
 	dd.SampleDesc.Count = 1;
 	dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;

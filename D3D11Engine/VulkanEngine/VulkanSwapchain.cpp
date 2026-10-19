@@ -33,8 +33,9 @@ VulkanSwapchain::PresentWaitMode VulkanSwapchain::QueryPresentWaitMode() const {
     return caps.PresentWait ? PresentWaitMode::PresentWait : PresentWaitMode::None;
 }
 
-bool VulkanSwapchain::Create( VulkanDevice& device, HWND window, INT2 size, uint32_t minImageCount, bool vsync, bool hdr ) {
+bool VulkanSwapchain::Create( VulkanDevice& device, HWND window, INT2 size, uint32_t minImageCount, bool vsync, VkFormat sdrFormat, bool hdr ) {
     m_Device = &device;
+    m_SdrFormat = sdrFormat;
     m_Window = window;
     m_RequestedMinImages = std::max( 2u, minImageCount );
     m_VSync = vsync;
@@ -113,13 +114,13 @@ bool VulkanSwapchain::BuildSwapchain( INT2 size ) {
         return std::any_of( formats.begin(), formats.end(),
             [&]( const VkSurfaceFormatKHR& s ) { return s.format == f && s.colorSpace == cs; } );
     };
-    // SDR: R10G10B10A2 like D3D12's backbuffer, UNORM (the shaders write gamma-encoded values themselves).
+    // SDR: the caller's UNORM format (the shaders write gamma-encoded values themselves), else BGRA8.
     if ( m_HdrRequested && m_Device->GetCaps().SwapchainColorSpace
         && has( VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_COLOR_SPACE_HDR10_ST2084_EXT ) ) {
         m_Format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
         m_ColorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT;
-    } else if ( has( VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ) ) {
-        m_Format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    } else if ( has( m_SdrFormat, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ) ) {
+        m_Format = m_SdrFormat;
         m_ColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     } else if ( has( VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ) ) {
         m_Format = VK_FORMAT_B8G8R8A8_UNORM;

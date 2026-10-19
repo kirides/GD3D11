@@ -39,7 +39,6 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
     static constexpr UINT64 kCopyBatchFlushThresholdBytes = 32ull * 1024 * 1024;
-    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
     constexpr UINT kSrvHeapCapacity = 65536;
     // The display chain reads its source from both pixel shaders (SMAA, sharpen) and compute (the underwater
     // blur), so the scratches take one combined read state rather than a per-pass one.
@@ -197,7 +196,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the HDR scanout encode pipeline; falling back to SDR output." );
         m_HdrOutputActive = false;
         m_HdrEncodePQ = false;
-        m_Pipelines.DisplayFormat = kBackBufferFormat;
+        m_Pipelines.DisplayFormat = m_Pipelines.SwapchainFormat = kSdrBackBufferFormat;
     }
     if ( !m_Pipelines.CreateUI() || !CreateUIVertexBuffers() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline." );
@@ -1663,7 +1662,7 @@ void D3D12GraphicsEngine::DetectHdrOutputCapability() {
 	m_HdrOutputActive = false;
 	m_HdrEncodePQ = false;
 	m_HdrMonitorMaxNits = m_HdrMonitorMinNits = m_HdrMonitorMaxFullFrameNits = 0.0f;
-	m_Pipelines.DisplayFormat = kBackBufferFormat;
+	m_Pipelines.DisplayFormat = m_Pipelines.SwapchainFormat = kSdrBackBufferFormat;
 
 	if ( !Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor ) return;
 
@@ -1675,6 +1674,7 @@ void D3D12GraphicsEngine::DetectHdrOutputCapability() {
 	}
 
 	m_Pipelines.DisplayFormat = kHdrDisplayFormat;
+	m_Pipelines.SwapchainFormat = kHdrBackBufferFormat;
 	Logging::Inf( "D3D12: HDR output enabled. Monitor reports {} nits peak, {} nits full-frame, {} nits black.",
 		m_HdrMonitorMaxNits, m_HdrMonitorMaxFullFrameNits, m_HdrMonitorMinNits );
 }
@@ -1997,7 +1997,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     scd.Width = static_cast<UINT>( size.x );
     scd.Height = static_cast<UINT>( size.y );
     scd.BufferCount = kBackBufferCount;
-    scd.Format = kBackBufferFormat;
+    scd.Format = m_Pipelines.SwapchainFormat;
     scd.Flags = ( m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0 )
         | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     const HRESULT hr = m_Rhi->CreateSwapchain( scd, m_SwapChain.ReleaseAndGetAddressOf() );
@@ -2936,20 +2936,6 @@ void D3D12GraphicsEngine::RestoreFrameRenderTarget() {
 }
 
 
-/** Unpacks one R10G10B10A2_UNORM texel (the swapchain/tonemap-target format) into BGRA8 — the 32bpp
-    layout MyDirectDrawSurface7::Lock's DDLOCK_READONLY path hands to Gothic (masks 0x00FF0000/0x0000FF00/
-    0x000000FF for R/G/B, alpha unused). 10->8 bit is a rounded scale; plenty for a save thumbnail. */
-static void UnpackR10G10B10A2ToBGRA8( uint32_t packed, byte* dstBGRA ) {
-    const uint32_t r10 = packed & 0x3FFu;
-    const uint32_t g10 = (packed >> 10) & 0x3FFu;
-    const uint32_t b10 = (packed >> 20) & 0x3FFu;
-    dstBGRA[0] = static_cast<byte>( (b10 * 255u + 511u) / 1023u );
-    dstBGRA[1] = static_cast<byte>( (g10 * 255u + 511u) / 1023u );
-    dstBGRA[2] = static_cast<byte>( (r10 * 255u + 511u) / 1023u );
-    dstBGRA[3] = 255;
-}
-
-
 /** Returns the data of the backbuffer (savegame thumbnail / screenshot). See D3D11GraphicsEngine's
     counterpart for the calling convention: MyDirectDrawSurface7::Lock calls OnStartWorldRendering() right
     before this to force a fresh world render, then reads *data as a top-down 32bpp BGRA8 buffer. */
@@ -2973,9 +2959,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     FlushCommandListSync();
 
     // Re-tonemap the (now GPU-resident) HDR scene into a fresh render target sized to what the caller
-    // asked for. We deliberately do NOT copy the real swapchain backbuffer: it's DXGI_FORMAT_R10G10B10A2_
-    // UNORM (kBackBufferFormat) which the Tonemap PSO is baked for, but Gothic's Lock() consumer expects a
-    // simple 32bpp BGRA8 buffer, and a thumbnail additionally needs downscaling to 256x256 — both are
+    // asked for. We deliberately do NOT copy the real swapchain backbuffer: with HDR output it isn't BGRA8,
+    // which Gothic's Lock() consumer expects, and a thumbnail additionally needs downscaling to 256x256 — both are
     // exactly what one more tonemap draw at a smaller viewport gives us for free (mirrors D3D11's
     // GetBackbufferData drawing HDRBackBuffer through PS_PFX_GammaCorrectInv into a differently-sized RT).
     D3D12MA::ALLOCATION_DESC allocDesc = {};
@@ -2987,13 +2972,13 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     td.Height = static_cast<UINT>( buffersize.y );
     td.DepthOrArraySize = 1;
     td.MipLevels = 1;
-    td.Format = kBackBufferFormat;
+    td.Format = kSdrBackBufferFormat;   // BGRA8, the layout MyDirectDrawSurface7::Lock hands to Gothic
     td.SampleDesc.Count = 1;
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
     D3D12_CLEAR_VALUE clearValue = {};
-    clearValue.Format = kBackBufferFormat;
+    clearValue.Format = kSdrBackBufferFormat;
 
     Microsoft::WRL::ComPtr<Rhi::Resource> captureTex;
     if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &td, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue, captureTex.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
@@ -3093,12 +3078,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
         const uint8_t* srcRow = reinterpret_cast<const uint8_t*>( mapped );
         byte* dstRow = d;
         for ( int row = 0; row < buffersize.y; ++row ) {
-            const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>( srcRow );
-            byte* dstPixels = dstRow;
-            for ( int col = 0; col < buffersize.x; ++col ) {
-                UnpackR10G10B10A2ToBGRA8( srcPixels[col], dstPixels );
-                dstPixels += 4;
-            }
+            memcpy( dstRow, srcRow, static_cast<size_t>( buffersize.x ) * 4 );
+            for ( int col = 0; col < buffersize.x; ++col ) dstRow[col * 4 + 3] = 255;   // opaque, as before
             srcRow += footprint.Footprint.RowPitch;
             dstRow += static_cast<size_t>( buffersize.x ) * 4;
         }
@@ -3130,7 +3111,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     const UINT swapChainFlags = ( m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0 )
         | ( m_FrameLatencyWaitableObject ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0 );
     HRESULT hr = m_SwapChain->ResizeBuffers( kBackBufferCount,
-        static_cast<UINT>( size.x ), static_cast<UINT>( size.y ), kBackBufferFormat, swapChainFlags );
+        static_cast<UINT>( size.x ), static_cast<UINT>( size.y ), m_Pipelines.SwapchainFormat, swapChainFlags );
     if ( FAILED( hr ) ) {
         Logging::Wrn( "D3D12 ResizeBuffers failed (0x{:x}).", static_cast<uint32_t>( hr ) );
         return false;

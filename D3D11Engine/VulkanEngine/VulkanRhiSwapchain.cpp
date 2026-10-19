@@ -81,7 +81,8 @@ namespace VulkanRhi {
 
     bool SwapchainImpl::Init( const Rhi::SwapchainDesc& desc ) {
         m_Desc = desc;
-        if ( !m_Swapchain.Create( m_Device->Base(), desc.Window, INT2( desc.Width, desc.Height ), desc.BufferCount, m_VSync, false ) )
+        if ( !m_Swapchain.Create( m_Device->Base(), desc.Window, INT2( desc.Width, desc.Height ), desc.BufferCount, m_VSync,
+                desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ? VK_FORMAT_A2B10G10R10_UNORM_PACK32 : VK_FORMAT_B8G8R8A8_UNORM, false ) )
             return false;
         SyncWrappers();
         if ( m_NoPresent ) Logging::Wrn( "Vulkan: -VKNOPRESENT: frames render off-screen and are never presented." );

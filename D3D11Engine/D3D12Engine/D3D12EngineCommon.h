@@ -250,6 +250,10 @@ inline constexpr DXGI_FORMAT kPostFxDownsampledFormat = DXGI_FORMAT_R16G16B16A16
 // HdrEncode.hlsl converts to ST.2084 at present time.
 inline constexpr DXGI_FORMAT kHdrDisplayFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
+// Swapchain formats: 8-bit for SDR (the tonemap writes gamma-encoded values), 10-bit only for HDR10 scanout.
+inline constexpr DXGI_FORMAT kSdrBackBufferFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+inline constexpr DXGI_FORMAT kHdrBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+
 // --- Motion-vector / normal G-buffer (D3D12Motion.cpp) ---
 // Two extra render targets the Forward+ DEPTH PREPASS writes alongside depth (it is the only full-scene pass
 // that runs before lighting, so both products are ready for anything that wants them pre-shading):

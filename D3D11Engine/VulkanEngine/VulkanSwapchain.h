@@ -19,8 +19,8 @@ public:
     VulkanSwapchain( const VulkanSwapchain& ) = delete;
     VulkanSwapchain& operator=( const VulkanSwapchain& ) = delete;
 
-    /** hdr requests an HDR10 (A2B10G10R10 + ST.2084) swapchain; falls back to SDR when the surface can't. */
-    bool Create( VulkanDevice& device, HWND window, INT2 size, uint32_t minImageCount, bool vsync, bool hdr );
+    /** sdrFormat is the SDR image format; hdr requests HDR10 (A2B10G10R10 + ST.2084), falling back to SDR. */
+    bool Create( VulkanDevice& device, HWND window, INT2 size, uint32_t minImageCount, bool vsync, VkFormat sdrFormat, bool hdr );
     /** Waits for the device to go idle, then rebuilds at `size` (the window's client area wins on Win32). */
     bool Recreate( INT2 size, bool vsync );
     void Destroy();
@@ -67,6 +67,7 @@ private:
     std::vector<VkImageView> m_Views;
     std::vector<VkSemaphore> m_PresentSemaphores;
     VkFormat         m_Format = VK_FORMAT_UNDEFINED;
+    VkFormat         m_SdrFormat = VK_FORMAT_B8G8R8A8_UNORM;
     VkColorSpaceKHR  m_ColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkPresentModeKHR m_PresentMode = VK_PRESENT_MODE_FIFO_KHR;
     VkExtent2D       m_Extent = {};

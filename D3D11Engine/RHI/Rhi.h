@@ -212,7 +212,7 @@ namespace Rhi {
         UINT        Width = 0;
         UINT        Height = 0;
         UINT        BufferCount = 2;
-        DXGI_FORMAT Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+        DXGI_FORMAT Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         /** DXGI_SWAP_CHAIN_FLAG_* bits (ALLOW_TEARING, FRAME_LATENCY_WAITABLE_OBJECT). */
         UINT        Flags = 0;
     };

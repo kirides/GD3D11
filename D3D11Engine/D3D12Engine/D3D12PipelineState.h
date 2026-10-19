@@ -390,7 +390,7 @@ public:
     // SMAA anti-aliasing (runtime toggle, RendererSettings.AntiAliasingMode == AA_SMAA). One bindless root
     // sig (b0 root consts { RT_METRICS + 5 SRV heap indices }, static linear+point clamp samplers,
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) shared by all three fullscreen passes. Edge/Blend PSOs target an
-    // R8G8B8A8 intermediate; the final Neighborhood PSO targets the swapchain (kBackBufferFormat). Area/search
+    // R8G8B8A8 intermediate; the final Neighborhood PSO targets DisplayFormat. Area/search
     // LUTs and the resolution-dependent color/edges/blend textures are GPU resources and live in the engine.
     struct SmaaPipeline {
         Microsoft::WRL::ComPtr<Rhi::RootSignature> RootSig;
@@ -402,7 +402,7 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            NeighborPsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> EdgePSO;      // pass 1: color -> edges (R8G8B8A8)
         Microsoft::WRL::ComPtr<Rhi::PipelineState> BlendPSO;     // pass 2: edges+LUTs -> blend weights (R8G8B8A8)
-        Microsoft::WRL::ComPtr<Rhi::PipelineState> NeighborPSO;  // pass 3: color+blend -> swapchain (kBackBufferFormat)
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> NeighborPSO;  // pass 3: color+blend -> display target (DisplayFormat)
     };
 
     // Gothic FX geometry — quad marks (zCQuadMark) and poly strips (weapon/spell trails, lightning). Both are
@@ -420,7 +420,7 @@ public:
     // Post-tonemap sharpening (RendererSettings.SharpeningMode; SHARPEN_CAS is the shipped default on both
     // backends). One bindless root sig (b0 root consts { CAS const0/const1, source SRV heap index, strength,
     // resolution }, static linear-clamp sampler, CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) shared by both modes;
-    // both are fullscreen-triangle passes writing the swapchain (kBackBufferFormat) from the LDR copy.
+    // both are fullscreen-triangle passes writing the display target (DisplayFormat) from the LDR copy.
     struct SharpenPipeline {
         Microsoft::WRL::ComPtr<Rhi::RootSignature> RootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
@@ -586,11 +586,13 @@ public:
 
     // RTV format every "display space" pass targets — the tonemap resolve, the 2D/FF UI, video, the inventory
     // preview, debug lines, SMAA's final pass and the sharpen pass. Normally the swapchain's own
-    // R10G10B10A2_UNORM, i.e. those passes render straight onto the backbuffer. When the engine brings up real
+    // B8G8R8A8_UNORM, i.e. those passes render straight onto the backbuffer. When the engine brings up real
     // HDR scanout it swaps this to R16G16B16A16_FLOAT before any Create*() runs, and those same passes then
     // render into the intermediate m_HdrDisplay buffer (extended-sRGB, values >1 allowed) which HdrEncode
     // converts to ST.2084 at present time. Fixed for the process lifetime — the HDR toggle needs a restart.
-    DXGI_FORMAT DisplayFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+    DXGI_FORMAT DisplayFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    // The swapchain's format: kSdrBackBufferFormat, or kHdrBackBufferFormat with HDR scanout (HdrEncode's target).
+    DXGI_FORMAT SwapchainFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( Rhi::Device* device, D3D12ShaderBackend* shaders );
@@ -712,10 +714,10 @@ public:
     SkeletalPipeline    Skeletal;
     PointShadowPipeline PointShadow;
     // Tonemap has a second PSO because GetBackbufferData (savegame thumbnails / screenshots) re-runs the resolve
-    // into its own R10G10B10A2 capture texture: with real HDR active Tonemap.PSO targets the FP16 display buffer,
+    // into its own BGRA8 capture texture: with real HDR active Tonemap.PSO targets the FP16 display buffer,
     // which is the wrong RTV format for that capture — and a screenshot wants the SDR image anyway.
     GraphicsPipeline Tonemap;
-    Microsoft::WRL::ComPtr<Rhi::PipelineState> TonemapCapturePSO;   // same shaders/root sig, always kBackBufferFormat
+    Microsoft::WRL::ComPtr<Rhi::PipelineState> TonemapCapturePSO;   // same shaders/root sig, always kSdrBackBufferFormat
     GraphicsPipeline HdrEncode;   // ST.2084 scanout encode; only created when real HDR output is active
     WaterPipeline    Water;
     ComputePipeline  WaterSkyAverage;   // average on-screen sky for the water's sky fill (optional)
