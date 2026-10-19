@@ -65,13 +65,14 @@ RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, D3D
     return handle;
 }
 
-RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, Rhi::Resource* resource, D3D12_RESOURCE_STATES* state ) {
+RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, Rhi::Resource* resource, D3D12_RESOURCE_STATES* state,
+    D3D12_RESOURCE_STATES readState ) {
     for ( uint32_t i = 0; resource && i < m_nextHandle; ++i ) {
         if ( m_externalResources[i].Resource == resource ) return D3D12MakeHandle( i, true );
     }
     const RGResourceHandle handle = AddHandle( true );
     const uint32_t index = D3D12GetHandleIndex( handle );
-    m_externalResources[index] = { resource, state };
+    m_externalResources[index] = { resource, state, readState };
     m_resourceDescs[index] = { 0, 0, 0, name };
     return handle;
 }
@@ -82,11 +83,14 @@ RGResourceHandle D3D12RenderGraph::RegisterResource( const RGTextureDesc& desc )
     return handle;
 }
 
-bool D3D12RenderGraph::TrackedState( RGResourceHandle handle, Rhi::Resource*& resource, D3D12_RESOURCE_STATES*& state ) const {
+bool D3D12RenderGraph::TrackedState( RGResourceHandle handle, Rhi::Resource*& resource, D3D12_RESOURCE_STATES*& state,
+    D3D12_RESOURCE_STATES& readState ) const {
     const uint32_t index = D3D12GetHandleIndex( handle );
+    readState = D3D12_RESOURCE_STATE_COMMON;
     if ( D3D12IsExternalHandle( handle ) && m_externalResources[index].Resource ) {
         resource = m_externalResources[index].Resource;
         state = m_externalResources[index].State;
+        readState = m_externalResources[index].ReadState;
         return state != nullptr;
     }
     D3D12RenderTarget* tex = GetPhysicalTexture( handle );
@@ -203,6 +207,13 @@ void D3D12RenderGraph::AllocateResourcesForPass( size_t passIndex, D3D12CmdList&
 namespace {
     constexpr UINT kMaxTransitionsPerBatch = 16;
 
+    bool IsReadState( D3D12_RESOURCE_STATES s ) {
+        constexpr D3D12_RESOURCE_STATES kWrites = D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+            | D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_STREAM_OUT
+            | D3D12_RESOURCE_STATE_RESOLVE_DEST;
+        return s != D3D12_RESOURCE_STATE_COMMON && !( s & kWrites );
+    }
+
     // Appends to the batch, or issues an individual TransitionBarrier() once it's full.
     void PushTransition( D3D12CmdList& cmdList, D3D12ResourceTransition* batch, UINT& count, const D3D12ResourceTransition& t ) {
         if ( count < kMaxTransitionsPerBatch ) {
@@ -220,9 +231,16 @@ void D3D12RenderGraph::TransitionPassResources( const D3D12RenderPass& pass, D3D
     auto consider = [&]( const RGResourceUsage& usage ) {
         Rhi::Resource* resource = nullptr;
         D3D12_RESOURCE_STATES* state = nullptr;
-        if ( !TrackedState( usage.Handle, resource, state ) || *state == usage.State ) return;
-        PushTransition( cmdList, transitions, n, { resource, *state, usage.State } );
-        *state = usage.State;
+        D3D12_RESOURCE_STATES readState;
+        if ( !TrackedState( usage.Handle, resource, state, readState ) ) return;
+        D3D12_RESOURCE_STATES target = usage.State;
+        if ( IsReadState( target ) ) {
+            if ( IsReadState( *state ) && ( *state & target ) == target ) return;   // already readable that way
+            if ( ( readState & target ) == target ) target = readState;
+        }
+        if ( *state == target ) return;
+        PushTransition( cmdList, transitions, n, { resource, *state, target } );
+        *state = target;
         };
 
     for ( const RGResourceUsage& write : pass.m_writes ) consider( write );

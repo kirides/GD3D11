@@ -105,8 +105,10 @@ public:
     RGResourceHandle ImportResource( const std::wstring& name, D3D12RenderTarget* externalTarget );
     // Same for a plain resource whose state the engine keeps in `state`: the graph reads it to transition
     // at execute time and writes it back, so code outside the graph sees the same value. Importing the same
-    // resource again returns the existing handle.
-    RGResourceHandle ImportResource( const std::wstring& name, Rhi::Resource* resource, D3D12_RESOURCE_STATES* state );
+    // resource again returns the existing handle. A read it has to transition for goes to `readState` when
+    // that covers it (the depth buffer's combined read state), like SceneDepthTransition.
+    RGResourceHandle ImportResource( const std::wstring& name, Rhi::Resource* resource, D3D12_RESOURCE_STATES* state,
+        D3D12_RESOURCE_STATES readState = D3D12_RESOURCE_STATE_COMMON );
 
     // Add a pass using modern C++ lambdas
     template<typename SetupFunc>
@@ -147,13 +149,19 @@ private:
     // there is nothing for this graph to release.
     std::vector<D3D12RenderTarget*> m_activeTextures;
     std::vector<D3D12RenderTarget*> m_externalTextures;
-    struct ExternalResource { Rhi::Resource* Resource = nullptr; D3D12_RESOURCE_STATES* State = nullptr; };
+    struct ExternalResource {
+        Rhi::Resource* Resource = nullptr;
+        D3D12_RESOURCE_STATES* State = nullptr;
+        D3D12_RESOURCE_STATES ReadState = D3D12_RESOURCE_STATE_COMMON;
+    };
     std::vector<ExternalResource> m_externalResources;   // plain imports (no D3D12RenderTarget)
 
     RGResourceHandle AddHandle( bool isExternal );
     bool IsExternalIndex( uint32_t index ) const { return m_externalTextures[index] || m_externalResources[index].Resource; }
-    /** The resource behind a handle and the state variable tracking it; false if it has none (skipped). */
-    bool TrackedState( RGResourceHandle handle, Rhi::Resource*& resource, D3D12_RESOURCE_STATES*& state ) const;
+    /** The resource behind a handle, the state variable tracking it and its widened read state (COMMON if
+        none); false if it has none (skipped). */
+    bool TrackedState( RGResourceHandle handle, Rhi::Resource*& resource, D3D12_RESOURCE_STATES*& state,
+        D3D12_RESOURCE_STATES& readState ) const;
     void AllocateResourcesForPass( size_t passIndex, D3D12CmdList& cmdList );
     void TransitionPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList );
     /** Issues pass.m_postTransitions (see D3D12RGBuilder::TransitionExternalAfter) immediately after
