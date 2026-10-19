@@ -553,6 +553,8 @@ namespace VulkanRhi {
         VkBuffer CopyScratch( VkDeviceSize size );
         FenceWaiter& Waiter() { return m_Waiter; }
         void SetObjectName( VkObjectType type, uint64_t handle, const char* name ) const { m_Vk.SetObjectName( type, handle, name ); }
+        /** Debug name of a handle; empty unless the device keeps names (address binding report). */
+        std::string ObjectName( uint64_t handle ) const { return m_Vk.GetObjectName( handle ); }
 
         /** Shared by every PSO. The engine never destroys the device, so it is saved once creation goes quiet. */
         VkPipelineCache PipelineCache() const { return m_PipelineCache; }

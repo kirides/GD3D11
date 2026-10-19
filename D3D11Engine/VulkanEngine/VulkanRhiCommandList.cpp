@@ -168,7 +168,10 @@ namespace VulkanRhi {
             VkAttachmentLoadOp stencilLoad, const VkClearValue* depthClear );
         void EndRenderingScope();
 
-        void AddImageTransition( BarrierBatch& batch, ResourceImpl* r, UINT subresource, const StateSync& before, const StateSync& after );
+        void AddImageTransition( BarrierBatch& batch, ResourceImpl* r, const Rhi::ResourceTransition& t, const StateSync& before,
+            const StateSync& after );
+        /** Logs a transition whose Before doesn't match the tracked layout (renderer state bookkeeping drifted). */
+        void ReportStaleBefore( const ResourceImpl* r, const Rhi::ResourceTransition& t, VkImageLayout tracked, VkImageLayout claimed ) const;
         void FlushBarriers( BarrierBatch& batch );
         /** Implicit D3D12 promotion: puts the touched subresources into `layout` for a copy if they aren't already. */
         void EnsureLayout( ResourceImpl* r, uint32_t mip, uint32_t mipCount, uint32_t layer, uint32_t layerCount, VkImageLayout layout,
@@ -970,15 +973,39 @@ namespace VulkanRhi {
         batch.Global = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
     }
 
-    void CommandListImpl::AddImageTransition( BarrierBatch& batch, ResourceImpl* r, UINT subresource, const StateSync& before,
-        const StateSync& after ) {
+    void CommandListImpl::ReportStaleBefore( const ResourceImpl* r, const Rhi::ResourceTransition& t, VkImageLayout tracked,
+        VkImageLayout claimed ) const {
+#ifdef DEBUG_D3D11
+        // COMMON stands for "wherever implicit promotion left it"; only explicit states are expected to match.
+        if ( t.Before == D3D12_RESOURCE_STATE_COMMON ) return;
+        static std::atomic<uint32_t> s_Reports{ 0 };
+        if ( s_Reports.fetch_add( 1, std::memory_order_relaxed ) >= 64 ) return;
+        std::string name = m_Device->ObjectName( VkUtil::HandleToU64( r->m_Image ) );
+        if ( name.empty() ) name = std::format( "image 0x{:x}", VkUtil::HandleToU64( r->m_Image ) );
+        Logging::Wrn( "Vulkan: transition of '{}' (sub {}) claims Before 0x{:x} (layout {}) but it is in layout {}; widened.",
+            name, t.Subresource, static_cast<UINT>( t.Before ), static_cast<int>( claimed ), static_cast<int>( tracked ) );
+#else
+        (void)r;
+        (void)t;
+        (void)tracked;
+        (void)claimed;
+#endif
+    }
+
+    void CommandListImpl::AddImageTransition( BarrierBatch& batch, ResourceImpl* r, const Rhi::ResourceTransition& t,
+        const StateSync& before, const StateSync& after ) {
+        const UINT subresource = t.Subresource;
         auto emit = [&]( uint32_t mip, uint32_t mipCount, uint32_t layer, uint32_t layerCount, VkImageLayout oldLayout ) {
-            if ( oldLayout == after.Layout && !( before.Access & kWriteAccess ) && !( after.Access & kWriteAccess ) ) return;
+            // The caller's Before disagrees with the tracked layout: it may hide a write, so wait on everything.
+            const bool stale = oldLayout != before.Layout && oldLayout != VK_IMAGE_LAYOUT_UNDEFINED;
+            if ( stale ) ReportStaleBefore( r, t, oldLayout, before.Layout );
+            const VkAccessFlags2 srcAccess = stale ? VK_ACCESS_2_MEMORY_WRITE_BIT : before.Access & kWriteAccess;
+            if ( oldLayout == after.Layout && !srcAccess && !( after.Access & kWriteAccess ) ) return;
             if ( batch.ImageCount == kMaxBatch ) FlushBarriers( batch );
             VkImageMemoryBarrier2& b = batch.Images[batch.ImageCount++];
             b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
-            b.srcStageMask = before.Stages;
-            b.srcAccessMask = before.Access & kWriteAccess;
+            b.srcStageMask = stale ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : before.Stages;
+            b.srcAccessMask = srcAccess;
             b.dstStageMask = after.Stages;
             b.dstAccessMask = after.Access;
             b.oldLayout = oldLayout;
@@ -1026,7 +1053,7 @@ namespace VulkanRhi {
                 batch.Global.dstAccessMask |= after.Access;
                 batch.HasGlobal = true;
             } else {
-                AddImageTransition( batch, r, transitions[i].Subresource, before, after );
+                AddImageTransition( batch, r, transitions[i], before, after );
             }
         }
         FlushBarriers( batch );
