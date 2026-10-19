@@ -22,6 +22,7 @@ struct VulkanDeviceCaps {
     bool SurfaceCapabilities2 = false;  // VK_KHR_get_surface_capabilities2 (instance)
     bool PresentWait = false;           // VK_KHR_present_id + present_wait
     bool PresentWait2 = false;          // VK_KHR_present_id2 + present_wait2; still needs per-surface support
+    bool SwapchainMaintenance1 = false; // KHR/EXT: present fences, present-mode switching without a rebuild
     bool HdrMetadata = false;
     bool NullDescriptor = false;        // robustness2: unbound-but-used slots read zero instead of faulting
     bool MemoryBudget = false;

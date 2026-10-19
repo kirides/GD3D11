@@ -180,6 +180,8 @@ namespace {
         bool DebugUtils = false;
         bool SwapchainColorSpace = false;
         bool SurfaceCapabilities2 = false;
+        bool SurfaceMaintenance1Khr = false;
+        bool SurfaceMaintenance1Ext = false;
         bool Validation = false;
         bool RenderDoc = false;
     };
@@ -209,6 +211,11 @@ namespace {
         // Surface queries for VK_KHR_present_id2/present_wait2 support.
         out.SurfaceCapabilities2 = HasExtension( available, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME );
         if ( out.SurfaceCapabilities2 ) extensions.push_back( VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME );
+        // Instance half of swapchain_maintenance1; the device picks the matching KHR or EXT flavour.
+        out.SurfaceMaintenance1Khr = out.SurfaceCapabilities2 && HasExtension( available, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
+        if ( out.SurfaceMaintenance1Khr ) extensions.push_back( VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
+        out.SurfaceMaintenance1Ext = out.SurfaceCapabilities2 && HasExtension( available, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
+        if ( out.SurfaceMaintenance1Ext ) extensions.push_back( VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
 
         // Validation needs the SDK's 32-bit layer, which usually isn't installed; skip quietly without it.
         std::vector<const char*> layers;
@@ -293,6 +300,7 @@ namespace {
         VkPhysicalDevicePresentWaitFeaturesKHR PresentWait = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR };
         VkPhysicalDevicePresentId2FeaturesKHR PresentId2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR };
         VkPhysicalDevicePresentWait2FeaturesKHR PresentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
+        VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR SwapchainMaintenance1 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
         VkPhysicalDeviceMemoryProperties Memory = {};
         std::vector<VkExtensionProperties> Extensions;
 
@@ -387,6 +395,9 @@ namespace {
         if ( info.Has( VK_KHR_PRESENT_WAIT_EXTENSION_NAME ) ) { *tail = &info.PresentWait; tail = &info.PresentWait.pNext; }
         if ( info.Has( VK_KHR_PRESENT_ID_2_EXTENSION_NAME ) ) { *tail = &info.PresentId2; tail = &info.PresentId2.pNext; }
         if ( info.Has( VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME ) ) { *tail = &info.PresentWait2; tail = &info.PresentWait2.pNext; }
+        if ( info.Has( VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) || info.Has( VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) ) {
+            *tail = &info.SwapchainMaintenance1; tail = &info.SwapchainMaintenance1.pNext;
+        }
         vkGetPhysicalDeviceFeatures2( device, &info.Features );
 
         vkGetPhysicalDeviceQueueFamilyProperties( device, &count, nullptr );
@@ -757,6 +768,14 @@ bool VulkanDevice::Init() {
         extensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
         extensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
     }
+    // Present fences let a retired swapchain be destroyed once the presentation engine is done with it.
+    // -VKNOSWAPCHAINM1 falls back to destroying it a few presents later.
+    const char* swapchainM1 = setup.SurfaceMaintenance1Khr && info->Has( VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME )
+        ? VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+        : setup.SurfaceMaintenance1Ext && info->Has( VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) ? VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME : nullptr;
+    m_Caps.SwapchainMaintenance1 = enableIf( swapchainM1 && info->SwapchainMaintenance1.swapchainMaintenance1
+        && !CommandLineHas( "-VKNOSWAPCHAINM1", "-vknoswapchainm1" ), swapchainM1 );
+    if ( m_Caps.SwapchainMaintenance1 ) Logging::Inf( "Vulkan: {} enabled (present fences).", swapchainM1 );
     m_Caps.Maintenance5 = maintenance5Core || enableIf( info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME )
         && info->Maintenance5.maintenance5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
     // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
@@ -868,6 +887,8 @@ bool VulkanDevice::Init() {
     presentId2.presentId2 = VK_TRUE;
     VkPhysicalDevicePresentWait2FeaturesKHR presentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
     presentWait2.presentWait2 = VK_TRUE;
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainM1Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
+    swapchainM1Features.swapchainMaintenance1 = VK_TRUE;
     m_Caps.InstanceDivisor = divisorCore
         || enableIf( info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
     m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && ( divisorCore ? info->Features14.vertexAttributeInstanceRateZeroDivisor
@@ -913,6 +934,7 @@ bool VulkanDevice::Init() {
     if ( m_Caps.PresentWait2 ) {
         *tail = &presentId2; presentId2.pNext = &presentWait2; tail = &presentWait2.pNext;
     }
+    if ( m_Caps.SwapchainMaintenance1 ) { *tail = &swapchainM1Features; tail = &swapchainM1Features.pNext; }
 
     // --- Queues ---
     const float priority = 1.0f;

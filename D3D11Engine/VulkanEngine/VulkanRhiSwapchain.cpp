@@ -244,7 +244,7 @@ namespace VulkanRhi {
         const bool vsync = syncInterval > 0;
         if ( vsync != m_VSync ) {
             m_VSync = vsync;
-            m_NeedsRebuild = true;   // present mode is fixed per swapchain
+            if ( !m_Swapchain.SetVSync( vsync ) ) m_NeedsRebuild = true;   // no maintenance1: mode is fixed per swapchain
         }
         QueueImpl* queue = m_Device->Queue();
         if ( m_NoPresent ) {
