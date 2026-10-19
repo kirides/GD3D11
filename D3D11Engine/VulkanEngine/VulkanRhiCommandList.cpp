@@ -52,6 +52,11 @@ namespace VulkanRhi {
             return l == VK_IMAGE_LAYOUT_UNDEFINED || l == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ? fallback : l;
         }
 
+        bool IsReadOnlyLayout( VkImageLayout l ) {
+            return l == VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL || l == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                || l == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL || l == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        }
+
         void SubresourceOf( const ResourceImpl* r, UINT sub, uint32_t& mip, uint32_t& layer ) {
             const uint32_t s = sub % std::max( 1u, r->SubresourceCount() );   // depth/stencil planes share a layout
             mip = s % r->m_Mips;
@@ -997,7 +1002,9 @@ namespace VulkanRhi {
         const UINT subresource = t.Subresource;
         auto emit = [&]( uint32_t mip, uint32_t mipCount, uint32_t layer, uint32_t layerCount, VkImageLayout oldLayout ) {
             // The caller's Before disagrees with the tracked layout: it may hide a write, so wait on everything.
-            const bool stale = oldLayout != before.Layout && oldLayout != VK_IMAGE_LAYOUT_UNDEFINED;
+            // Two read-only layouts can't (FSR hands FFX its inputs in SHADER_READ_ONLY_OPTIMAL).
+            const bool stale = oldLayout != before.Layout && oldLayout != VK_IMAGE_LAYOUT_UNDEFINED
+                && !( IsReadOnlyLayout( oldLayout ) && IsReadOnlyLayout( before.Layout ) );
             if ( stale ) ReportStaleBefore( r, t, oldLayout, before.Layout );
             const VkAccessFlags2 srcAccess = stale ? VK_ACCESS_2_MEMORY_WRITE_BIT : before.Access & kWriteAccess;
             if ( oldLayout == after.Layout && !srcAccess && !( after.Access & kWriteAccess ) ) return;
