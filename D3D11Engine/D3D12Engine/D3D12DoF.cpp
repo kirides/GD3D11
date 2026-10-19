@@ -300,17 +300,10 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     // --- Full-res composite: a blended fullscreen draw straight onto the scene colour ---
     graph.AddPass( RG_PASS_NAME( "DoF Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
         builder.Read( halfHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-        // The pass's only visible result is the blend into m_SceneColor — a plain member, not a resource the
-        // graph owns — so nothing the graph can see depends on it having run. Without MarkExternalEffect,
-        // Execute()'s dead-pass elimination would see a pass that reads one texture and writes nothing the
-        // graph tracks, and skip the callback. See D3D12RenderPass::m_hasExternalSideEffect.
-        builder.MarkExternalEffect();
+        // The blend into the scene colour; also the only thing that puts it back from the blur's compute read.
+        builder.Write( ImportSceneColor( graph ), D3D12_RESOURCE_STATE_RENDER_TARGET );
 
         pass.m_executeCallback = [this, cb, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
-            // Unconditional, and before the early-out below: the blur pass read the scene colour from compute
-            // and "DoF Restore" no longer touches it, so this is the only thing that puts it back.
-            TransitionSceneColor( cmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );
-
             D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
             if ( !half ) return;   // arena exhausted or creation failed (logged once by the arena) — leave the scene sharp
 

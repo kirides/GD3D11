@@ -398,16 +398,9 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LumPartialBuffer->GetGPUVirtualAddress() );
 	m_CmdList->Dispatch( m_LumGroupsX, m_LumGroupsY, 1 );
 
-	// Scene color is done being read (compute) this pass; hand it back to RENDER_TARGET for ResolveSceneToBackBuffer.
-	// PartialSums: UAV write (above) -> SRV read (below) needs a real state transition, not just a UAV
-	// barrier. Batched with the scene-color flip since neither depends on the other.
-	{
-		D3D12ResourceTransition done[2];
-		UINT n = 0;
-		if ( SceneColorTransition( D3D12_RESOURCE_STATE_RENDER_TARGET, done[n] ) ) ++n;
-		done[n++] = { m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-		m_CmdList->TransitionBarriers( done, n );
-	}
+	// The scene color stays readable: FSR or the tonemap resolve reads it next. PartialSums: UAV write (above) ->
+	// SRV read (below) needs a real state transition, not just a UAV barrier.
+	m_CmdList->TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 
 	// --- Level 2: reduce partial sums -> one temporally-adapted luminance value ---
 	struct LumAdaptCB { UINT NumPartials; float DeltaTime; UINT FirstFrame; float Tau; };

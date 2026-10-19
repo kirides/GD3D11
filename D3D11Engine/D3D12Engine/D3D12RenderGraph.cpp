@@ -66,6 +66,9 @@ RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, D3D
 }
 
 RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, Rhi::Resource* resource, D3D12_RESOURCE_STATES* state ) {
+    for ( uint32_t i = 0; resource && i < m_nextHandle; ++i ) {
+        if ( m_externalResources[i].Resource == resource ) return D3D12MakeHandle( i, true );
+    }
     const RGResourceHandle handle = AddHandle( true );
     const uint32_t index = D3D12GetHandleIndex( handle );
     m_externalResources[index] = { resource, state };

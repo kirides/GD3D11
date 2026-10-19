@@ -181,10 +181,10 @@ void D3D12GraphicsEngine::AddLowCloudCompositePass( D3D12RenderGraph& graph ) {
     if ( !m_Pipelines.LowClouds.CompositePSO || !m_SceneColor || !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX ) return;
 
     const std::array<UINT, 4> consts = { m_LowCloudLayerSrvSlot, m_LowCloudDepthSrvSlot, m_SkyLowCloudSrvSlot, m_DepthSrvSlot };
-    graph.AddPass( RG_PASS_NAME( "Low Cloud Composite" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME( "Low Cloud Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        builder.Write( ImportSceneColor( graph ), D3D12_RESOURCE_STATE_RENDER_TARGET );
         pass.m_executeCallback = [this, consts]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             DX_ZONE( cmdList.Get(), "Low cloud composite" );
-            TransitionSceneColor( cmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
             const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
             const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };

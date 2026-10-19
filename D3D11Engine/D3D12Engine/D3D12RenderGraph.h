@@ -104,7 +104,8 @@ public:
     // Bring an existing engine resource (e.g. the scene-color target) into the graph; tracks its State.
     RGResourceHandle ImportResource( const std::wstring& name, D3D12RenderTarget* externalTarget );
     // Same for a plain resource whose state the engine keeps in `state`: the graph reads it to transition
-    // at execute time and writes it back, so code outside the graph sees the same value.
+    // at execute time and writes it back, so code outside the graph sees the same value. Importing the same
+    // resource again returns the existing handle.
     RGResourceHandle ImportResource( const std::wstring& name, Rhi::Resource* resource, D3D12_RESOURCE_STATES* state );
 
     // Add a pass using modern C++ lambdas

@@ -30,6 +30,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12GpuWorld.h"
 #include "D3D12MeshArena.h"
 #include "D3D12RayTracing.h"
+#include "D3D12RenderGraph.h"
 #include "../WorldObjects.h"
 #include "../MorphGpu.h"
 #include "../MaterialFx.h"
@@ -1452,6 +1453,10 @@ bool D3D12GraphicsEngine::SceneColorTransition( D3D12_RESOURCE_STATES state, Rhi
 void D3D12GraphicsEngine::TransitionSceneColor( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES state, D3D12_BARRIER_SYNC syncAfter ) {
 	Rhi::ResourceTransition t;
 	if ( SceneColorTransition( state, t, syncAfter ) ) cmdList->TransitionBarriers( &t, 1 );
+}
+
+uint32_t D3D12GraphicsEngine::ImportSceneColor( D3D12RenderGraph& graph ) {
+	return graph.ImportResource( L"SceneColor", m_SceneColor.Get(), &m_SceneColorState );
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::SceneDsv() const {
