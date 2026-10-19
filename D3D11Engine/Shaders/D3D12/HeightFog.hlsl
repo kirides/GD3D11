@@ -102,7 +102,7 @@ float ComputeVolumetricFog( float3 cameraToWorldPos, float3 posOriginal )
 
 float4 ComputeHeightFog( float2 texcoord )
 {
-    Texture2D depthTex = ResourceDescriptorHeap[HFC_DepthIndex];
+    Texture2D depthTex = GD_HEAP( HFC_DepthIndex );
 
     float expDepth = depthTex.SampleLevel( SS_PointClamp, texcoord, 0 ).r;
     float3 position = VSPositionFromDepth( expDepth, texcoord );
@@ -161,7 +161,7 @@ float4 PSComposite( VS_OUT i ) : SV_TARGET
 
     if ( HFC_Flags & FOGFLAG_GODRAYS )
     {
-        Texture2D godRayTex = ResourceDescriptorHeap[HFC_GodRaysIndex];
+        Texture2D godRayTex = GD_HEAP( HFC_GodRaysIndex );
         rgb += godRayTex.SampleLevel( SS_LinearClamp, i.uv, 0 ).rgb;
     }
 

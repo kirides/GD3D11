@@ -118,7 +118,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )
     {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
+        Texture2D nrmTex = GD_HEAP( MatNormalIndex );
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
     N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), tx, smp );
@@ -226,14 +226,14 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
 {
     const MaterialFxEntry fx = LoadMaterialFx( MatDiffuseIndex );
     i.uv += fx.Scroll;
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
     float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )
     {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
+        Texture2D nrmTex = GD_HEAP( MatNormalIndex );
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
     N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), difTex, smp );
@@ -287,13 +287,13 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
 {
     const MaterialFxEntry fx = LoadMaterialFx( MatDiffuseIndex );
     i.uv += fx.Scroll;
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     float4 t = difTex.Sample( smp, i.uv );
     float3 N = normalize( i.wnrm );
     float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )
     {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
+        Texture2D nrmTex = GD_HEAP( MatNormalIndex );
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
     float3 orm = SampleOrm( MatOrmIndex, i.uv );
@@ -315,7 +315,7 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
 float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );
     return float4( 0, 0, 0, 1 );
 }
@@ -323,7 +323,7 @@ float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET
 void PSShadowClipBindless( VS_DEPTH_OUT i )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );
 }
 
@@ -392,7 +392,7 @@ VS_GBUF_OUT VSDepthAttachGBuf( VS_GBUF_IN i )
 GBUF_OUT PSDepthClipBindlessGBuf( VS_GBUF_OUT i )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );
     return MakeGBufOut( i.currClip, i.prevClip, i.wnrm );
 }

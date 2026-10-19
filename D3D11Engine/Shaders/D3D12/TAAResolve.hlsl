@@ -269,7 +269,7 @@ float2 GetUV( float2 inST )
 
 fp16_t3 LoadSceneColour( int2 inST )
 {
-    Texture2D<float4> colourTex = ResourceDescriptorHeap[ColourIndex];
+    Texture2D<float4> colourTex = GD_HEAP( ColourIndex );
     inST = clamp( inST, int2( 0, 0 ), int2( Resolution.xy ) - int2( 1, 1 ) );
     return Reinhard( fp16_t3( colourTex.Load( int3( inST, 0 ) ).rgb ) );
 }
@@ -305,7 +305,7 @@ fp16_t3 GetCurrentColour( FRAME_COLOUR_ST inST )
 // Velocity: UV-space in the buffer, PIXEL-space everywhere below (Intel's convention).
 fp16_t2 LoadVelocity( int2 inST )
 {
-    Texture2D<float2> velocityTex = ResourceDescriptorHeap[VelocityIndex];
+    Texture2D<float2> velocityTex = GD_HEAP( VelocityIndex );
     inST = clamp( inST, int2( 0, 0 ), int2( Resolution.xy ) - int2( 1, 1 ) );
     return fp16_t2( velocityTex.Load( int3( inST, 0 ) ) * Resolution.xy );
 }
@@ -351,7 +351,7 @@ fp16_t LinearViewZ( float depth )
 
 fp16_t GetCurrentViewZ( int2 inST, out bool outIsOnEdge, out float outRawDepth )
 {
-    Texture2D<float> depthTex = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float> depthTex = GD_HEAP( DepthIndex );
     const float4 depths = depthTex.Gather( MinMagMipPointClamp, GetUV( inST ) );
     // THIS pixel's own depth, point-loaded rather than taken from the gather. The gather footprint straddles
     // neighbouring texels, and at a silhouette its extreme belongs to a DIFFERENT surface — reconstructing the
@@ -412,7 +412,7 @@ fp16_t GetDepthConfidenceFactor( int2 inST, fp16_t2 inVelocity, float inCurrentD
         return fp16_t( 1.0f );
 #endif
 
-    Texture2D<float> prevDepthTex = ResourceDescriptorHeap[PrevDepthIndex];
+    Texture2D<float> prevDepthTex = GD_HEAP( PrevDepthIndex );
     // The jitter has to come off the lookup, and the PREVIOUS frame's has to go back on. The chain is:
     //   this pixel's unjittered position        = inST - Jitter        (the current frame was rasterized with
     //                                                                   the projection shifted by +Jitter px)
@@ -453,7 +453,7 @@ fp16_t GetDepthConfidenceFactor( int2 inST, fp16_t2 inVelocity, float inCurrentD
 // fetches. This is what keeps the history from softening a little more every frame the way plain bilinear does.
 fp16_t4 BicubicSampling5( fp32_t2 inHistoryST )
 {
-    Texture2D<float4> historyTex = ResourceDescriptorHeap[HistoryIndex];
+    Texture2D<float4> historyTex = GD_HEAP( HistoryIndex );
     const fp32_t2 rcpResolution = Resolution.zw;
     const fp32_t2 fractional = frac( inHistoryST );
     const fp32_t2 uv = ( floor( inHistoryST ) + fp32_t2( 0.5f, 0.5f ) ) * rcpResolution;
@@ -494,7 +494,7 @@ fp16_t4 GetHistory( fp32_t2 inHistoryUV, fp32_t2 inHistoryST, bool inIsOnEdge )
     }
     else
     {
-        Texture2D<float4> historyTex = ResourceDescriptorHeap[HistoryIndex];
+        Texture2D<float4> historyTex = GD_HEAP( HistoryIndex );
         toReturn = fp16_t4( historyTex.SampleLevel( MinMagLinearMipPointClamp, inHistoryUV, 0 ) );
     }
 
@@ -656,7 +656,7 @@ void CSMain( uint3 inDispatchIdx : SV_DispatchThreadID, uint3 inGroupID : SV_Gro
         finalColour = fp16_t4( InverseReinhard( filtered ), fp16_t( 0.5f ) );
     }
 
-    RWTexture2D<float4> outTexture = ResourceDescriptorHeap[OutIndex];
+    RWTexture2D<float4> outTexture = GD_HEAP( OutIndex );
     outTexture[ inDispatchIdx.xy ] = float4( finalColour );
 }
 

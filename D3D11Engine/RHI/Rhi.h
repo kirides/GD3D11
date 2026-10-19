@@ -251,6 +251,8 @@ namespace Rhi {
         bool TearingSupported = false;
         /** Inline ray queries from compute (DXR tier 1.1). */
         bool RayQuery = false;
+        /** Vertex and pixel shaders may write UAVs (always on D3D12; Vulkan needs the stores-and-atomics features). */
+        bool ShaderStoresAllStages = true;
         UINT VendorId = 0;
         LUID AdapterLuid = {};
     };

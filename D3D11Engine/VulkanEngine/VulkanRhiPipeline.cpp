@@ -2,6 +2,7 @@
 #include "VulkanRhiInternal.h"
 #include "VulkanSpirvPatch.h"
 #include "../Logger.h"
+#include "../RHI/ShaderNames.h"
 
 #include <algorithm>
 #include <cctype>
@@ -409,6 +410,15 @@ namespace VulkanRhi {
         device->DeferDestroy( [device, pipeline]() { if ( pipeline ) vkDestroyPipeline( device->Vk(), pipeline, nullptr ); } );
     }
 
+    namespace {
+        /** Names a pipeline after its shaders (D3D12ShaderBackend registers them), for breadcrumbs and validation. */
+        void NameFromShaders( DeviceImpl* device, PipelineStateImpl* pso, const std::string& name ) {
+            if ( name.empty() ) return;
+            pso->m_CrumbName = device->InternName( std::wstring( name.begin(), name.end() ).c_str() );
+            device->SetObjectName( VK_OBJECT_TYPE_PIPELINE, VkUtil::HandleToU64( pso->m_Pipeline ), name.c_str() );
+        }
+    }
+
     void PipelineStateImpl::SetName( LPCWSTR name ) {
         if ( !name ) return;
         char narrow[128] = {};
@@ -668,6 +678,8 @@ namespace VulkanRhi {
             pso->m_Shared = PublishSharedPipeline( key, pipeline );
         }
         pso->m_Pipeline = pso->m_Shared->Pipeline;
+        NameFromShaders( this, pso.Get(), ShaderNames::Describe( desc->VS.pShaderBytecode, desc->VS.BytecodeLength,
+            desc->PS.pShaderBytecode, desc->PS.BytecodeLength ) );
         *outPso = pso.Detach();
         return S_OK;
     }
@@ -703,6 +715,7 @@ namespace VulkanRhi {
             pso->m_Pipeline = VK_NULL_HANDLE;
             return E_FAIL;
         }
+        NameFromShaders( this, pso.Get(), ShaderNames::Lookup( desc->CS.pShaderBytecode, desc->CS.BytecodeLength ) );
         *outPso = pso.Detach();
         return S_OK;
     }

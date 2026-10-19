@@ -41,7 +41,7 @@ float3 DelightDiffuse( float3 linearAlbedo )
 static float g_DistortionLod;
 float3 WaterDistortion( float2 uv )
 {
-    Texture2D tex = ResourceDescriptorHeap[WaveDistortionIndex];
+    Texture2D tex = GD_HEAP( WaveDistortionIndex );
     return tex.SampleLevel( smpWrap, uv, g_DistortionLod ).xyz;
 }
 #include "../include/WaterWaves.hlsl"
@@ -132,7 +132,7 @@ float3 LightSurface( float3 albedo, float3 N, float3 wpos, float vertLighting, b
     float3 ambient = albedo * AmbientStrength * sunLum * shadowAO;
     [branch] if ( SkyIrradianceIndex != 0xFFFFFFFFu )
     {
-        TextureCube irr = ResourceDescriptorHeap[SkyIrradianceIndex];
+        TextureCube irr = GD_HEAP( SkyIrradianceIndex );
         float skyVis = lerp( 1.0, vertLighting, SkyOccStrength );
         float3 ibl = irr.SampleLevel( smpClamp, N, 0 ).rgb * albedo * shadowAO * SkyIblIntensity;
         ambient = lerp( ambient, ibl, skyVis );
@@ -165,14 +165,14 @@ float3 ShadeHit( Hit h, float3 origin, float3 dir, float coneWidth )
             if ( all( uv > 0.002 ) && all( uv < 0.998 ) )
             {
                 int2 px = int2( uv * float2( FullSize ) );
-                Texture2D<float> depthTex = ResourceDescriptorHeap[SceneDepthIndex];
+                Texture2D<float> depthTex = GD_HEAP( SceneDepthIndex );
                 float raw = depthTex.Load( int3( px, 0 ) );
                 if ( raw > 0.0 )
                 {
                     float sceneZ = ProjB / ( raw - ProjA );
                     if ( abs( sceneZ - clip.w ) < max( 30.0, clip.w * 0.015 ) )
                     {
-                        Texture2D sceneTex = ResourceDescriptorHeap[SceneColorIndex];
+                        Texture2D sceneTex = GD_HEAP( SceneColorIndex );
                         return sceneTex.Load( int3( px, 0 ) ).rgb;
                     }
                 }
@@ -193,7 +193,7 @@ float3 ShadeHit( Hit h, float3 origin, float3 dir, float coneWidth )
     }
     else
     {
-        Texture2D tex = ResourceDescriptorHeap[t.material & kMatSlotMask];
+        Texture2D tex = GD_HEAP( t.material & kMatSlotMask );
         float lod = max( TextureLod( t, tex, coneWidth, abs( dot( N, dir ) ) ) + LodBias, 0.0 );
         albedo = DelightDiffuse( SrgbToLinear( tex.SampleLevel( smpWrap, InterpUV( t, h.bary ), lod ).rgb ) );
     }
@@ -203,8 +203,8 @@ float3 ShadeHit( Hit h, float3 origin, float3 dir, float coneWidth )
 }
 
 // --- Per sample ---
-float SurfaceRaw( int2 px ) { Texture2D<float> d = ResourceDescriptorHeap[SurfaceDepthIndex]; return d.Load( int3( px, 0 ) ); }
-float SceneRaw( int2 px )   { Texture2D<float> d = ResourceDescriptorHeap[SceneDepthIndex];   return d.Load( int3( px, 0 ) ); }
+float SurfaceRaw( int2 px ) { Texture2D<float> d = GD_HEAP( SurfaceDepthIndex ); return d.Load( int3( px, 0 ) ); }
+float SceneRaw( int2 px )   { Texture2D<float> d = GD_HEAP( SceneDepthIndex );   return d.Load( int3( px, 0 ) ); }
 
 // The water prepass is the only depth written between the two copies, so a nearer surface depth is water.
 bool IsWater( int2 px ) { return SurfaceRaw( px ) > SceneRaw( px ) * 1.000001 + 1e-9; }
@@ -222,7 +222,7 @@ bool TraceSample( int2 px, float2 subPixel, inout float4 color, inout float dist
 
     // LOD the pixel shader's trilinear lookup would take: the footprint's long axis on the water plane
     float texW, texH;
-    Texture2D distTex = ResourceDescriptorHeap[WaveDistortionIndex];
+    Texture2D distTex = GD_HEAP( WaveDistortionIndex );
     distTex.GetDimensions( texW, texH );
     float footprint = viewDistance * PixelAngle / max( abs( viewDir.y ), 0.02 );
     g_DistortionLod = log2( max( footprint * ( DIST_BIG_SCALE / 1000.0 ) * texW, 1e-4 ) );
@@ -281,8 +281,8 @@ void CSMain( uint3 id : SV_DispatchThreadID )
     }
 
     float inv = samples > 0.0 ? 1.0 / samples : 0.0;
-    RWTexture2D<float4> outColor = ResourceDescriptorHeap[OutColorIndex];
-    RWTexture2D<float>  outDistance = ResourceDescriptorHeap[OutDistanceIndex];
+    RWTexture2D<float4> outColor = GD_HEAP( OutColorIndex );
+    RWTexture2D<float>  outDistance = GD_HEAP( OutDistanceIndex );
     outColor[id.xy] = color * inv;
     outDistance[id.xy] = distance * inv;
 }

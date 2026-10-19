@@ -37,6 +37,6 @@ VS_OUT VSCubeVob( VSVOB_IN i )
 void PSCubeClip( VS_OUT i )
 {
     i.uv = TexAniUv( i.uv, DiffuseIndex );
-    Texture2D tx = ResourceDescriptorHeap[DiffuseSlot( DiffuseIndex )];
+    Texture2D tx = GD_HEAP( DiffuseSlot( DiffuseIndex ) );
     clip( tx.Sample( smp, i.uv ).a - 0.5 );
 }

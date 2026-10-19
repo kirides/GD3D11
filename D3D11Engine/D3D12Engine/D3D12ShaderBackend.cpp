@@ -18,6 +18,10 @@
 #include "../ShaderCacheHash.h"
 #include "../SqliteBlobStore.h"
 #include "../ByteCursor.h"
+#include "../RHI/GpuDebug.h"
+#include "../RHI/ShaderNames.h"
+#include <mutex>
+#include <unordered_map>
 
 using Microsoft::WRL::ComPtr;
 
@@ -120,6 +124,32 @@ namespace {
 
     int g_CacheHits = 0;
     int g_CacheMisses = 0;
+
+    // GD_SHADER_ID -> "File.hlsl:Entry", for the heap-check reports.
+    bool g_HeapCheck = false;
+    std::mutex g_ShaderIdMutex;
+    std::unordered_map<uint32_t, std::string> g_ShaderIds;
+
+    uint32_t RegisterShaderId( const std::string& name ) {
+        uint32_t h = 2166136261u;
+        for ( char c : name ) h = ( h ^ static_cast<uint8_t>( c ) ) * 16777619u;
+        std::lock_guard<std::mutex> lock( g_ShaderIdMutex );
+        g_ShaderIds.emplace( h, name );
+        return h;
+    }
+
+    // -VKAFTERMATH: SPIR-V as compiled, with debug info, for Nsight's crash-dump shader search path.
+    void DumpSpirv( const std::string& name, ID3DBlob* code ) {
+        const std::string dir = Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\shader_dump)";
+        CreateDirectoryA( dir.c_str(), nullptr );
+        std::string file = name;
+        for ( char& c : file ) if ( c == ':' || c == '/' || c == '\\' ) c = '_';
+        const uint64_t hash = ShaderCacheHash::HashBytes( code->GetBufferPointer(), code->GetBufferSize() );
+        char suffix[24];
+        snprintf( suffix, sizeof( suffix ), "_%016llX.spv", static_cast<unsigned long long>( hash ) );
+        std::ofstream out( dir + "\\" + file + suffix, std::ios::binary );
+        out.write( static_cast<const char*>( code->GetBufferPointer() ), static_cast<std::streamsize>( code->GetBufferSize() ) );
+    }
 
     using ShaderCacheHash::HashBytes;
     using ShaderCacheHash::HashString;
@@ -374,6 +404,7 @@ namespace {
         }
 #else
         arguments.push_back( DXC_ARG_OPTIMIZATION_LEVEL3 );   // -O3 (Maximum optimization for release)
+        if ( il == ShaderIL::SPIRV && GpuDebug::VkAftermath() ) arguments.push_back( DXC_ARG_DEBUG );   // source lines in crash dumps
 #endif
         arguments.push_back( L"-enable-16bit-types" ); // Enable 16-bit types for SM6+ (half, min16float, etc.)
         if ( il == ShaderIL::SPIRV ) {
@@ -522,6 +553,9 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
     std::string source;
     if ( !LoadShaderSource( fileName, source ) )
         return false;
+    // GD_HEAP() wraps every bindless heap access (include/HeapCheck.hlsl); #line keeps the file's own numbering.
+    source.insert( 0, "#include \"include/HeapCheck.hlsl\"\n#line 1\n" );
+    const std::string shaderName = fileName + ":" + ( entryPoint ? entryPoint : "main" );
 
     // Every D3D12 shader is compiled with the backend-wide configuration macros appended after the
     // caller's own defines, so per-pass call sites don't each have to remember to pass them.
@@ -531,6 +565,14 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
             macros.push_back( *m );
     }
     AppendGlobalMacros( macros );
+    char shaderId[16] = {};
+    if ( g_HeapCheck ) {
+        snprintf( shaderId, sizeof( shaderId ), "0x%08Xu", RegisterShaderId( shaderName ) );
+        macros.push_back( { "GD_HEAP_CHECK", "1" } );
+        macros.push_back( { "GD_SHADER_ID", shaderId } );
+    }
+    const bool dumpSpirv = il == ShaderIL::SPIRV && GpuDebug::VkAftermath();
+    if ( dumpSpirv ) macros.push_back( { "GD_SHADER_DEBUG_INFO", "1" } );   // separate cache entries
     macros.push_back( { nullptr, nullptr } );
 
     // On-disk shader cache — see the notes above ShaderDeps.
@@ -538,16 +580,30 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
     const uint64_t cacheKey = ComputeCacheKey( fileName, source, entryPoint, target, macros.data(), il );
     if ( TryLoadCachedBlob( store, cacheKey, ppCode ) ) {
         ++g_CacheHits;
-        return true;
+    } else {
+        ++g_CacheMisses;
+        ShaderDeps deps;
+        if ( !CompileSource( source.data(), source.size(), fileName.c_str(), macros.data(), entryPoint, target, ppCode, &deps, il ) )
+            return false;
+        StoreCachedBlob( store, cacheKey, deps, *ppCode );
     }
-    ++g_CacheMisses;
-
-    ShaderDeps deps;
-    if ( !CompileSource( source.data(), source.size(), fileName.c_str(), macros.data(), entryPoint, target, ppCode, &deps, il ) )
-        return false;
-
-    StoreCachedBlob( store, cacheKey, deps, *ppCode );
+    ShaderNames::Register( ( *ppCode )->GetBufferPointer(), ( *ppCode )->GetBufferSize(), shaderName );
+    if ( dumpSpirv ) DumpSpirv( shaderName, *ppCode );
     return true;
+}
+
+void D3D12ShaderBackend::SetHeapCheck( bool enabled ) {
+    g_HeapCheck = enabled;
+}
+
+bool D3D12ShaderBackend::IsHeapCheckEnabled() {
+    return g_HeapCheck;
+}
+
+std::string D3D12ShaderBackend::ShaderNameForId( uint32_t id ) {
+    std::lock_guard<std::mutex> lock( g_ShaderIdMutex );
+    const auto it = g_ShaderIds.find( id );
+    return it != g_ShaderIds.end() ? it->second : std::string( "unknown shader" );
 }
 
 bool D3D12ShaderBackend::IsSpirvCodegenAvailable( std::string* outReason ) {

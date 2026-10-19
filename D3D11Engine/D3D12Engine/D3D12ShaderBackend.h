@@ -53,6 +53,13 @@ public:
     // NOT null-terminated — the caller adds the {nullptr,nullptr} sentinel.
     static void AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list );
 
+    // -GPUHEAPCHECK: compiles GD_HEAP() as a checked access (Shaders/D3D12/include/HeapCheck.hlsl). Set before
+    // the first compile; the engine enables it once the check buffers exist.
+    static void SetHeapCheck( bool enabled );
+    static bool IsHeapCheckEnabled();
+    // "File.hlsl:Entry" for a GD_SHADER_ID a heap-check report carries.
+    static std::string ShaderNameForId( uint32_t id );
+
 private:
     ShaderIL m_IL = ShaderIL::DXIL;
 };

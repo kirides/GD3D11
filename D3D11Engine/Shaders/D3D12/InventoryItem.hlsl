@@ -68,7 +68,7 @@ VS_OUT VSSkinned( VS_SKEL_IN i )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    Texture2D tex = ResourceDescriptorHeap[i.tex];
+    Texture2D tex = GD_HEAP( i.tex );
     float4 t = tex.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     return t;

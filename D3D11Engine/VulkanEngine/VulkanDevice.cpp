@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "VulkanDevice.h"
 #include "../D3D12Engine/D3D12ShaderBackend.h"
+#include "../RHI/GpuDebug.h"
 
 #include <dxgi1_6.h>
 #include <algorithm>
@@ -301,6 +302,7 @@ namespace {
         VkPhysicalDevicePresentId2FeaturesKHR PresentId2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR };
         VkPhysicalDevicePresentWait2FeaturesKHR PresentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
         VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR SwapchainMaintenance1 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
+        VkPhysicalDeviceDiagnosticsConfigFeaturesNV DiagnosticsConfig = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
         VkPhysicalDeviceMemoryProperties Memory = {};
         std::vector<VkExtensionProperties> Extensions;
 
@@ -398,6 +400,7 @@ namespace {
         if ( info.Has( VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) || info.Has( VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) ) {
             *tail = &info.SwapchainMaintenance1; tail = &info.SwapchainMaintenance1.pNext;
         }
+        if ( info.Has( VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME ) ) { *tail = &info.DiagnosticsConfig; tail = &info.DiagnosticsConfig.pNext; }
         vkGetPhysicalDeviceFeatures2( device, &info.Features );
 
         vkGetPhysicalDeviceQueueFamilyProperties( device, &count, nullptr );
@@ -751,6 +754,12 @@ bool VulkanDevice::Init() {
     // Checkpoints and timestamps are GPU writes into driver memory; -VKNOCHECKPOINTS / -VKNOTIMESTAMPS rule them out.
     m_Caps.DiagnosticCheckpointsNV = enableIf( !CommandLineHas( "-VKNOCHECKPOINTS", "-vknocheckpoints" )
         && info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ), VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
+    m_Caps.DiagnosticsConfigNV = enableIf( GpuDebug::VkAftermath() && info->Has( VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME )
+        && info->DiagnosticsConfig.diagnosticsConfig, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME );
+    if ( GpuDebug::VkAftermath() ) {
+        if ( m_Caps.DiagnosticsConfigNV ) Logging::Inf( "Vulkan: -VKAFTERMATH: device diagnostics config on; capture crashes with Nsight's GPU crash dump monitor." );
+        else Logging::Wrn( "Vulkan: -VKAFTERMATH: VK_NV_device_diagnostics_config is unavailable (NVIDIA only)." );
+    }
     m_Caps.HdrMetadata = enableIf( m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
     // Frame pacing waits on GPU completion. Present wait is opt-in (-VKPRESENTWAIT / GD3D11_VULKAN_PRESENT_WAIT=1):
@@ -808,10 +817,12 @@ bool VulkanDevice::Init() {
     f.shaderStorageImageReadWithoutFormat = VK_TRUE;
     f.shaderStorageImageWriteWithoutFormat = VK_TRUE;
     f.fragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
+    f.vertexPipelineStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
     f.depthBiasClamp = sup.depthBiasClamp;
     f.fillModeNonSolid = sup.fillModeNonSolid;
     f.shaderInt16 = sup.shaderInt16;
     m_Caps.FragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
+    m_Caps.VertexStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
     m_Caps.DepthBiasClamp = sup.depthBiasClamp;
     m_Caps.FillModeNonSolid = sup.fillModeNonSolid;
 
@@ -889,6 +900,8 @@ bool VulkanDevice::Init() {
     presentWait2.presentWait2 = VK_TRUE;
     VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainM1Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
     swapchainM1Features.swapchainMaintenance1 = VK_TRUE;
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
+    diagnosticsFeatures.diagnosticsConfig = VK_TRUE;
     m_Caps.InstanceDivisor = divisorCore
         || enableIf( info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
     m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && ( divisorCore ? info->Features14.vertexAttributeInstanceRateZeroDivisor
@@ -935,6 +948,7 @@ bool VulkanDevice::Init() {
         *tail = &presentId2; presentId2.pNext = &presentWait2; tail = &presentWait2.pNext;
     }
     if ( m_Caps.SwapchainMaintenance1 ) { *tail = &swapchainM1Features; tail = &swapchainM1Features.pNext; }
+    if ( m_Caps.DiagnosticsConfigNV ) { *tail = &diagnosticsFeatures; tail = &diagnosticsFeatures.pNext; }
 
     // --- Queues ---
     const float priority = 1.0f;
@@ -949,8 +963,11 @@ bool VulkanDevice::Init() {
         ++queueCount;
     }
 
+    VkDeviceDiagnosticsConfigCreateInfoNV diagnostics = { VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV, &features };
+    diagnostics.flags = VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV
+        | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV;
     VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-    dci.pNext = &features;
+    dci.pNext = m_Caps.DiagnosticsConfigNV ? static_cast<const void*>( &diagnostics ) : &features;
     dci.queueCreateInfoCount = queueCount;
     dci.pQueueCreateInfos = queues;
     dci.enabledExtensionCount = static_cast<uint32_t>( extensions.size() );

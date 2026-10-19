@@ -20,7 +20,7 @@ static const float2 g_RainPoisson16[16] = {
 // sized in world units because this rain map spans 3x D3D11's. Outside the rain camera: assume open sky.
 float SampleRainReach( float3 wpos )
 {
-    Texture2D rainMap = ResourceDescriptorHeap[RainShadowIndex];
+    Texture2D rainMap = GD_HEAP( RainShadowIndex );
 
     float4 clip = mul( float4( wpos, 1.0 ), RainViewProj );
     clip.xyz /= clip.w;                                       // no-op for the ortho cast; kept for parity with IsWet()
@@ -70,7 +70,7 @@ WetSurface ApplySceneWetness( float3 wpos, float3 geomN, inout float3 N, inout f
     if ( SceneWetness <= 0.0 || RainShadowIndex == 0xffffffff || DistortionIndex == 0xffffffff )
         return wet;   // not raining / dried, or the rain map / distortion2.dds never loaded
 
-    Texture2D distTex = ResourceDescriptorHeap[DistortionIndex];
+    Texture2D distTex = GD_HEAP( DistortionIndex );
     wet = EvaluateWetSurface( SampleRainReach( wpos ) * SceneWetness, N, geomN, wpos, distance( wpos, CamPosWS ),
         distTex, smp, RainTime, RainFxWeight );
     if ( wet.wetness <= 0.0 ) return wet;

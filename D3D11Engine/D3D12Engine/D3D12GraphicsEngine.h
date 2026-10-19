@@ -50,6 +50,7 @@ struct GpuScenePointView;
 class D3D12GpuWorld;
 class D3D12MeshArena;
 class D3D12RayTracing;
+class D3D12HeapCheck;
 struct FrameSkelDraw;
 struct FrameAttachDraw;
 struct TransparentItem;
@@ -713,6 +714,8 @@ private:
     std::vector<UINT> m_FreeSrvSlots; // Recycled descriptor indices
     // The heap's last slot, kept out of the allocator: Shaders/D3D12/include/MaterialFx.hlsl reads it directly.
     static constexpr UINT kMaterialFxTableSlot = 65535;
+    // The two below it belong to D3D12HeapCheck (Shaders/D3D12/include/HeapCheck.hlsl), reserved whether it runs or not.
+    static constexpr UINT kReservedTopSlots = 3;
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxTable;    // DEFAULT, MaterialFx::Entry[kMaxSlots]
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxUpload;   // UPLOAD, one table per frame in flight
     uint8_t* m_MaterialFxUploadPtr = nullptr;
@@ -965,6 +968,7 @@ private:
     std::unique_ptr<D3D12MeshArena> m_AttachArena;
     // Inline ray tracing (water reflections, shadow mask); null without ray queries or when neither shader built.
     std::unique_ptr<D3D12RayTracing> m_RayTracing;
+    std::unique_ptr<D3D12HeapCheck> m_HeapCheck;   // -GPUHEAPCHECK only
     // This frame's ray-traced point shadows, decided before the light buffer is built
     bool m_RtPointShadowsActive = false;
     // Shadow-mask SRV the lit opaque passes read (UINT_MAX outside them); see BindFrameLights

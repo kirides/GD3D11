@@ -56,7 +56,7 @@ SamplerComparisonState SS_ShadowComp : register( s1 );
 // shadowmap's clip space and compares against the stored (world-mesh) occluder depth.
 float IsWet( float3 wsPosition )
 {
-    Texture2D shadowTex = ResourceDescriptorHeap[RainShadowSrvIndex];
+    Texture2D shadowTex = GD_HEAP( RainShadowSrvIndex );
 
     float4 clip = mul( float4( wsPosition, 1.0f ), RainShadowViewProj );
     clip.xyz /= clip.w;
@@ -292,7 +292,7 @@ float4 RainResponse( Texture2DArray texArray, uint type, float2 vTexcoord,
 
 float4 RainColor( PS_INPUT i )
 {
-    Texture2DArray texArray = ResourceDescriptorHeap[TexArrayIndex];
+    Texture2DArray texArray = GD_HEAP( TexArrayIndex );
 
     const float globalLighting = 1.0f;
     const float3 lightPos = normalize( float3( 0.333f, 0.433f, 0.333f ) ) * 10000.0f;

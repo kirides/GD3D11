@@ -4,6 +4,7 @@
 #include "../Logger.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include "../RHI/GpuDebug.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -257,6 +258,7 @@ namespace VulkanRhi {
         vkGetPhysicalDeviceFormatProperties( m_Vk.GetPhysicalDevice(), VK_FORMAT_B10G11R11_UFLOAT_PACK32, &r11g11b10 );
         m_Caps.TypedUAVLoadAdditionalFormats = ( r11g11b10.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ) != 0;
         m_Caps.RootSignature11 = true;
+        m_Caps.ShaderStoresAllStages = vk.VertexStoresAndAtomics && vk.FragmentStoresAndAtomics;
         // GPU_UPLOAD = device-local + host-visible + coherent: the 256 MB BAR, or all of VRAM with ReBAR.
         VkPhysicalDeviceMemoryProperties memory = {};
         vkGetPhysicalDeviceMemoryProperties( m_Vk.GetPhysicalDevice(), &memory );
@@ -546,6 +548,8 @@ namespace VulkanRhi {
             return;
         }
         m_MarkerNames.assign( kMarkerSlots, nullptr );
+        m_DrawCrumbs = GpuDebug::VkDrawCrumbs();
+        if ( m_DrawCrumbs ) Logging::Wrn( "Vulkan: -VKDRAWCRUMBS: a breadcrumb around every draw and dispatch (slower; DGC batches count as one)." );
         if ( !VkCaps().BufferMarkerAMD ) return;
         VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bi.size = kMarkerSlots * sizeof( uint32_t );
@@ -622,8 +626,9 @@ namespace VulkanRhi {
 
         if ( !m_MarkerCpu ) return;
         // Scopes whose begin landed but whose end did not: what the GPU was inside when it stopped.
-        constexpr uint32_t kWindow = 4096;   // only the most recent markers; older ring slots may hold stale values
+        constexpr uint32_t kWindow = kMarkerSlots / 2;   // only the most recent markers; older ring slots may hold stale values
         constexpr size_t kCompletedShown = 12;
+        constexpr size_t kOpenShown = 24;   // with draw crumbs many draws are in flight; the newest ones matter
         const uint32_t next = m_NextMarker.load();
         const uint32_t count = std::min( next, kWindow );
         std::vector<uint32_t> open, completed;
@@ -639,8 +644,10 @@ namespace VulkanRhi {
             Logging::Wrn( "Vulkan GPU scope: none open — the GPU stopped outside any marker (or after the last one above)." );
             return;
         }
-        for ( uint32_t slot : open )
-            Logging::Err( "Vulkan GPU scope STILL OPEN:   {}", name( slot ) );
+        if ( open.size() > kOpenShown )
+            Logging::Err( "Vulkan GPU scope STILL OPEN:   ... {} older ones not shown", open.size() - kOpenShown );
+        for ( size_t i = open.size() > kOpenShown ? open.size() - kOpenShown : 0; i < open.size(); ++i )
+            Logging::Err( "Vulkan GPU scope STILL OPEN:   {}", name( open[i] ) );
     }
 
     bool DeviceImpl::CreateBindlessLayout() {

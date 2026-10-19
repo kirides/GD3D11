@@ -38,7 +38,7 @@ SamplerComparisonState  shadowCmp : register(s2);
 // drift apart on which slot or sampler they read.
 float4 SampleSkelDiffuse( float2 uv )
 {
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     return difTex.Sample( smp, uv );
 }
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
@@ -101,7 +101,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )
     {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
+        Texture2D nrmTex = GD_HEAP( MatNormalIndex );
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
     float3 orm = SampleOrm( MatOrmIndex, i.uv );   // AO/Roughness/Metallic, decoded per the material's FxMap layout

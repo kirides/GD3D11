@@ -130,14 +130,14 @@ VS_OUT VSQuadMark( VS_IN_QUADMARK i )
 float4 ShadeWorld( VS_OUT i, uniform bool alphaTest )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];   // bindless diffuse (ExecuteIndirect, P2.11)
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );   // bindless diffuse (ExecuteIndirect, P2.11)
     float4 t = difTex.Sample( smp, i.uv );
     if ( alphaTest ) clip( t.a - 0.5 );       // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 N = normalize( i.wnrm );
     float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )       // bindless normal map (BC5/BC1, Z reconstructed) if this material has one
     {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
+        Texture2D nrmTex = GD_HEAP( MatNormalIndex );
         N = PerturbNormal( N, i.wpos, i.wtan, nrmTex, i.uv, smp, MatNormalStrength );
     }
     N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), difTex, smp );
@@ -244,7 +244,7 @@ VST_OUT VSTransparent( VS_IN i )
 float4 PSTransparent( VST_OUT i ) : SV_TARGET
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     float4 c = difTex.Sample( smp, i.uv );
     // Gothic's vertex color is a BGRA DWORD read through an R8G8B8A8 view — recover RGBA (CLAUDE.md).
     // (D3D11's PS_Simple multiplies it unswizzled, i.e. with R/B transposed; that is a latent bug there,
@@ -286,7 +286,7 @@ float4 PSTransparentEnv( VSTE_OUT i ) : SV_TARGET
     float3 eye = normalize( i.wpos - EnvCamPosWS );
     float3 r = normalize( reflect( eye, normalize( i.wnrm ) ) );
 
-    TextureCube envTex = ResourceDescriptorHeap[EnvCubeIndex];
+    TextureCube envTex = GD_HEAP( EnvCubeIndex );
     float3 env = envTex.Sample( smp, r ).rgb;
 
     // rgbGen IDENTITY: emitted unlit and unmodulated, only the alpha is driven. The scene target is linear
@@ -302,7 +302,7 @@ float4 PSTransparentEnv( VSTE_OUT i ) : SV_TARGET
 float4 PSTransparentFoam( VST_OUT i ) : SV_TARGET
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     float4 colour = difTex.Sample( smp, i.uv );
 
     // darken / lighten foam based on the day / night cycle
@@ -366,7 +366,7 @@ float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
     else                     { darknessFactor = 7.5 - ( 1 + SunHeight ) * 3; }
 
     // sample the texture we want to fade out and apply relevant darkness factor for day / night cycle
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     float4 color = difTex.Sample( smp, i.uv ) / darknessFactor;
 
     return float4( FinishTransparentColor( TransparencyFrameIndex, FogMode, i.clip.xy, i.wpos,

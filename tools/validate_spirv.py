@@ -32,6 +32,9 @@ SPIRV_ARGS = [
     "-fvk-u-shift", "32", "0", "-fvk-s-shift", "48", "0",
     "-fvk-bind-resource-heap", "0", "1",
     "-O3", "-enable-16bit-types",
+    # The engine prepends include/HeapCheck.hlsl; these are its unchecked definitions.
+    "-D", "GD_HEAP(i)=ResourceDescriptorHeap[i]",
+    "-D", "GD_HEAP_NONUNIFORM(i)=ResourceDescriptorHeap[NonUniformResourceIndex(i)]",
 ]
 
 # D3D12ShaderBackend::AppendGlobalMacros adds these to every compile; cover each value once.

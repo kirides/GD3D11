@@ -246,6 +246,7 @@ namespace VulkanRhi {
         uint32_t m_ColorCount = 0;   // attachments the rendering scope must present to this pipeline
         bool m_HasDepth = false;
         bool m_DynamicStride = true;   // false without vertex bindings: binding it invalidates the strides set so far
+        const wchar_t* m_CrumbName = nullptr;   // "File.hlsl:Entry" of its shaders (interned), for breadcrumbs
         uint32_t m_UboFallback = 0;  // push-constant parameters some stage still reads as a uniform buffer
 
         /** Graphics state set at bind time, so PSOs that differ only here share one VkPipeline. */
@@ -522,6 +523,8 @@ namespace VulkanRhi {
         void EndScopeMarker( VkCommandBuffer cmd, uint32_t slot );
         /** A stable copy of `name` for marker names that must outlive the caller's string. */
         const wchar_t* InternName( const wchar_t* name );
+        /** -VKDRAWCRUMBS: every draw and dispatch gets a breadcrumb named after its pipeline. */
+        bool DrawCrumbs() const { return m_DrawCrumbs; }
 
         /** Opaque GPU addresses: (buffer id << 32) | offset. Lookups are lock-free. */
         uint32_t RegisterBuffer( ResourceImpl* resource );
@@ -590,7 +593,8 @@ namespace VulkanRhi {
         FenceWaiter m_Waiter;
 
         // Scope breadcrumb ring: 1 = begun (top of pipe), 2 = ended (bottom of pipe). Cached host memory survives loss.
-        static constexpr uint32_t kMarkerSlots = 16384;
+        static constexpr uint32_t kMarkerSlots = 65536;
+        bool m_DrawCrumbs = false;
         std::mutex m_NameMutex;
         std::unordered_set<std::wstring> m_Names;
         VkBuffer m_MarkerBuffer = VK_NULL_HANDLE;

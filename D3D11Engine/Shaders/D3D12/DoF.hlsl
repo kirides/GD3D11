@@ -89,9 +89,9 @@ void CSFocusResolve( uint3 DTid : SV_DispatchThreadID )
         0.04, 0.04,
     };
 
-    Texture2D<float>   depthTex = ResourceDescriptorHeap[DoF_DepthIndex];
-    Texture2D<float>   prevTex  = ResourceDescriptorHeap[DoF_PrevFocusIndex];
-    RWTexture2D<float> outFocus = ResourceDescriptorHeap[DoF_FocusUavIndex];
+    Texture2D<float>   depthTex = GD_HEAP( DoF_DepthIndex );
+    Texture2D<float>   prevTex  = GD_HEAP( DoF_PrevFocusIndex );
+    RWTexture2D<float> outFocus = GD_HEAP( DoF_FocusUavIndex );
 
     float targetDepth = 0.0;
     float totalWeight = 0.0;
@@ -149,16 +149,16 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
     if ( DTid.x >= (uint)DoF_OutResX || DTid.y >= (uint)DoF_OutResY )
         return;
 
-    Texture2D<float4>   sceneTex  = ResourceDescriptorHeap[DoF_SceneIndex];
-    Texture2D<float>    depthTex  = ResourceDescriptorHeap[DoF_DepthIndex];
-    Texture2D<float>    focusTex  = ResourceDescriptorHeap[DoF_FocusIndex];
-    RWTexture2D<float4> outBlur   = ResourceDescriptorHeap[DoF_OutIndex];
+    Texture2D<float4>   sceneTex  = GD_HEAP( DoF_SceneIndex );
+    Texture2D<float>    depthTex  = GD_HEAP( DoF_DepthIndex );
+    Texture2D<float>    focusTex  = GD_HEAP( DoF_FocusIndex );
+    RWTexture2D<float4> outBlur   = GD_HEAP( DoF_OutIndex );
 
     float2 texcoord = ( float2( DTid.xy ) + 0.5 ) / outSize;
 
 #ifdef DOF_GAUSS_VERTICAL
     // BlurIndex is the horizontal pass's half-res output (rgb = blur, a = CoC); offsets stay in full-res pixels.
-    Texture2D<float4> hTex = ResourceDescriptorHeap[DoF_BlurIndex];
+    Texture2D<float4> hTex = GD_HEAP( DoF_BlurIndex );
     // Sky texels already hold their 2D spill; sky taps read the scene colour.
     float4 center = hTex.SampleLevel( SS_LinearClamp, texcoord, 0 );
     if ( center.a >= 0.01 && center.a < DOF_SKY_ALPHA_MIN )
@@ -182,7 +182,7 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
 
     float3 centerColor = sceneTex.SampleLevel( SS_LinearClamp, texcoord, 0 ).rgb;
 
-    Texture2D<float4> depthTex4 = ResourceDescriptorHeap[DoF_DepthIndex];
+    Texture2D<float4> depthTex4 = GD_HEAP( DoF_DepthIndex );
     if ( centerDepth <= 0.0 )
     {
         outBlur[DTid.xy] = DoFSkySpill( sceneTex, depthTex4, SS_LinearClamp, texcoord, texelSize, centerColor, focusDepth );
@@ -262,9 +262,9 @@ VS_OUT VSFullscreen( uint vid : SV_VertexID )
 
 float4 PSComposite( VS_OUT i ) : SV_TARGET
 {
-    Texture2D<float4> blurTex = ResourceDescriptorHeap[DoF_BlurIndex];
-    Texture2D<float>  depthTex = ResourceDescriptorHeap[DoF_DepthIndex];
-    Texture2D<float>  focusTex = ResourceDescriptorHeap[DoF_FocusIndex];
+    Texture2D<float4> blurTex = GD_HEAP( DoF_BlurIndex );
+    Texture2D<float>  depthTex = GD_HEAP( DoF_DepthIndex );
+    Texture2D<float>  focusTex = GD_HEAP( DoF_FocusIndex );
 
     // The five erosion taps land on exact texel centres, so they are Loads off the pixel coordinate; that
     // also drops the uv round-trip the bilinear samples went through. Load has no address clamping.

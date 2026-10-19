@@ -18,7 +18,7 @@ float3 GSA_ToSrgb( float3 c )
 // Callers guard alpha > 1/255; srgbColor is the draw's color before linearization.
 float3 GammaSpaceAddSource( uint opaqueSceneIndex, float2 pixel, float3 srgbColor, float alpha )
 {
-    Texture2D opaqueScene = ResourceDescriptorHeap[opaqueSceneIndex];
+    Texture2D opaqueScene = GD_HEAP( opaqueSceneIndex );
     float3 dst = max( opaqueScene.Load( int3( pixel, 0 ) ).rgb, 0.0 );
     float3 target = GSA_ToLinear( GSA_ToSrgb( dst ) + alpha * srgbColor );
     return max( target - dst, 0.0 ) / alpha;

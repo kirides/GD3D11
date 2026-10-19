@@ -21,6 +21,6 @@
 // single texel and return 0 — fully occluded — instead of 1.
 float SampleScreenSpaceAO( float2 svPos )
 {
-    Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
+    Texture2D aoTex = GD_HEAP( AoMaskIndex );
     return aoTex.SampleLevel( smpAoClamp, svPos * AoInvRes, 0 ).r;
 }

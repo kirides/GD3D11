@@ -41,7 +41,7 @@ VS_OUT VSFullscreen( uint vid : SV_VertexID )
 //--------------------------------------------------------------------------------------
 float4 PSSimple( VS_OUT i ) : SV_TARGET
 {
-    Texture2D<float4> src = ResourceDescriptorHeap[SrcIndex];
+    Texture2D<float4> src = GD_HEAP( SrcIndex );
 
     float4 source = src.SampleLevel( smpLinearClamp, i.uv, 0 );
 
@@ -72,7 +72,7 @@ float4 PSSimple( VS_OUT i ) : SV_TARGET
 
 FfxFloat32x3 casLoad( FFX_PARAMETER_IN FfxInt32x2 position )
 {
-    Texture2D<float4> src = ResourceDescriptorHeap[SrcIndex];
+    Texture2D<float4> src = GD_HEAP( SrcIndex );
     return src.Load( FfxInt32x3( position, 0 ) ).rgb;
 }
 

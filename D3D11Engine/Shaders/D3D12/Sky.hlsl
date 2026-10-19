@@ -80,7 +80,7 @@ float3 ApplySkyLayers( float3 atmoColor, float3 worldPos )
     float4 clouds = float4( 0.0f, 0.0f, 0.0f, 0.0f );
     if ( CloudIndex != 0xFFFFFFFF )
     {
-        Texture2D<float4> cloudTex = ResourceDescriptorHeap[CloudIndex];
+        Texture2D<float4> cloudTex = GD_HEAP( CloudIndex );
         clouds = cloudTex.Sample( smpSky, 0.5f + worldPos.xz / 200000.0f + frac( AC_Time * 0.001f ) );
         clouds.rgb = SrgbToLinear( clouds.rgb );
     }
@@ -88,7 +88,7 @@ float3 ApplySkyLayers( float3 atmoColor, float3 worldPos )
     float3 night = float3( 0.0f, 0.0f, 0.0f );
     if ( NightIndex != 0xFFFFFFFF )
     {
-        Texture2D<float4> nightTex = ResourceDescriptorHeap[NightIndex];
+        Texture2D<float4> nightTex = GD_HEAP( NightIndex );
         night = SrgbToLinear( nightTex.Sample( smpSky, 0.5f + worldPos.xz / 200000.0f + frac( AC_Time * 0.0001f ) ).rgb );
     }
 
@@ -121,7 +121,7 @@ float3 ApplyMoon( float3 atmoColor, float2 pixelPos )
     float2 uv = delta / MoonHalfSizePx * 0.5f + 0.5f;
     if ( any( uv != saturate( uv ) ) ) return atmoColor;   // outside the sprite
 
-    Texture2D<float4> moonTex = ResourceDescriptorHeap[MoonIndex];
+    Texture2D<float4> moonTex = GD_HEAP( MoonIndex );
     float4 m = moonTex.Sample( smpClamp, uv );
 
     // Premultiplied additive: texel * its own alpha * the planet tint * the accumulated fade. Matches

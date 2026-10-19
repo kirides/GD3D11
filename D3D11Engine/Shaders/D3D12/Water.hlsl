@@ -154,7 +154,7 @@ float LinearizeWaterDepth( float raw ) { return RI_ProjB / ( raw - RI_ProjA ); }
 // speckles. Nearest-texel depth removes those false intersections. (Verbatim reasoning from PS_Water.)
 float SSR_SceneZ( float2 uv )
 {
-    Texture2D<float> depthTex = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float> depthTex = GD_HEAP( DepthIndex );
     int2 px = clamp( int2( uv * RI_ViewportSize ), int2( 0, 0 ), int2( RI_ViewportSize ) - 1 );
     return LinearizeWaterDepth( depthTex.Load( int3( px, 0 ) ).r );
 }
@@ -241,7 +241,7 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
                 float edgeFade = edge.x * edge.y;
                 float distFade = saturate( 1.0f - travelled / SSR_MAX_DISTANCE );
 
-                Texture2D sceneTex = ResourceDescriptorHeap[SceneIndex];
+                Texture2D sceneTex = GD_HEAP( SceneIndex );
                 float3 hitColor = sceneTex.SampleLevel( smpClamp, hitUV, 0 ).rgb;
                 if ( !all( isfinite( hitColor ) ) )
                     return float3( 0.0f, 0.0f, 0.0f );   // a NaN/Inf scene pixel falls back to the cube instead of spreading
@@ -265,13 +265,13 @@ float3 WaterToLinear( float3 c ) { return pow( max( c, 0.0f ), 2.2f ); }
 
 float WaterSceneRawDepth( float2 uv )
 {
-    Texture2D<float> depthTex = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float> depthTex = GD_HEAP( DepthIndex );
     return depthTex.SampleLevel( smpClamp, uv, 0 ).r;
 }
 
 float WaterSceneRawDepthTexel( float2 uv )
 {
-    Texture2D<float> depthTex = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float> depthTex = GD_HEAP( DepthIndex );
     int2 px = clamp( int2( uv * RI_ViewportSize ), int2( 0, 0 ), int2( RI_ViewportSize ) - 1 );
     return depthTex.Load( int3( px, 0 ) );
 }
@@ -279,7 +279,7 @@ float WaterSceneRawDepthTexel( float2 uv )
 float WaterSurfaceRawDepth( float2 uv )
 {
     if ( SurfaceDepthIndex == 0xFFFFFFFFu ) return 0.0f;
-    Texture2D<float> depthTex = ResourceDescriptorHeap[SurfaceDepthIndex];
+    Texture2D<float> depthTex = GD_HEAP( SurfaceDepthIndex );
     return depthTex.SampleLevel( smpClamp, uv, 0 ).r;
 }
 
@@ -295,13 +295,13 @@ bool WaterViewToUV( float3 posVS, out float2 uv )
 
 float3 WaterSceneColor( float2 uv )
 {
-    Texture2D sceneTex = ResourceDescriptorHeap[SceneIndex];
+    Texture2D sceneTex = GD_HEAP( SceneIndex );
     return WaterToGamma( sceneTex.SampleLevel( smpClamp, uv, 0 ).rgb );
 }
 
 float3 WaterDistortion( float2 uv )
 {
-    Texture2D distortionTex = ResourceDescriptorHeap[DistortionIndex];
+    Texture2D distortionTex = GD_HEAP( DistortionIndex );
     return distortionTex.Sample( smp, uv ).xyz;
 }
 
@@ -310,7 +310,7 @@ float3 WaterDiffuse( float2 uv ) { return tx.Sample( smp, uv ).rgb; }   // gamma
 float3 WaterCube( float3 dir )
 {
     if ( ReflectionCubeIndex == 0xFFFFFFFFu ) return float3( 0.0f, 0.0f, 0.0f );
-    TextureCube reflectionCube = ResourceDescriptorHeap[ReflectionCubeIndex];
+    TextureCube reflectionCube = GD_HEAP( ReflectionCubeIndex );
     return reflectionCube.Sample( smp, dir ).xyz;
 }
 
@@ -326,21 +326,21 @@ float4 WaterShoreField( float2 xz )
 {
     float2 uv = ( xz - ShoreFieldMapping.xy ) * ShoreFieldMapping.zw;
     if ( ShoreFieldIndex == 0xFFFFFFFFu || any( uv < 0.0f ) || any( uv > 1.0f ) ) return float4( 30000.0f, 5000.0f, 0.0f, 0.0f );
-    Texture2D field = ResourceDescriptorHeap[ShoreFieldIndex];
+    Texture2D field = GD_HEAP( ShoreFieldIndex );
     return field.SampleLevel( smpClamp, uv, 0 );
 }
 
 float4 WaterLowClouds( float2 uv )   // stored in gamma space like the shading here
 {
     if ( LowCloudIndex == 0xFFFFFFFFu ) return float4( 0.0f, 0.0f, 0.0f, 0.0f );
-    Texture2D clouds = ResourceDescriptorHeap[LowCloudIndex];
+    Texture2D clouds = GD_HEAP( LowCloudIndex );
     return clouds.SampleLevel( smpClamp, uv, 0 );
 }
 
 float4 WaterSkyAverage()
 {
     if ( SkyAverageIndex == 0xFFFFFFFFu ) return float4( 0.0f, 0.0f, 0.0f, 0.0f );
-    Texture2D<float> avg = ResourceDescriptorHeap[SkyAverageIndex];
+    Texture2D<float> avg = GD_HEAP( SkyAverageIndex );
     float3 c = float3( avg.Load( int3( 0, 0, 0 ) ), avg.Load( int3( 1, 0, 0 ) ), avg.Load( int3( 2, 0, 0 ) ) );
     return float4( WaterToGamma( c ), avg.Load( int3( 3, 0, 0 ) ) );
 }
@@ -352,8 +352,8 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
     [branch] if ( RtColorIndex != 0xFFFFFFFFu )
     {
         // Premultiplied by coverage, so the bilinear upsample does not bleed misses into hits
-        Texture2D rtColor = ResourceDescriptorHeap[RtColorIndex];
-        Texture2D<float> rtDistance = ResourceDescriptorHeap[RtDistanceIndex];
+        Texture2D rtColor = GD_HEAP( RtColorIndex );
+        Texture2D<float> rtDistance = GD_HEAP( RtDistanceIndex );
         float4 c = rtColor.SampleLevel( smpClamp, g_WaterScreenUV, 0 );
         float inv = c.a > 1e-4 ? 1.0f / c.a : 0.0f;
         float3 hitColor = c.rgb * inv;

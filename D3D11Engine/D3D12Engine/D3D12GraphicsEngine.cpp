@@ -28,6 +28,8 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12VobArena.h"
 #include "D3D12GpuScene.h"
 #include "D3D12GpuWorld.h"
+#include "D3D12HeapCheck.h"
+#include "../RHI/GpuDebug.h"
 #include "D3D12MeshArena.h"
 #include "D3D12RayTracing.h"
 #include "D3D12RenderGraph.h"
@@ -152,6 +154,21 @@ XRESULT D3D12GraphicsEngine::Init() {
     if ( !CreateSrvHeap() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create SRV heap." );
         return XR_FAILED;
+    }
+    // Before any shader compiles: GD_HEAP_CHECK is a shader define.
+    if ( GpuDebug::HeapCheck() ) {
+        if ( !caps.ShaderStoresAllStages ) {
+            Logging::Wrn( "GPU heap check: the device can't write buffers from vertex/pixel shaders; the check stays off." );
+        } else {
+            m_HeapCheck = std::make_unique<D3D12HeapCheck>();
+            if ( m_HeapCheck->Init( m_Rhi.Get(), GetSrvCpuHandle( D3D12HeapCheck::kReportSlot ), GetSrvCpuHandle( D3D12HeapCheck::kLiveSlot ), kBackBufferMax ) ) {
+                std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+                m_HeapCheck->SetLiveRange( 0, m_SrvAllocated );
+            } else {
+                m_HeapCheck.reset();
+            }
+        }
+        D3D12ShaderBackend::SetHeapCheck( m_HeapCheck != nullptr );
     }
     if ( !m_TexturePool.Attach( *this ) ) {
         // Non-fatal: nothing consumes the pool yet (see D3D12RenderGraph.h), so a failure here just means
@@ -939,7 +956,9 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 	m_SrvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	static_assert( kMaterialFxTableSlot == kSrvHeapCapacity - 1, "the MaterialFx table owns the heap's last slot" );
 	static_assert( kSrvHeapCapacity - 1 <= MaterialFx::kDiffuseSlotMask, "packed diffuse indices hold 16-bit slots" );
-	m_SrvHeapCapacity = kSrvHeapCapacity - 1;
+	static_assert( D3D12HeapCheck::kReportSlot == kSrvHeapCapacity - kReservedTopSlots && D3D12HeapCheck::kLiveSlot == kSrvHeapCapacity - 2
+		&& D3D12HeapCheck::kHeapSize == kSrvHeapCapacity, "heap-check slots sit just below the MaterialFx table" );
+	m_SrvHeapCapacity = kSrvHeapCapacity - kReservedTopSlots;
 	m_SrvAllocated = 0;
 	return CreateMaterialFxTable();
 }
@@ -1017,6 +1036,7 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 	if ( !m_FreeSrvSlots.empty() ) {
 		UINT slot = m_FreeSrvSlots.back();
 		m_FreeSrvSlots.pop_back();
+		if ( m_HeapCheck ) m_HeapCheck->SetLive( slot, true );
 		return slot;
 	}
 
@@ -1025,6 +1045,7 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 		Logging::Wrn( "D3D12: SRV heap exhausted ({} descriptors).", m_SrvHeapCapacity );
 		return UINT_MAX;
 	}
+	if ( m_HeapCheck ) m_HeapCheck->SetLive( m_SrvAllocated, true );
 	return m_SrvAllocated++;
 }
 
@@ -1037,6 +1058,7 @@ UINT D3D12GraphicsEngine::AllocateSrvRange( UINT count ) {
 	}
 	const UINT base = m_SrvAllocated;
 	m_SrvAllocated += count;
+	if ( m_HeapCheck ) m_HeapCheck->SetLiveRange( base, count );
 	return base;
 }
 
@@ -1073,6 +1095,7 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	device->CreateShaderResourceView( m_WhiteTexture->GetResource(), &nullDesc, cpuHandle );
 
 	m_FreeSrvSlots.push_back( slot );
+	if ( m_HeapCheck ) m_HeapCheck->SetLive( slot, false );
 	if ( m_GpuScene ) m_GpuScene->OnSrvSlotFreed( slot );
 	if ( m_GpuWorld ) m_GpuWorld->OnSrvSlotFreed( slot );
 }
@@ -2212,6 +2235,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( FAILED( hr ) ) return XR_FAILED;
     m_CmdList.ResetStats();
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
+    if ( m_HeapCheck ) m_HeapCheck->BeginFrame( m_CmdList, m_FrameIndex );
 
     m_CmdList->TransitionBarrier( m_BackBuffers[m_BackBufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
     UploadMaterialFxTable();

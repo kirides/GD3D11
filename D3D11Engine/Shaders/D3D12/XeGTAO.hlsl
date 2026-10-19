@@ -98,7 +98,7 @@ lpfloat3 LoadNormal( int2 pos )
 {
     if ( g_NormalsAreGBuffer )
     {
-        Texture2D<float2> srcOctNormals = ResourceDescriptorHeap[g_NormalsIndex];
+        Texture2D<float2> srcOctNormals = GD_HEAP( g_NormalsIndex );
         float2 e = srcOctNormals.Load( int3( pos, 0 ) ).xy;
         if ( e.x < -1.5 )                             // clear sentinel: no prepass coverage
             return lpfloat3( 0, 0, -1 );              // XeGTAO view space is +Z away from the eye
@@ -113,7 +113,7 @@ lpfloat3 LoadNormal( int2 pos )
         return (lpfloat3)normalize( mul( float4( n, 0.0 ), g_ViewMatrix ).xyz );
     }
 
-    Texture2D<uint> srcNormalmap = ResourceDescriptorHeap[g_NormalsIndex];
+    Texture2D<uint> srcNormalmap = GD_HEAP( g_NormalsIndex );
     uint packedInput = srcNormalmap.Load( int3( pos, 0 ) ).x;
     float3 unpackedOutput = XeGTAO_R11G11B10_UNORM_to_FLOAT3( packedInput );
     return (lpfloat3)normalize( unpackedOutput * 2.0.xxx - 1.0.xxx );
@@ -140,8 +140,8 @@ void CSDownsampleDepth( uint2 dispatchThreadID : SV_DispatchThreadID )
     if ( dispatchThreadID.x >= (uint)g_GTAOConsts.ViewportSize.x || dispatchThreadID.y >= (uint)g_GTAOConsts.ViewportSize.y )
         return;
 
-    Texture2D<float>   srcRawDepth  = ResourceDescriptorHeap[g_RawDepthIndex];
-    RWTexture2D<float>  outHalfDepth = ResourceDescriptorHeap[g_Out0Index];
+    Texture2D<float>   srcRawDepth  = GD_HEAP( g_RawDepthIndex );
+    RWTexture2D<float>  outHalfDepth = GD_HEAP( g_Out0Index );
 
     uint2 srcDim;
     srcRawDepth.GetDimensions( srcDim.x, srcDim.y );
@@ -155,12 +155,12 @@ void CSDownsampleDepth( uint2 dispatchThreadID : SV_DispatchThreadID )
 [numthreads( 8, 8, 1 )]
 void CSPrefilterDepths16x16( uint2 dispatchThreadID : SV_DispatchThreadID, uint2 groupThreadID : SV_GroupThreadID )
 {
-    Texture2D<float>     srcRawDepth = ResourceDescriptorHeap[g_RawDepthIndex];
-    RWTexture2D<lpfloat> outMip0     = ResourceDescriptorHeap[g_Out0Index];
-    RWTexture2D<lpfloat> outMip1     = ResourceDescriptorHeap[g_Out1Index];
-    RWTexture2D<lpfloat> outMip2     = ResourceDescriptorHeap[g_Out2Index];
-    RWTexture2D<lpfloat> outMip3     = ResourceDescriptorHeap[g_Out3Index];
-    RWTexture2D<lpfloat> outMip4     = ResourceDescriptorHeap[g_Out4Index];
+    Texture2D<float>     srcRawDepth = GD_HEAP( g_RawDepthIndex );
+    RWTexture2D<lpfloat> outMip0     = GD_HEAP( g_Out0Index );
+    RWTexture2D<lpfloat> outMip1     = GD_HEAP( g_Out1Index );
+    RWTexture2D<lpfloat> outMip2     = GD_HEAP( g_Out2Index );
+    RWTexture2D<lpfloat> outMip3     = GD_HEAP( g_Out3Index );
+    RWTexture2D<lpfloat> outMip4     = GD_HEAP( g_Out4Index );
 
     XeGTAO_PrefilterDepths16x16( dispatchThreadID, groupThreadID, g_GTAOConsts, srcRawDepth,
         g_samplerPointClamp, outMip0, outMip1, outMip2, outMip3, outMip4 );
@@ -170,8 +170,8 @@ void CSPrefilterDepths16x16( uint2 dispatchThreadID : SV_DispatchThreadID, uint2
 [numthreads( XE_GTAO_NUMTHREADS_X, XE_GTAO_NUMTHREADS_Y, 1 )]
 void CSGenerateNormals( const uint2 pixCoord : SV_DispatchThreadID )
 {
-    Texture2D<float>  srcRawDepth  = ResourceDescriptorHeap[g_RawDepthIndex];
-    RWTexture2D<uint> outNormalmap = ResourceDescriptorHeap[g_Out0Index];
+    Texture2D<float>  srcRawDepth  = GD_HEAP( g_RawDepthIndex );
+    RWTexture2D<uint> outNormalmap = GD_HEAP( g_Out0Index );
 
     float3 viewspaceNormal = XeGTAO_ComputeViewspaceNormal( pixCoord, g_GTAOConsts, srcRawDepth, g_samplerPointClamp );
     outNormalmap[pixCoord] = XeGTAO_FLOAT3_to_R11G11B10_UNORM( saturate( viewspaceNormal * 0.5 + 0.5 ) );
@@ -180,9 +180,9 @@ void CSGenerateNormals( const uint2 pixCoord : SV_DispatchThreadID )
 // --- Pass 3: the GTAO integral, one entry point per quality level ---------------------------------------------
 // (sliceCount, stepsPerSlice) are Intel's tuned pairs: Low 1x2, Medium 2x2, High 3x3, Ultra 9x3.
 #define XE_GTAO_MAIN_PASS_BODY( sliceCount, stepsPerSlice )                                                 \
-    Texture2D<lpfloat>          srcWorkingDepth = ResourceDescriptorHeap[g_WorkingDepthIndex];               \
-    RWTexture2D<uint>           outWorkingAOTerm = ResourceDescriptorHeap[g_Out0Index];                      \
-    RWTexture2D<unorm float>    outWorkingEdges = ResourceDescriptorHeap[g_Out1Index];                       \
+    Texture2D<lpfloat>          srcWorkingDepth = GD_HEAP( g_WorkingDepthIndex );               \
+    RWTexture2D<uint>           outWorkingAOTerm = GD_HEAP( g_Out0Index );                      \
+    RWTexture2D<unorm float>    outWorkingEdges = GD_HEAP( g_Out1Index );                       \
     XeGTAO_MainPass( pixCoord, sliceCount, stepsPerSlice,                                                   \
         SpatioTemporalNoise( pixCoord, g_GTAOConsts.NoiseIndex ), LoadNormal( pixCoord ),                    \
         g_GTAOConsts, srcWorkingDepth, g_samplerPointClamp, outWorkingAOTerm, outWorkingEdges )
@@ -205,9 +205,9 @@ void CSGTAOUltra( const uint2 pixCoord : SV_DispatchThreadID )  { XE_GTAO_MAIN_P
 // stored pre-divided by that scale so the pre-denoise value can overshoot 1 without clipping in UNORM.
 #define XE_GTAO_DENOISE_BODY( finalApply )                                                                  \
     const uint2 pixCoordBase = dispatchThreadID * uint2( 2, 1 );                                            \
-    Texture2D<uint>     srcWorkingAOTerm = ResourceDescriptorHeap[g_AOTermIndex];                            \
-    Texture2D<lpfloat>  srcWorkingEdges = ResourceDescriptorHeap[g_EdgesIndex];                              \
-    RWTexture2D<uint>   outFinalAOTerm = ResourceDescriptorHeap[g_Out0Index];                                \
+    Texture2D<uint>     srcWorkingAOTerm = GD_HEAP( g_AOTermIndex );                            \
+    Texture2D<lpfloat>  srcWorkingEdges = GD_HEAP( g_EdgesIndex );                              \
+    RWTexture2D<uint>   outFinalAOTerm = GD_HEAP( g_Out0Index );                                \
     XeGTAO_Denoise( pixCoordBase, g_GTAOConsts, srcWorkingAOTerm, srcWorkingEdges,                          \
         g_samplerPointClamp, outFinalAOTerm, finalApply )
 

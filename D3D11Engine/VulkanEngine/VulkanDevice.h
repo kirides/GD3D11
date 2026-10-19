@@ -32,7 +32,9 @@ struct VulkanDeviceCaps {
     bool AddressBindingReport = false;  // GPU VA ranges reported per object, to name a device-fault address
     bool BufferMarkerAMD = false;
     bool DiagnosticCheckpointsNV = false;
+    bool DiagnosticsConfigNV = false;   // -VKAFTERMATH: shader debug info + resource tracking for Nsight Aftermath dumps
     bool FragmentStoresAndAtomics = false;
+    bool VertexStoresAndAtomics = false;
     bool DepthBiasClamp = false;
     bool FillModeNonSolid = false;
     /** Heap-indexed ConstantBuffers can live in the mutable heap (feature + limits); else they need regular bindings. */

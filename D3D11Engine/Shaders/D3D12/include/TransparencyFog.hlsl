@@ -39,7 +39,7 @@ struct HeightfogData {
 
 TransparencyFrameData LoadTransparencyFrame( uint index )
 {
-    ConstantBuffer<TransparencyFrameData> cb = ResourceDescriptorHeap[index];
+    ConstantBuffer<TransparencyFrameData> cb = GD_HEAP( index );
     TransparencyFrameData d;
     d.OpaqueSceneIndex = cb.OpaqueSceneIndex;
     d.HeightfogIndex = cb.HeightfogIndex;
@@ -55,7 +55,7 @@ float3 ApplyTransparencyFog( TransparencyFrameData tf, uint mode, float3 color, 
     if ( tf.FogActive == 0 || mode == TF_MODE_OFF )
         return color;
 
-    ConstantBuffer<HeightfogData> hf = ResourceDescriptorHeap[tf.HeightfogIndex];
+    ConstantBuffer<HeightfogData> hf = GD_HEAP( tf.HeightfogIndex );
     float3 rel = worldPos - hf.CameraPosition;
     rel.y -= hf.FogHeight;
 
@@ -74,7 +74,7 @@ float3 ApplyTransparencyFog( TransparencyFrameData tf, uint mode, float3 color, 
     [branch]
     if ( mode == TF_MODE_MODULATE ) return lerp( color, 1.0, coverage );
 
-    ConstantBuffer<AtmosphereData> atmo = ResourceDescriptorHeap[tf.AtmosphereIndex];
+    ConstantBuffer<AtmosphereData> atmo = GD_HEAP( tf.AtmosphereIndex );
     g_Atmosphere = atmo;
     float3 fogColor = ApplyAtmosphericScatteringGround( rel, hf.FogColorMod, true );
     fogColor = lerp( fogColor, float3( 0.12, 0.18, 0.27 ), saturate( -AC_LightPos.y * 4.0 ) );

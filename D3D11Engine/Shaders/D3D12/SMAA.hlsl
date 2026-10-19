@@ -107,19 +107,19 @@ VS_NeighborOut NeighborhoodBlendingVS(uint id : SV_VertexID) {
 // 6. Pixel shaders (bindless texture fetch from the shader-visible heap).
 // ---------------------------------------------------
 float4 LumaEdgeDetectionPS(VS_EdgeOut input) : SV_TARGET {
-    Texture2D colorTex = ResourceDescriptorHeap[ColorTexIndex];
+    Texture2D colorTex = GD_HEAP( ColorTexIndex );
     return float4(SMAALumaEdgeDetectionPS(input.Tex, input.Offsets, colorTex), 0, 0);
 }
 
 float4 BlendingWeightCalculationPS(VS_BlendOut input) : SV_TARGET {
-    Texture2D edgesTex  = ResourceDescriptorHeap[EdgesTexIndex];
-    Texture2D areaTex   = ResourceDescriptorHeap[AreaTexIndex];
-    Texture2D searchTex = ResourceDescriptorHeap[SearchTexIndex];
+    Texture2D edgesTex  = GD_HEAP( EdgesTexIndex );
+    Texture2D areaTex   = GD_HEAP( AreaTexIndex );
+    Texture2D searchTex = GD_HEAP( SearchTexIndex );
     return SMAABlendingWeightCalculationPS(input.Tex, input.Pix, input.Offsets, edgesTex, areaTex, searchTex, float4(0, 0, 0, 0));
 }
 
 float4 NeighborhoodBlendingPS(VS_NeighborOut input) : SV_TARGET {
-    Texture2D colorTex = ResourceDescriptorHeap[ColorTexIndex];
-    Texture2D blendTex = ResourceDescriptorHeap[BlendTexIndex];
+    Texture2D colorTex = GD_HEAP( ColorTexIndex );
+    Texture2D blendTex = GD_HEAP( BlendTexIndex );
     return SMAANeighborhoodBlendingPS(input.Tex, input.Offset, colorTex, blendTex);
 }

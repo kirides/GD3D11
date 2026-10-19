@@ -33,7 +33,7 @@ VS_OUT VSFullscreen( uint vid : SV_VertexID )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    Texture2D<float4> src = ResourceDescriptorHeap[SrcIndex];
+    Texture2D<float4> src = GD_HEAP( SrcIndex );
     float4 color = src.Load( int3( i.pos.xy, 0 ) );       // 1:1 blit, no filtering needed
 
     float3 c = saturate( color.rgb * Brightness / EncodedMax );

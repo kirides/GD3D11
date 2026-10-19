@@ -63,7 +63,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 
     float4 texel = 1.0;
     if ( ( i.params & PARAM_UNTEXTURED ) == 0 ) {
-        Texture2D tex = ResourceDescriptorHeap[NonUniformResourceIndex( i.params & PARAM_TEXTURE_INDEX_MASK )];
+        Texture2D tex = GD_HEAP_NONUNIFORM( i.params & PARAM_TEXTURE_INDEX_MASK );
         texel = SampleUI( tex, i.uv, dx, dy, i.params );
     }
 

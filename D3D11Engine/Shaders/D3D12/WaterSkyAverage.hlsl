@@ -13,25 +13,25 @@ cbuffer WaterSkyAverageCB : register( b0 )
 
 float3 WaterSkyAvgScene( int2 px )
 {
-    Texture2D sceneTex = ResourceDescriptorHeap[WSA_SceneIndex];
+    Texture2D sceneTex = GD_HEAP( WSA_SceneIndex );
     return sceneTex.Load( int3( px, 0 ) ).rgb;
 }
 
 float WaterSkyAvgRawDepth( int2 px )
 {
-    Texture2D<float> depthTex = ResourceDescriptorHeap[WSA_DepthIndex];
+    Texture2D<float> depthTex = GD_HEAP( WSA_DepthIndex );
     return depthTex.Load( int3( px, 0 ) );
 }
 
 float WaterSkyAvgLoad( uint i )
 {
-    RWTexture2D<float> history = ResourceDescriptorHeap[WSA_HistoryIndex];
+    RWTexture2D<float> history = GD_HEAP( WSA_HistoryIndex );
     return history[uint2( i, 0 )];
 }
 
 void WaterSkyAvgStore( uint i, float v )
 {
-    RWTexture2D<float> history = ResourceDescriptorHeap[WSA_HistoryIndex];
+    RWTexture2D<float> history = GD_HEAP( WSA_HistoryIndex );
     history[uint2( i, 0 )] = v;
 }
 

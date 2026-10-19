@@ -27,15 +27,15 @@ cbuffer GodRayMaskCB : register( b0 )
 [numthreads(8, 8, 1)]
 void CSMask( uint3 DTid : SV_DispatchThreadID )
 {
-    RWTexture2D<float4> outputTex = ResourceDescriptorHeap[GRM_OutputIndex];
+    RWTexture2D<float4> outputTex = GD_HEAP( GRM_OutputIndex );
 
     uint2 outSize;
     outputTex.GetDimensions( outSize.x, outSize.y );
     if ( DTid.x >= outSize.x || DTid.y >= outSize.y )
         return;
 
-    Texture2D sceneTex = ResourceDescriptorHeap[GRM_SceneColorIndex];
-    Texture2D depthTex = ResourceDescriptorHeap[GRM_DepthIndex];
+    Texture2D sceneTex = GD_HEAP( GRM_SceneColorIndex );
+    Texture2D depthTex = GD_HEAP( GRM_DepthIndex );
 
     float2 uv = ( float2( DTid.xy ) + 0.5 ) / float2( outSize );
 
@@ -77,14 +77,14 @@ float InterleavedGradientNoise( float2 uv )
 [numthreads(8, 8, 1)]
 void CSZoom( uint3 DTid : SV_DispatchThreadID )
 {
-    RWTexture2D<float4> outputTex = ResourceDescriptorHeap[GRZ_OutputIndex];
+    RWTexture2D<float4> outputTex = GD_HEAP( GRZ_OutputIndex );
 
     uint2 texSize;
     outputTex.GetDimensions( texSize.x, texSize.y );
     if ( DTid.x >= texSize.x || DTid.y >= texSize.y )
         return;
 
-    Texture2D maskTex = ResourceDescriptorHeap[GRZ_MaskIndex];
+    Texture2D maskTex = GD_HEAP( GRZ_MaskIndex );
 
     float2 texcoord = ( float2( DTid.xy ) + 0.5 ) / float2( texSize );
 

@@ -23,7 +23,7 @@ VS_OUT VSWorld( VS_IN i )
 float4 PSClip( VS_OUT i ) : SV_TARGET
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];   // bindless diffuse (ExecuteIndirect, P2.11)
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );   // bindless diffuse (ExecuteIndirect, P2.11)
     float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );          // same cutout as the opaque world PS so gaps don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
@@ -34,7 +34,7 @@ float4 PSClip( VS_OUT i ) : SV_TARGET
 void PSShadowClip( VS_OUT i )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );}
 
 // --- G-buffer prepass variant: depth + motion vectors + normals ---
@@ -75,7 +75,7 @@ VS_GBUF_OUT VSWorldGBuf( VS_GBUF_IN i )
 GBUF_OUT PSClipGBuf( VS_GBUF_OUT i )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );   // identical cutout to PSClip — same depth, same coverage
     GBUF_OUT o;
     o.velocity = CalculateVelocity( i.currClip, i.prevClip );

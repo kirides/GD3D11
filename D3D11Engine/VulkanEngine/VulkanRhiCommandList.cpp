@@ -742,9 +742,26 @@ namespace VulkanRhi {
         return true;
     }
 
+    namespace {
+        /** -VKDRAWCRUMBS: a breadcrumb named after the pipeline around one draw, dispatch or indirect batch. */
+        struct DrawCrumb {
+            DeviceImpl* Device;
+            VkCommandBuffer Cmd;
+            uint32_t Slot = DeviceImpl::kNoMarker;
+            DrawCrumb( DeviceImpl* device, VkCommandBuffer cmd, const PipelineStateImpl* pso ) : Device( device ), Cmd( cmd ) {
+                if ( device->DrawCrumbs() )
+                    Slot = device->BeginScopeMarker( cmd, pso && pso->m_CrumbName ? pso->m_CrumbName : L"draw (unnamed pipeline)" );
+            }
+            ~DrawCrumb() { Device->EndScopeMarker( Cmd, Slot ); }
+            DrawCrumb( const DrawCrumb& ) = delete;
+            DrawCrumb& operator=( const DrawCrumb& ) = delete;
+        };
+    }
+
     void CommandListImpl::DrawInstanced( UINT vertexCount, UINT instanceCount, UINT startVertex, UINT startInstance ) {
         TickScope timer( m_InIndirect ? m_UntimedTicks : m_Stats.DrawTicks );
         if ( !PrepareDraw() ) return;
+        const DrawCrumb crumb( m_Device, m_Cmd, m_Gfx.Pso );
         TickScope driver( m_Stats.DriverDrawTicks );
         vkCmdDraw( m_Cmd, vertexCount, instanceCount, startVertex, startInstance );
     }
@@ -752,6 +769,7 @@ namespace VulkanRhi {
     void CommandListImpl::DrawIndexedInstanced( UINT indexCount, UINT instanceCount, UINT startIndex, INT baseVertex, UINT startInstance ) {
         TickScope timer( m_InIndirect ? m_UntimedTicks : m_Stats.DrawTicks );
         if ( !PrepareDraw() ) return;
+        const DrawCrumb crumb( m_Device, m_Cmd, m_Gfx.Pso );
         TickScope driver( m_Stats.DriverDrawTicks );
         vkCmdDrawIndexed( m_Cmd, indexCount, instanceCount, startIndex, baseVertex, startInstance );
     }
@@ -760,6 +778,7 @@ namespace VulkanRhi {
         TickScope timer( m_InIndirect ? m_UntimedTicks : m_Stats.DrawTicks );
         EndRenderingScope();
         if ( !FlushBindings( m_Compute, VK_PIPELINE_BIND_POINT_COMPUTE ) ) return;
+        const DrawCrumb crumb( m_Device, m_Cmd, m_Compute.Pso );
         TickScope driver( m_Stats.DriverDrawTicks );
         vkCmdDispatch( m_Cmd, x, y, z );
     }
@@ -771,6 +790,9 @@ namespace VulkanRhi {
         ResourceImpl* countBuf = ToImpl( count );
         if ( !s || !argBuf || !argBuf->m_Buffer ) return;
         TickScope timer( m_Stats.IndirectTicks );
+        // CPU replay crumbs each draw too; this one names the batch and covers DGC and native indirect.
+        const bool dispatch = !s->m_Args.empty() && s->m_Args.back().Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+        const DrawCrumb crumb( m_Device, m_Cmd, dispatch ? m_Compute.Pso : m_Gfx.Pso );
         m_InIndirect = true;
         struct Leave { bool& Flag; ~Leave() { Flag = false; } } leave{ m_InIndirect };
         if ( s->m_Args.size() != 1 ) {

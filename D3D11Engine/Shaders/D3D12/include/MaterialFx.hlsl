@@ -32,7 +32,7 @@ MaterialFxEntry LoadMaterialFx( uint packedDiffuse )
     [branch]
     if ( slot != 0 )
     {
-        StructuredBuffer<MaterialFxEntry> table = ResourceDescriptorHeap[kMaterialFxTableSlot];
+        StructuredBuffer<MaterialFxEntry> table = GD_HEAP( kMaterialFxTableSlot );
         e = table[slot];
     }
     return e;
@@ -50,7 +50,7 @@ float3 ApplyDetailTexture( float3 albedoGamma, float2 uv, MaterialFxEntry fx, Sa
     [branch]
     if ( fx.DetailScale > 0.0 )
     {
-        Texture2D detail = ResourceDescriptorHeap[fx.DetailSlot];
+        Texture2D detail = GD_HEAP( fx.DetailSlot );
         albedoGamma = saturate( albedoGamma * 2.0 * detail.Sample( s, uv * fx.DetailScale ).rgb );
     }
     return albedoGamma;
@@ -63,12 +63,12 @@ float3 ApplyEnvMap( float3 rgb, float3 N, float3 V, MaterialFxEntry fx, float ob
     [branch]
     if ( fx.EnvStrength != 0.0 )
     {
-        StructuredBuffer<MaterialFxEntry> table = ResourceDescriptorHeap[kMaterialFxTableSlot];
+        StructuredBuffer<MaterialFxEntry> table = GD_HEAP( kMaterialFxTableSlot );
         const MaterialFxEntry frame = table[0];
         [branch]
         if ( frame.EnvCubeSlot != 0xFFFFFFFFu )
         {
-            TextureCube cube = ResourceDescriptorHeap[frame.EnvCubeSlot];
+            TextureCube cube = GD_HEAP( frame.EnvCubeSlot );
             const float3 c = cube.Sample( s, reflect( -V, N ) ).rgb;
             const float3 env = select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
             const float alpha = saturate( abs( fx.EnvStrength ) * frame.EnvGlobal * objectLight );
