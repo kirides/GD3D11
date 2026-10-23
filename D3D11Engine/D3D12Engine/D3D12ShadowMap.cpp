@@ -46,7 +46,6 @@ void D3D12ShadowMap::Attach( D3D12GraphicsEngine& engine ) {
 using namespace DirectX;
 
 namespace {
-    // TODO: in the future make this depend on device capabilities.
     constexpr const char* Shadermodel_PS = "ps_6_6";
     constexpr const char* Shadermodel_VS = "vs_6_6";
 
