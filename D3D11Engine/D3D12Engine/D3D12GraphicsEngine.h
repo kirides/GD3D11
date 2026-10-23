@@ -37,9 +37,7 @@ class zCVobLight;
     — Gothic's BeginScene/EndScene hooks, which fire every frame in the menu AND in-game:
       OnBeginFrame() begins the frame (reset, backbuffer -> render target, clear to a sentinel color)
       OnEndFrame()   ends the frame (render target -> present, execute, Present, fence-advance)
-    so a running game (even at the main menu) shows a solid "first-light" color. World / UI /
-    resource paths are still stubbed (safe no-ops) and land in later Phase-1/2 increments
-    (descriptors, upload ring, PSOs, DrawVertexArray, scene rendering).
+    so a running game (even at the main menu) shows a solid "first-light" color.
 
     D3D11 remains the default backend and the fallback: if device or swapchain creation fails,
     Engine::CreateGraphicsEngine keeps D3D11. */
@@ -210,6 +208,7 @@ public:
         Binds the game's Gothic_XYZRHW_DIF_T1_Vertex buffer straight off the IA using the FF_VB_LAYOUT
         UI pipeline variant (no readback/conversion), falling back to a ring snapshot only when the
         current frame's copy of the ring-buffered D3D7 buffer is stale. */
+    XRESULT DrawScreenFade( void* camera ) override;
     XRESULT DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Records the currently-bound diffuse texture for the next 2D draw (SetTexture -> BindToSlot). */
@@ -280,6 +279,8 @@ void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory ite
         Re-tonemaps the just-rendered HDR scene into a CPU-readable 32bpp BGRA8 buffer at either 256x256
         (thumbnail) or full resolution. Caller owns *data (new[]'d) and must delete[] it. */
     void GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) override;
+    XRESULT OnKeyDown( unsigned int key ) override;
+    void SaveScreenshot();
 
 private:
     void QueueCleanupJob(std::move_only_function<void()> callback); // cleanup job runs after the calling frames fence value is completed.
@@ -493,6 +494,8 @@ private:
     [[noreturn]] void HandleDeviceRemoved( HRESULT removedReason, const char* context );
 
     void InitGpuScopeMarkers();
+
+    bool m_SaveScreenshotNextFrame = false;   // set by the numpad hotkey, served at the end of the frame
 
     // Mid-frame synchronous flush for GetBackbufferData: closes + executes the currently-recorded m_CmdList
     // and blocks until the GPU has consumed it, then Resets the same allocator/list so recording can

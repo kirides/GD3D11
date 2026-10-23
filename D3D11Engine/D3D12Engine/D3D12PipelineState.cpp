@@ -227,7 +227,7 @@ bool D3D12PipelineState::CreateWorld() {
     // every triangle; for THIN geometry (leaf cards, ice slabs, etc. — often two nearly-coincident surfaces)
     // that turns a normal single-sided draw into two near-identical depths fighting every frame, which reads
     // as flicker. D3D11 never disables culling for ordinary world/VOB/skeletal draws — only the dedicated
-    // GVegetationBox grass path (not yet ported to D3D12) opts into CM_CULL_NONE for actual double-sided cards.
+    // GVegetationBox grass path (own PSO below) opts into CM_CULL_NONE for actual double-sided cards.
     pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     pso.RasterizerState.DepthClipEnable = TRUE;
 

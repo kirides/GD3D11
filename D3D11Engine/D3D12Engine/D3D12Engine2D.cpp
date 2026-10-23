@@ -149,6 +149,114 @@ void D3D12GraphicsEngine::DrawString( std::string_view str, float x, float y, co
 }
 
 
+/** Gothic's per-frame camera screen fade (Beliar statue red overlay, blend textures, fades) and cinema-scope
+    bars, drawn as FF quads over the finished frame; same blend mapping as D3D11 DrawScreenFade. */
+XRESULT D3D12GraphicsEngine::DrawScreenFade( void* c ) {
+	zCCamera* camera = static_cast<zCCamera*>(c);
+	if ( !camera )
+		return XR_SUCCESS;
+	const bool fade = camera->HasScreenFadeEnabled();
+	const bool scope = camera->HasCinemaScopeEnabled();
+	if ( fade ) camera->ResetScreenFadeEnabled();
+	if ( scope ) camera->ResetCinemaScopeEnabled();
+	if ( (!fade && !scope) || !m_FrameOpen || !m_SwapChainReady )
+		return XR_SUCCESS;
+
+	D3D12_VIEWPORT vp = m_CurrentViewport;
+	if ( vp.Width < 2.0f || vp.Height < 2.0f )
+		vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+	const float scale = std::max<float>( 0.001f, Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale );
+	const float x0 = vp.TopLeftX / scale, y0 = vp.TopLeftY / scale;
+	const float w = vp.Width / scale, h = vp.Height / scale;
+
+	GothicRendererState& rs = Engine::GAPI->GetRendererState();
+	GothicBlendStateInfo savedBlend = rs.BlendState.Clone();
+	GothicDepthBufferStateInfo savedDepth = rs.DepthState.Clone();
+	FixedFunctionStage::EColorOp    savedOp0 = rs.GraphicsState.FF_Stages[0].ColorOp;
+	FixedFunctionStage::EColorOp    savedOp1 = rs.GraphicsState.FF_Stages[1].ColorOp;
+	FixedFunctionStage::ETextureArg savedA1 = rs.GraphicsState.FF_Stages[0].ColorArg1;
+	FixedFunctionStage::ETextureArg savedA2 = rs.GraphicsState.FF_Stages[0].ColorArg2;
+	GfxTexture* prevTex = m_CurrentTexture;
+
+	rs.DepthState.DepthBufferEnabled = false;
+	rs.DepthState.DepthWriteEnabled = false;
+	rs.GraphicsState.FF_Stages[0].ColorOp = FixedFunctionStage::EColorOp::CO_MODULATE;
+	rs.GraphicsState.FF_Stages[1].ColorOp = FixedFunctionStage::EColorOp::CO_DISABLE;
+	rs.GraphicsState.FF_Stages[0].ColorArg1 = FixedFunctionStage::ETextureArg::TA_TEXTURE;
+	rs.GraphicsState.FF_Stages[0].ColorArg2 = FixedFunctionStage::ETextureArg::TA_DIFFUSE;
+
+	auto drawRects = [&]( const float (*rects)[4], int count, DWORD color ) {
+		ExVertexStruct quad[12] = {};
+		for ( int r = 0; r < count; ++r ) {
+			const float xs[6] = { rects[r][0], rects[r][2], rects[r][2], rects[r][2], rects[r][0], rects[r][0] };
+			const float ys[6] = { rects[r][1], rects[r][1], rects[r][3], rects[r][3], rects[r][3], rects[r][1] };
+			const float us[6] = { 0, 1, 1, 1, 0, 0 };
+			const float vs[6] = { 0, 0, 1, 1, 1, 0 };
+			for ( int i = 0; i < 6; ++i ) {
+				ExVertexStruct& v = quad[r * 6 + i];
+				v.Position = { xs[i], ys[i], 0.5f };
+				v.Normal = { 1, 0, 0 };
+				v.TexCoord = { us[i], vs[i] };
+				v.TexCoord2 = { 0, 1 };
+				v.Color = color;
+			}
+		}
+		DrawVertexArray( quad, 6 * count, 0, sizeof( ExVertexStruct ) );
+	};
+	auto packColor = []( zColor col, bool tint ) {
+		return (DWORD( col.bgra.alpha ) << 24) | (tint ? (DWORD( col.bgra.r ) << 16) | (DWORD( col.bgra.g ) << 8) | col.bgra.b : 0x00FFFFFFu);
+	};
+
+	if ( scope ) {
+		// Two bars of 12% screen height each, as in VS_CinemaScope.
+		const float rects[2][4] = { { x0, y0, x0 + w, y0 + h * 0.12f }, { x0, y0 + h * 0.88f, x0 + w, y0 + h } };
+		rs.BlendState.SetAlphaBlending();
+		rs.BlendState.SetDirty();
+		m_CurrentTexture = m_WhiteTexture.get();
+		drawRects( rects, 2, packColor( camera->GetCinemaScopeColor(), true ) );
+	}
+
+	if ( fade ) {
+		GfxTexture* texture = m_WhiteTexture.get();
+		bool textured = false;
+		bool ok = true;
+		if ( zCMaterial* material = reinterpret_cast<zCMaterial*>(camera->GetPolyMaterial()) ) {
+			if ( zCTexture* tex = material->GetAniTexture() ) {
+				MyDirectDrawSurface7* surface = tex->CacheIn( 0.6f ) == zRES_CACHED_IN ? tex->GetSurface() : nullptr;
+				if ( surface && surface->GetEngineTexture() ) {
+					texture = surface->GetEngineTexture();
+					textured = true;
+				} else {
+					ok = false;
+				}
+			}
+		}
+		if ( ok ) {
+			switch ( camera->GetScreenFadeBlendFunc() ) {
+			case zRND_ALPHA_FUNC_ADD:  rs.BlendState.SetAdditiveBlending(); break;
+			case zRND_ALPHA_FUNC_MUL:  rs.BlendState.SetModulateBlending(); break;
+			case zRND_ALPHA_FUNC_MUL2: rs.BlendState.SetModulate2Blending(); break;
+			default:                   rs.BlendState.SetAlphaBlending(); break;
+			}
+			rs.BlendState.SetDirty();
+			m_CurrentTexture = texture;
+			// Textured fades only carry alpha (like PS_PFX_Alpha_Blend); untextured ones tint with the color.
+			const float rect[1][4] = { { x0, y0, x0 + w, y0 + h } };
+			drawRects( rect, 1, packColor( camera->GetScreenFadeColor(), !textured ) );
+		}
+	}
+
+	m_CurrentTexture = prevTex;
+	rs.BlendState = savedBlend;
+	rs.DepthState = savedDepth;
+	rs.GraphicsState.FF_Stages[0].ColorOp = savedOp0;
+	rs.GraphicsState.FF_Stages[1].ColorOp = savedOp1;
+	rs.GraphicsState.FF_Stages[0].ColorArg1 = savedA1;
+	rs.GraphicsState.FF_Stages[0].ColorArg2 = savedA2;
+	return XR_SUCCESS;
+}
+
+
 XRESULT D3D12GraphicsEngine::SetViewport( const ViewportInfo& vp ) {
 	m_CurrentViewport.TopLeftX = static_cast<float>(vp.TopLeftX);
 	m_CurrentViewport.TopLeftY = static_cast<float>(vp.TopLeftY);

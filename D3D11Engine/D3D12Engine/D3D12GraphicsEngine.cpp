@@ -14,6 +14,8 @@
 #include "../DXGIHelpers.h"
 #include "../WindAnimation.h"
 #include "../GMeshSimple.h"
+#include "../Toolbox.h"
+#include <wincodec.h>
 
 #include "D3D12TracyDebug.h"
 #include "../VulkanEngine/VulkanRhi.h"
@@ -2326,6 +2328,10 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
         DX_ZONE( m_CmdList.Get(), "UI 2D flush (end of frame)" );
         FlushUI2D();
     }
+    if ( m_SaveScreenshotNextFrame ) {
+        m_SaveScreenshotNextFrame = false;
+        SaveScreenshot();
+    }
     Present();
     m_FrameOpen = false;
     m_PresentPending = false;
@@ -3117,6 +3123,90 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     // The flushes above Reset the command list without leaving anything bound — rebind the swapchain
     // backbuffer so Gothic's subsequent 2D UI draws (and Present's ImGui pass) land correctly.
     RestoreFrameRenderTarget();
+}
+
+
+XRESULT D3D12GraphicsEngine::OnKeyDown( unsigned int key ) {
+    switch ( key ) {
+#ifndef PUBLIC_RELEASE
+    case VK_NUMPAD0:
+        Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Reloading shaders..." );
+        ReloadShaders();
+        break;
+#endif
+    case VK_NUMPAD7:
+        if ( Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys )
+            m_SaveScreenshotNextFrame = true;
+        break;
+    default:
+        break;
+    }
+    return XR_SUCCESS;
+}
+
+
+/** Numpad screenshot: SDR re-tonemap via GetBackbufferData, encoded as 95% JPEG with WIC (like D3D11). */
+void D3D12GraphicsEngine::SaveScreenshot() {
+    if ( !Toolbox::FolderExists( "system\\Screenshots" ) && !Toolbox::CreateDirectoryRecursive( "system\\Screenshots" ) )
+        return;
+
+    byte* data = nullptr;
+    INT2 size;
+    int pixelSize = 4;
+    GetBackbufferData( false, &data, size, pixelSize );
+    if ( !data ) return;
+    std::unique_ptr<byte[]> pixels( data );
+
+    char date[50], time[50];
+    GetDateFormat( LOCALE_SYSTEM_DEFAULT, 0, nullptr, "yyyy-MM-dd", date, 50 );
+    GetTimeFormat( LOCALE_SYSTEM_DEFAULT, 0, nullptr, "hh-mm-ss", time, 50 );
+    const std::string name = "system\\screenshots\\GD3D11_" + std::string( date ) + "__" + std::string( time ) + ".jpg";
+
+    const HRESULT coHr = CoInitializeEx( nullptr, COINIT_MULTITHREADED );
+    {
+        ComPtr<IWICImagingFactory> factory;
+        ComPtr<IWICBitmap> bitmap;
+        ComPtr<IWICFormatConverter> converter;
+        ComPtr<IWICStream> stream;
+        ComPtr<IWICBitmapEncoder> encoder;
+        ComPtr<IWICBitmapFrameEncode> frame;
+        ComPtr<IPropertyBag2> props;
+        WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
+        const std::wstring wname = Toolbox::ToWideChar( name );
+        const UINT stride = static_cast<UINT>( size.x ) * 4;
+
+        bool ok = SUCCEEDED( CoCreateInstance( CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS( &factory ) ) )
+            && SUCCEEDED( factory->CreateBitmapFromMemory( size.x, size.y, GUID_WICPixelFormat32bppBGRA, stride, stride * size.y, pixels.get(), &bitmap ) )
+            && SUCCEEDED( factory->CreateFormatConverter( &converter ) )
+            && SUCCEEDED( converter->Initialize( bitmap.Get(), GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom ) )
+            && SUCCEEDED( factory->CreateStream( &stream ) )
+            && SUCCEEDED( stream->InitializeFromFilename( wname.c_str(), GENERIC_WRITE ) )
+            && SUCCEEDED( factory->CreateEncoder( GUID_ContainerFormatJpeg, nullptr, &encoder ) )
+            && SUCCEEDED( encoder->Initialize( stream.Get(), WICBitmapEncoderNoCache ) )
+            && SUCCEEDED( encoder->CreateNewFrame( &frame, &props ) );
+        if ( ok ) {
+            PROPBAG2 option = {};
+            option.pstrName = const_cast<wchar_t*>( L"ImageQuality" );
+            VARIANT quality = {};
+            quality.vt = VT_R4;
+            quality.fltVal = 0.95f;
+            props->Write( 1, &option, &quality );
+            ok = SUCCEEDED( frame->Initialize( props.Get() ) )
+                && SUCCEEDED( frame->SetSize( size.x, size.y ) )
+                && SUCCEEDED( frame->SetPixelFormat( &format ) )
+                && SUCCEEDED( frame->WriteSource( converter.Get(), nullptr ) )
+                && SUCCEEDED( frame->Commit() )
+                && SUCCEEDED( encoder->Commit() );
+        }
+        if ( !ok ) {
+            Logging::Err( "Could not save screenshot to: {}", name );
+            return;
+        }
+    }
+    if ( SUCCEEDED( coHr ) ) CoUninitialize();
+
+    Logging::Inf( "Saving screenshot to: {}", name );
+    Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Screenshot taken: " + name );
 }
 
 
