@@ -74,12 +74,12 @@ float3 ApplyTransparencyFog( TransparencyFrameData tf, uint mode, float3 color, 
     [branch]
     if ( mode == TF_MODE_MODULATE ) return lerp( color, 1.0, coverage );
 
-    ConstantBuffer<AtmosphereData> g_Atmosphere = GD_HEAP( tf.AtmosphereIndex );
-    float3 fogColor = ApplyAtmosphericScatteringGround( g_Atmosphere, rel, hf.FogColorMod, true );
-    fogColor = lerp( fogColor, float3( 0.12, 0.18, 0.27 ), saturate( -AC_LightPos.y * 4.0 ) );
+    ConstantBuffer<AtmosphereData> atmo = GD_HEAP( tf.AtmosphereIndex );
+    float3 fogColor = ApplyAtmosphericScatteringGround( atmo, rel, hf.FogColorMod, true );
+    fogColor = lerp( fogColor, float3( 0.12, 0.18, 0.27 ), saturate( -atmo.AC_LightPos.y * 4.0 ) );
     float darkness = 2.5;
     [branch]
-    if ( AC_LightPos.y > 0.0 ) darkness -= AC_LightPos.y * 0.8;
+    if ( atmo.AC_LightPos.y > 0.0 ) darkness -= atmo.AC_LightPos.y * 0.8;
     return lerp( color, saturate( fogColor / darkness ), coverage );
 }
 

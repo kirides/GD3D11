@@ -316,7 +316,7 @@ float3 WaterCube( float3 dir )
 
 float3 WaterScatterGround( float3 worldPos, float3 color )
 {
-    return UseAtmosphere != 0 ? ApplyAtmosphericScatteringGround( worldPos, color ) : color;
+    return UseAtmosphere != 0 ? ApplyAtmosphericScatteringGround( GetAtmosphere(), worldPos, color ) : color;
 }
 
 bool WaterSSREnabled() { return SsrMaxSteps > 0 || RtColorIndex != 0xFFFFFFFFu; }

@@ -132,9 +132,9 @@ float3 ApplyMoon( float3 atmoColor, float2 pixelPos )
 // Camera inside the atmosphere shell — the in-game case. The *2.0f matches PS_Atmosphere.
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    float3 atmoColor = ApplyAtmosphericScatteringSky( i.worldPos ) * 2.0f;
+    float3 atmoColor = ApplyAtmosphericScatteringSky( GetAtmosphere(), i.worldPos ) * 2.0f;
     atmoColor = ApplySkyLayers( atmoColor, i.worldPos );
-	atmoColor *= AC_SkyHorizonFade( i.worldPos );
+	atmoColor *= AC_SkyHorizonFade( GetAtmosphere(), i.worldPos );
 
     return float4( ApplyMoon( atmoColor, i.clip.xy ), 1.0f );
 }
@@ -143,5 +143,5 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 // layers and no *2.0f — kept identical.
 float4 PSMainOuter( VS_OUT i ) : SV_TARGET
 {
-    return float4( ApplyAtmosphericScatteringOuter( i.worldPos ), 1.0f );
+    return float4( ApplyAtmosphericScatteringOuter( GetAtmosphere(), i.worldPos ), 1.0f );
 }

@@ -112,7 +112,7 @@ float4 ComputeHeightFog( float2 texcoord )
     position.y -= HF_FogHeight;
 
     float fog = 1.0f - ComputeVolumetricFog( position, posOriginal );
-    float3 color = ApplyAtmosphericScatteringGround( position, HF_FogColorMod, true );
+    float3 color = ApplyAtmosphericScatteringGround( GetAtmosphere(), position, HF_FogColorMod, true );
 
     // Darken / lighten the fog based on the day/night cycle (values copied from the D3D11 composition shader).
     float3 nightFogColor = float3( 0.12f, 0.18f, 0.27f );
