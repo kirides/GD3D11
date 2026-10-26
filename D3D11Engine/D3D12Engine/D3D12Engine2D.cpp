@@ -330,7 +330,11 @@ XRESULT D3D12GraphicsEngine::SubmitUIDraw( const D3D12_VERTEX_BUFFER_VIEW& vbv, 
 	const bool frontCCW = rs.RasterizerState.FrontCounterClockwise;
 
 	// Emulate Gothic's per-draw fixed-function blend mode by selecting the matching PSO.
-	Rhi::PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState, cullMode,
+	// A depth-format PSO needs a bound DSV; the display-chain rebinds leave none.
+	GothicDepthBufferStateInfo noDepth = rs.DepthState.Clone();
+	noDepth.DepthBufferEnabled = false;
+	noDepth.DepthWriteEnabled = false;
+	Rhi::PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, m_CmdList.HasDepthTarget() ? rs.DepthState : noDepth, cullMode,
 		m_ColorTargetIsHDR, isSkyPass, frontCCW, ffVbLayout );
 	if ( !pso ) return XR_SUCCESS;
 
