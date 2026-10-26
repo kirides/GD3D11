@@ -1,7 +1,7 @@
 {
   "name": "gd3d11",
   "version-string": "0.1.0",
-  "builtin-baseline": "664933b8d385dfc01f4e0cdff4c7c74e71f6a740",
+  "builtin-baseline": "0e5030f583a5427123cd3b714255e5ae62faa3ba",
   "dependencies": [
     "directxmath",
     "directxtk",
