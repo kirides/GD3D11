@@ -4,6 +4,7 @@
 #include "../Logger.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include "../RHI/GpuDebug.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -257,6 +258,7 @@ namespace VulkanRhi {
         vkGetPhysicalDeviceFormatProperties( m_Vk.GetPhysicalDevice(), VK_FORMAT_B10G11R11_UFLOAT_PACK32, &r11g11b10 );
         m_Caps.TypedUAVLoadAdditionalFormats = ( r11g11b10.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ) != 0;
         m_Caps.RootSignature11 = true;
+        m_Caps.ShaderStoresAllStages = vk.VertexStoresAndAtomics && vk.FragmentStoresAndAtomics;
         // GPU_UPLOAD = device-local + host-visible + coherent: the 256 MB BAR, or all of VRAM with ReBAR.
         VkPhysicalDeviceMemoryProperties memory = {};
         vkGetPhysicalDeviceMemoryProperties( m_Vk.GetPhysicalDevice(), &memory );
@@ -513,10 +515,29 @@ namespace VulkanRhi {
         counts.vendorBinarySize = 0;   // the binary dump is vendor tooling input; skip it
         if ( vkGetDeviceFaultInfoEXT( Vk(), &counts, &info ) < VK_SUCCESS ) return;
         Logging::Err( "Vulkan device fault: {}", info.description );
-        for ( const VkDeviceFaultAddressInfoEXT& a : addresses )
+        for ( const VkDeviceFaultAddressInfoEXT& a : addresses ) {
             Logging::Err( "  address 0x{:016X} (+/-0x{:X}), kind {}", a.reportedAddress, a.addressPrecision, static_cast<int>( a.addressType ) );
+            m_Vk.LogAddressOwners( a.reportedAddress, a.addressPrecision );
+            LogBufferOwners( a.reportedAddress, a.addressPrecision );
+        }
         for ( const VkDeviceFaultVendorInfoEXT& v : vendor )
             Logging::Err( "  vendor: {} (code 0x{:X}, data 0x{:X})", v.description, v.vendorFaultCode, v.vendorFaultData );
+    }
+
+    void DeviceImpl::LogBufferOwners( uint64_t address, uint64_t precision ) const {
+        // Live RHI buffers only (device addresses exist with device-generated commands).
+        const uint64_t lo = address > precision ? address - precision : 0;
+        const uint64_t hi = address + precision;
+        for ( uint32_t id = 1; id < m_NextBufferId && ( id >> kPageBits ) < kPageCount; ++id ) {
+            ResourceImpl** entries = m_BufferPages[id >> kPageBits].load( std::memory_order_acquire );
+            if ( !entries ) continue;
+            const ResourceImpl* r = entries[id & ( ( 1u << kPageBits ) - 1 )];
+            if ( !r || !r->m_DeviceAddress ) continue;
+            if ( r->m_DeviceAddress < hi && r->m_DeviceAddress + r->m_Size > lo )
+                Logging::Err( "  live RHI buffer #{} '{}' at [0x{:X}, 0x{:X}), heap type {}", id,
+                    m_Vk.GetObjectName( VkUtil::HandleToU64( r->m_Buffer ) ), r->m_DeviceAddress, r->m_DeviceAddress + r->m_Size,
+                    static_cast<int>( r->m_HeapType ) );
+        }
     }
 
     // ---- Scope breadcrumbs ----------------------------------------------------------------------
@@ -527,6 +548,8 @@ namespace VulkanRhi {
             return;
         }
         m_MarkerNames.assign( kMarkerSlots, nullptr );
+        m_DrawCrumbs = GpuDebug::VkDrawCrumbs();
+        if ( m_DrawCrumbs ) Logging::Wrn( "Vulkan: -VKDRAWCRUMBS: a breadcrumb around every draw and dispatch (slower; DGC batches count as one)." );
         if ( !VkCaps().BufferMarkerAMD ) return;
         VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bi.size = kMarkerSlots * sizeof( uint32_t );
@@ -558,6 +581,11 @@ namespace VulkanRhi {
         // Checkpoint markers are opaque pointers: 2 * slot + 1 = begun, + 2 = ended.
         if ( VkCaps().DiagnosticCheckpointsNV ) vkCmdSetCheckpointNV( cmd, reinterpret_cast<const void*>( uintptr_t( slot ) * 2 + 1 ) );
         return slot;
+    }
+
+    const wchar_t* DeviceImpl::InternName( const wchar_t* name ) {
+        std::lock_guard<std::mutex> lock( m_NameMutex );
+        return m_Names.emplace( name ? name : L"" ).first->c_str();
     }
 
     void DeviceImpl::EndScopeMarker( VkCommandBuffer cmd, uint32_t slot ) {
@@ -598,8 +626,9 @@ namespace VulkanRhi {
 
         if ( !m_MarkerCpu ) return;
         // Scopes whose begin landed but whose end did not: what the GPU was inside when it stopped.
-        constexpr uint32_t kWindow = 4096;   // only the most recent markers; older ring slots may hold stale values
-        constexpr size_t kCompletedShown = 6;
+        constexpr uint32_t kWindow = kMarkerSlots / 2;   // only the most recent markers; older ring slots may hold stale values
+        constexpr size_t kCompletedShown = 12;
+        constexpr size_t kOpenShown = 24;   // with draw crumbs many draws are in flight; the newest ones matter
         const uint32_t next = m_NextMarker.load();
         const uint32_t count = std::min( next, kWindow );
         std::vector<uint32_t> open, completed;
@@ -615,8 +644,10 @@ namespace VulkanRhi {
             Logging::Wrn( "Vulkan GPU scope: none open — the GPU stopped outside any marker (or after the last one above)." );
             return;
         }
-        for ( uint32_t slot : open )
-            Logging::Err( "Vulkan GPU scope STILL OPEN:   {}", name( slot ) );
+        if ( open.size() > kOpenShown )
+            Logging::Err( "Vulkan GPU scope STILL OPEN:   ... {} older ones not shown", open.size() - kOpenShown );
+        for ( size_t i = open.size() > kOpenShown ? open.size() - kOpenShown : 0; i < open.size(); ++i )
+            Logging::Err( "Vulkan GPU scope STILL OPEN:   {}", name( open[i] ) );
     }
 
     bool DeviceImpl::CreateBindlessLayout() {
@@ -795,10 +826,12 @@ namespace VulkanRhi {
         VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer( slot->Cmd, &bi );
+        const uint32_t marker = BeginScopeMarker( slot->Cmd, L"Initial image layouts" );
         VkDependencyInfo dep = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
         dep.imageMemoryBarrierCount = static_cast<uint32_t>( m_InitBarriers.size() );
         dep.pImageMemoryBarriers = m_InitBarriers.data();
         vkCmdPipelineBarrier2( slot->Cmd, &dep );
+        EndScopeMarker( slot->Cmd, marker );
         vkEndCommandBuffer( slot->Cmd );
         m_InitBarriers.clear();
         slot->Serial = serial;
@@ -994,6 +1027,15 @@ namespace VulkanRhi {
         if ( IsTypeless( desc->Format ) ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         if ( CheckResult( vkCreateImage( Vk(), &ii, nullptr, &r->m_Image ), "vkCreateImage (placed)" ) ) return E_OUTOFMEMORY;
+        VkMemoryRequirements req = {};
+        vkGetImageMemoryRequirements( Vk(), r->m_Image, &req );
+        if ( offset + req.size > h->m_Size || ( req.alignment && offset % req.alignment ) ) {
+            Logging::Err( "Vulkan: placed image {}x{} ({} bytes, align {}) does not fit the heap at offset {} (heap {} bytes).",
+                ii.extent.width, ii.extent.height, req.size, req.alignment, offset, h->m_Size );
+            vkDestroyImage( Vk(), r->m_Image, nullptr );
+            r->m_Image = VK_NULL_HANDLE;
+            return E_INVALIDARG;
+        }
         if ( CheckResult( vmaBindImageMemory2( m_Allocator, h->m_Allocation, offset, r->m_Image, nullptr ), "vmaBindImageMemory2" ) ) {
             vkDestroyImage( Vk(), r->m_Image, nullptr );
             r->m_Image = VK_NULL_HANDLE;

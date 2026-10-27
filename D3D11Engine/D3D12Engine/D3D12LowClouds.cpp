@@ -130,6 +130,7 @@ void D3D12GraphicsEngine::GenerateLowClouds() {
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         skyHandle = builder.CreateTexture( { width, height, static_cast<int>( DXGI_FORMAT_R16G16B16A16_FLOAT ), L"SkyLowCloudLayer", 1u },
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        builder.Read( ImportSceneDepth( graph ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         builder.MarkExternalEffect();
 
         pass.m_executeCallback = [this, width, height, layerHandle, depthHandle, skyHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
@@ -141,7 +142,6 @@ void D3D12GraphicsEngine::GenerateLowClouds() {
 
             // The depth buffer leaves its DSV binding to be read by the march
             cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-            TransitionSceneDepth( cmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 
             const UINT consts[4] = { m_DepthSrvSlot, layer->GetUavSlot(), depth->GetUavSlot(), skyLayer->GetUavSlot() };
             cmdList.SetComputeRootSignature( m_Pipelines.LowClouds.GenerateRootSig.Get() );
@@ -181,20 +181,17 @@ void D3D12GraphicsEngine::AddLowCloudCompositePass( D3D12RenderGraph& graph ) {
     if ( !m_Pipelines.LowClouds.CompositePSO || !m_SceneColor || !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX ) return;
 
     const std::array<UINT, 4> consts = { m_LowCloudLayerSrvSlot, m_LowCloudDepthSrvSlot, m_SkyLowCloudSrvSlot, m_DepthSrvSlot };
-    graph.AddPass( RG_PASS_NAME( "Low Cloud Composite" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME( "Low Cloud Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        builder.Write( ImportSceneColor( graph ), D3D12_RESOURCE_STATE_RENDER_TARGET );
+        builder.Read( ImportSceneDepth( graph ), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
         pass.m_executeCallback = [this, consts]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             DX_ZONE( cmdList.Get(), "Low cloud composite" );
-            if ( m_SceneColorInPixelState ) {
-                cmdList.TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-                m_SceneColorInPixelState = false;
-            }
 
             const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
             const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
             cmdList.RSSetViewports( 1, &vp );
             cmdList.RSSetScissorRects( 1, &sc );
             cmdList.OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );   // depth is read as an SRV
-            TransitionSceneDepth( cmdList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
             cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
             cmdList.IASetVertexBuffers( 0, 0, nullptr );
 

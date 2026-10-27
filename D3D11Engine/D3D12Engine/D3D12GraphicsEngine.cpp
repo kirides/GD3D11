@@ -14,6 +14,8 @@
 #include "../DXGIHelpers.h"
 #include "../WindAnimation.h"
 #include "../GMeshSimple.h"
+#include "../Toolbox.h"
+#include <wincodec.h>
 
 #include "D3D12TracyDebug.h"
 #include "../VulkanEngine/VulkanRhi.h"
@@ -28,8 +30,11 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12VobArena.h"
 #include "D3D12GpuScene.h"
 #include "D3D12GpuWorld.h"
+#include "D3D12HeapCheck.h"
+#include "../RHI/GpuDebug.h"
 #include "D3D12MeshArena.h"
 #include "D3D12RayTracing.h"
+#include "D3D12RenderGraph.h"
 #include "../WorldObjects.h"
 #include "../MorphGpu.h"
 #include "../MaterialFx.h"
@@ -38,7 +43,6 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
     static constexpr UINT64 kCopyBatchFlushThresholdBytes = 32ull * 1024 * 1024;
-    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
     constexpr UINT kSrvHeapCapacity = 65536;
     // The display chain reads its source from both pixel shaders (SMAA, sharpen) and compute (the underwater
     // blur), so the scratches take one combined read state rather than a per-pass one.
@@ -138,6 +142,7 @@ XRESULT D3D12GraphicsEngine::Init() {
     m_DeviceCapabilities.EnhancedBarriers = caps.EnhancedBarriers;
     m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = caps.TypedUAVLoadAdditionalFormats;
     m_DeviceCapabilities.RayQuery = caps.RayQuery;
+    m_DeviceCapabilities.TransientAliasing = caps.VendorId != 0x10DE;
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
 
     if ( !CreateUploadObjects() ) {
@@ -152,12 +157,27 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create SRV heap." );
         return XR_FAILED;
     }
+    // Before any shader compiles: GD_HEAP_CHECK is a shader define.
+    if ( GpuDebug::HeapCheck() ) {
+        if ( !caps.ShaderStoresAllStages ) {
+            Logging::Wrn( "GPU heap check: the device can't write buffers from vertex/pixel shaders; the check stays off." );
+        } else {
+            m_HeapCheck = std::make_unique<D3D12HeapCheck>();
+            if ( m_HeapCheck->Init( m_Rhi.Get(), GetSrvCpuHandle( D3D12HeapCheck::kReportSlot ), GetSrvCpuHandle( D3D12HeapCheck::kLiveSlot ), kBackBufferMax ) ) {
+                std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+                m_HeapCheck->SetLiveRange( 0, m_SrvAllocated );
+            } else {
+                m_HeapCheck.reset();
+            }
+        }
+        D3D12ShaderBackend::SetHeapCheck( m_HeapCheck != nullptr );
+    }
     if ( !m_TexturePool.Attach( *this ) ) {
         // Non-fatal: nothing consumes the pool yet (see D3D12RenderGraph.h), so a failure here just means
         // that infrastructure stays unavailable until the next Init(). Nothing in today's frame depends on it.
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the pooled-render-target RTV heap." );
     }
-    if ( !m_AliasArena.Attach( *this ) ) {
+    if ( !m_AliasArena.Attach( *this, Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseTransientAliasing ) ) {
         // Non-fatal for the same reason: no pass constructs a D3D12RenderGraph yet (see D3D12RenderGraph.h).
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the render-graph aliasing arena." );
     }
@@ -195,7 +215,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the HDR scanout encode pipeline; falling back to SDR output." );
         m_HdrOutputActive = false;
         m_HdrEncodePQ = false;
-        m_Pipelines.DisplayFormat = kBackBufferFormat;
+        m_Pipelines.DisplayFormat = m_Pipelines.SwapchainFormat = kSdrBackBufferFormat;
     }
     if ( !m_Pipelines.CreateUI() || !CreateUIVertexBuffers() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline." );
@@ -938,7 +958,9 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 	m_SrvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	static_assert( kMaterialFxTableSlot == kSrvHeapCapacity - 1, "the MaterialFx table owns the heap's last slot" );
 	static_assert( kSrvHeapCapacity - 1 <= MaterialFx::kDiffuseSlotMask, "packed diffuse indices hold 16-bit slots" );
-	m_SrvHeapCapacity = kSrvHeapCapacity - 1;
+	static_assert( D3D12HeapCheck::kReportSlot == kSrvHeapCapacity - kReservedTopSlots && D3D12HeapCheck::kLiveSlot == kSrvHeapCapacity - 2
+		&& D3D12HeapCheck::kHeapSize == kSrvHeapCapacity, "heap-check slots sit just below the MaterialFx table" );
+	m_SrvHeapCapacity = kSrvHeapCapacity - kReservedTopSlots;
 	m_SrvAllocated = 0;
 	return CreateMaterialFxTable();
 }
@@ -1016,6 +1038,7 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 	if ( !m_FreeSrvSlots.empty() ) {
 		UINT slot = m_FreeSrvSlots.back();
 		m_FreeSrvSlots.pop_back();
+		if ( m_HeapCheck ) m_HeapCheck->SetLive( slot, true );
 		return slot;
 	}
 
@@ -1024,6 +1047,7 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 		Logging::Wrn( "D3D12: SRV heap exhausted ({} descriptors).", m_SrvHeapCapacity );
 		return UINT_MAX;
 	}
+	if ( m_HeapCheck ) m_HeapCheck->SetLive( m_SrvAllocated, true );
 	return m_SrvAllocated++;
 }
 
@@ -1036,6 +1060,7 @@ UINT D3D12GraphicsEngine::AllocateSrvRange( UINT count ) {
 	}
 	const UINT base = m_SrvAllocated;
 	m_SrvAllocated += count;
+	if ( m_HeapCheck ) m_HeapCheck->SetLiveRange( base, count );
 	return base;
 }
 
@@ -1072,6 +1097,7 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	device->CreateShaderResourceView( m_WhiteTexture->GetResource(), &nullDesc, cpuHandle );
 
 	m_FreeSrvSlots.push_back( slot );
+	if ( m_HeapCheck ) m_HeapCheck->SetLive( slot, false );
 	if ( m_GpuScene ) m_GpuScene->OnSrvSlotFreed( slot );
 	if ( m_GpuWorld ) m_GpuWorld->OnSrvSlotFreed( slot );
 }
@@ -1384,7 +1410,7 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 	}
 	m_SceneColor->SetName( kSceneColorFormat == DXGI_FORMAT_R11G11B10_FLOAT
 		? L"SceneColorHDR(R11G11B10)" : L"SceneColorHDR(R16F)" );
-	m_SceneColorInPixelState = false;
+	m_SceneColorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
 	// RTV in the extra heap slot (index kBackBufferMax, past the swapchain RTVs - the heap always reserves
 	// the max slot count regardless of the actually configured kBackBufferCount, so this offset never moves).
@@ -1410,13 +1436,10 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 
 
 void D3D12GraphicsEngine::BindSceneColorTarget() {
-	// Make the HDR scene-color target the world pass's render target (+ keep the shared depth buffer). Transitions
-	// it back from PIXEL_SHADER_RESOURCE (last frame's resolve left it there) to RENDER_TARGET when needed.
+	// Make the HDR scene-color target the world pass's render target (+ keep the shared depth buffer), moving it
+	// back to RENDER_TARGET from wherever the last reader left it (last frame's resolve: PIXEL_SHADER_RESOURCE).
 	if ( !m_SceneColor || !m_CmdList ) return;
-	if ( m_SceneColorInPixelState ) {
-		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-		m_SceneColorInPixelState = false;
-	}
+	TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	// A narrower read state (a copy source, FSR3's exact compute read) can't back a DSV; widen it.
 	if ( m_DepthState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_READ );
 	const D3D12_CPU_DESCRIPTOR_HANDLE dsv = SceneDsv();
@@ -1440,6 +1463,28 @@ bool D3D12GraphicsEngine::SceneDepthTransition( D3D12_RESOURCE_STATES access, Rh
 void D3D12GraphicsEngine::TransitionSceneDepth( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES access, bool exact ) {
 	Rhi::ResourceTransition t;
 	if ( SceneDepthTransition( access, t, exact ) ) cmdList->TransitionBarrier( t.Resource, t.Before, t.After );
+}
+
+bool D3D12GraphicsEngine::SceneColorTransition( D3D12_RESOURCE_STATES state, Rhi::ResourceTransition& out,
+	D3D12_BARRIER_SYNC syncAfter ) {
+	if ( !m_SceneColor || state == m_SceneColorState ) return false;
+	out = { m_SceneColor.Get(), m_SceneColorState, state };
+	out.SyncAfter = syncAfter;
+	m_SceneColorState = state;
+	return true;
+}
+
+void D3D12GraphicsEngine::TransitionSceneColor( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES state, D3D12_BARRIER_SYNC syncAfter ) {
+	Rhi::ResourceTransition t;
+	if ( SceneColorTransition( state, t, syncAfter ) ) cmdList->TransitionBarriers( &t, 1 );
+}
+
+uint32_t D3D12GraphicsEngine::ImportSceneColor( D3D12RenderGraph& graph ) {
+	return graph.ImportResource( L"SceneColor", m_SceneColor.Get(), &m_SceneColorState );
+}
+
+uint32_t D3D12GraphicsEngine::ImportSceneDepth( D3D12RenderGraph& graph ) {
+	return graph.ImportResource( L"SceneDepth", m_DepthBuffer.Get(), &m_DepthState, m_DepthReadState );
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::SceneDsv() const {
@@ -1568,10 +1613,7 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	if ( !m_SceneColor || !m_Pipelines.Tonemap.PSO || !m_Pipelines.Tonemap.RootSig || !m_CmdList ) return;
 	DX_ZONE( m_CmdList.Get(), "Tonemap resolve (HDR->display)" );
 
-	if ( !m_SceneColorInPixelState ) {
-		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		m_SceneColorInPixelState = true;
-	}
+	TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 
 	// Nothing lives in the scratches yet this frame, so this is the safe spot to initialize fresh ones.
 	if ( m_LdrScratchNeedsDiscard && m_LdrCopyReady ) {
@@ -1645,7 +1687,7 @@ void D3D12GraphicsEngine::DetectHdrOutputCapability() {
 	m_HdrOutputActive = false;
 	m_HdrEncodePQ = false;
 	m_HdrMonitorMaxNits = m_HdrMonitorMinNits = m_HdrMonitorMaxFullFrameNits = 0.0f;
-	m_Pipelines.DisplayFormat = kBackBufferFormat;
+	m_Pipelines.DisplayFormat = m_Pipelines.SwapchainFormat = kSdrBackBufferFormat;
 
 	if ( !Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor ) return;
 
@@ -1657,6 +1699,7 @@ void D3D12GraphicsEngine::DetectHdrOutputCapability() {
 	}
 
 	m_Pipelines.DisplayFormat = kHdrDisplayFormat;
+	m_Pipelines.SwapchainFormat = kHdrBackBufferFormat;
 	Logging::Inf( "D3D12: HDR output enabled. Monitor reports {} nits peak, {} nits full-frame, {} nits black.",
 		m_HdrMonitorMaxNits, m_HdrMonitorMaxFullFrameNits, m_HdrMonitorMinNits );
 }
@@ -1979,7 +2022,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     scd.Width = static_cast<UINT>( size.x );
     scd.Height = static_cast<UINT>( size.y );
     scd.BufferCount = kBackBufferCount;
-    scd.Format = kBackBufferFormat;
+    scd.Format = m_Pipelines.SwapchainFormat;
     scd.Flags = ( m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0 )
         | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     const HRESULT hr = m_Rhi->CreateSwapchain( scd, m_SwapChain.ReleaseAndGetAddressOf() );
@@ -2194,6 +2237,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( FAILED( hr ) ) return XR_FAILED;
     m_CmdList.ResetStats();
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
+    if ( m_HeapCheck ) m_HeapCheck->BeginFrame( m_CmdList, m_FrameIndex );
 
     m_CmdList->TransitionBarrier( m_BackBuffers[m_BackBufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
     UploadMaterialFxTable();
@@ -2280,7 +2324,14 @@ GraphicsEventRecord D3D12GraphicsEngine::RecordGraphicsEvent( GraphicsEventName 
 
 XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
-    FlushUI2D();
+    {
+        DX_ZONE( m_CmdList.Get(), "UI 2D flush (end of frame)" );
+        FlushUI2D();
+    }
+    if ( m_SaveScreenshotNextFrame ) {
+        m_SaveScreenshotNextFrame = false;
+        SaveScreenshot();
+    }
     Present();
     m_FrameOpen = false;
     m_PresentPending = false;
@@ -2536,12 +2587,16 @@ XRESULT D3D12GraphicsEngine::Present() {
 
     // Brightness/contrast over the finished image (scene + Gothic's 2D UI/HUD), before the ImGui overlay —
     // the same point D3D11 applies it. No-op at the default 1.0/1.0.
-    ApplyDisplayGammaCorrection();
+    {
+        DX_ZONE( m_CmdList.Get(), "Display gamma correction" );
+        ApplyDisplayGammaCorrection();
+    }
 
     // Draw the ImGui overlay last, on top of the 2D UI, while the backbuffer is still a render target.
     // The SRV heap is bound (OnBeginFrame); re-bind the RTV defensively in case a draw changed it.
     if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
         TracyD3D12ZoneCGX( m_CmdList.Get(), "ImGui" );
+        DX_ZONE( m_CmdList.Get(), "ImGui" );
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
         m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
         if ( m_Api == Rhi::Backend::Vulkan ) {
@@ -2567,7 +2622,10 @@ XRESULT D3D12GraphicsEngine::Present() {
     // Submit any batched texture/buffer uploads accumulated this frame and insert the single
     // copy->direct cross-queue wait BEFORE the frame's graphics execute, so everything sampled below
     // is ready. Cheap no-op when nothing was cached in.
-    FlushTextureUploads();
+    {
+        DX_ZONE( m_CmdList.Get(), "Texture upload flush (end of frame)" );
+        FlushTextureUploads();
+    }
 
     if ( FAILED( m_CmdList->Close() ) ) return XR_FAILED;
 
@@ -2908,20 +2966,6 @@ void D3D12GraphicsEngine::RestoreFrameRenderTarget() {
 }
 
 
-/** Unpacks one R10G10B10A2_UNORM texel (the swapchain/tonemap-target format) into BGRA8 — the 32bpp
-    layout MyDirectDrawSurface7::Lock's DDLOCK_READONLY path hands to Gothic (masks 0x00FF0000/0x0000FF00/
-    0x000000FF for R/G/B, alpha unused). 10->8 bit is a rounded scale; plenty for a save thumbnail. */
-static void UnpackR10G10B10A2ToBGRA8( uint32_t packed, byte* dstBGRA ) {
-    const uint32_t r10 = packed & 0x3FFu;
-    const uint32_t g10 = (packed >> 10) & 0x3FFu;
-    const uint32_t b10 = (packed >> 20) & 0x3FFu;
-    dstBGRA[0] = static_cast<byte>( (b10 * 255u + 511u) / 1023u );
-    dstBGRA[1] = static_cast<byte>( (g10 * 255u + 511u) / 1023u );
-    dstBGRA[2] = static_cast<byte>( (r10 * 255u + 511u) / 1023u );
-    dstBGRA[3] = 255;
-}
-
-
 /** Returns the data of the backbuffer (savegame thumbnail / screenshot). See D3D11GraphicsEngine's
     counterpart for the calling convention: MyDirectDrawSurface7::Lock calls OnStartWorldRendering() right
     before this to force a fresh world render, then reads *data as a top-down 32bpp BGRA8 buffer. */
@@ -2945,9 +2989,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     FlushCommandListSync();
 
     // Re-tonemap the (now GPU-resident) HDR scene into a fresh render target sized to what the caller
-    // asked for. We deliberately do NOT copy the real swapchain backbuffer: it's DXGI_FORMAT_R10G10B10A2_
-    // UNORM (kBackBufferFormat) which the Tonemap PSO is baked for, but Gothic's Lock() consumer expects a
-    // simple 32bpp BGRA8 buffer, and a thumbnail additionally needs downscaling to 256x256 — both are
+    // asked for. We deliberately do NOT copy the real swapchain backbuffer: with HDR output it isn't BGRA8,
+    // which Gothic's Lock() consumer expects, and a thumbnail additionally needs downscaling to 256x256 — both are
     // exactly what one more tonemap draw at a smaller viewport gives us for free (mirrors D3D11's
     // GetBackbufferData drawing HDRBackBuffer through PS_PFX_GammaCorrectInv into a differently-sized RT).
     D3D12MA::ALLOCATION_DESC allocDesc = {};
@@ -2959,13 +3002,13 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     td.Height = static_cast<UINT>( buffersize.y );
     td.DepthOrArraySize = 1;
     td.MipLevels = 1;
-    td.Format = kBackBufferFormat;
+    td.Format = kSdrBackBufferFormat;   // BGRA8, the layout MyDirectDrawSurface7::Lock hands to Gothic
     td.SampleDesc.Count = 1;
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
     D3D12_CLEAR_VALUE clearValue = {};
-    clearValue.Format = kBackBufferFormat;
+    clearValue.Format = kSdrBackBufferFormat;
 
     Microsoft::WRL::ComPtr<Rhi::Resource> captureTex;
     if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &td, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue, captureTex.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
@@ -2988,8 +3031,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     device->CreateRenderTargetView( captureTex.Get(), nullptr, captureRtv );
     m_CmdList.InvalidateRenderTargets();
 
-    // m_SceneColor was left in PIXEL_SHADER_RESOURCE state by OnStartWorldRendering's ResolveSceneToBackBuffer
-    // call (now genuinely true on the GPU after the flush above) — safe to sample without re-transitioning.
+    // ResolveSceneToBackBuffer normally left the scene color in PIXEL_SHADER_RESOURCE already.
+    TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
     m_CmdList->OMSetRenderTargets( 1, &captureRtv, FALSE, nullptr );
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( buffersize.x ), static_cast<float>( buffersize.y ), 0.0f, 1.0f };
     const D3D12_RECT     sc = { 0, 0, buffersize.x, buffersize.y };
@@ -3065,12 +3108,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
         const uint8_t* srcRow = reinterpret_cast<const uint8_t*>( mapped );
         byte* dstRow = d;
         for ( int row = 0; row < buffersize.y; ++row ) {
-            const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>( srcRow );
-            byte* dstPixels = dstRow;
-            for ( int col = 0; col < buffersize.x; ++col ) {
-                UnpackR10G10B10A2ToBGRA8( srcPixels[col], dstPixels );
-                dstPixels += 4;
-            }
+            memcpy( dstRow, srcRow, static_cast<size_t>( buffersize.x ) * 4 );
+            for ( int col = 0; col < buffersize.x; ++col ) dstRow[col * 4 + 3] = 255;   // opaque, as before
             srcRow += footprint.Footprint.RowPitch;
             dstRow += static_cast<size_t>( buffersize.x ) * 4;
         }
@@ -3084,6 +3123,90 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     // The flushes above Reset the command list without leaving anything bound — rebind the swapchain
     // backbuffer so Gothic's subsequent 2D UI draws (and Present's ImGui pass) land correctly.
     RestoreFrameRenderTarget();
+}
+
+
+XRESULT D3D12GraphicsEngine::OnKeyDown( unsigned int key ) {
+    switch ( key ) {
+#ifndef PUBLIC_RELEASE
+    case VK_NUMPAD0:
+        Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Reloading shaders..." );
+        ReloadShaders();
+        break;
+#endif
+    case VK_NUMPAD7:
+        if ( Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys )
+            m_SaveScreenshotNextFrame = true;
+        break;
+    default:
+        break;
+    }
+    return XR_SUCCESS;
+}
+
+
+/** Numpad screenshot: SDR re-tonemap via GetBackbufferData, encoded as 95% JPEG with WIC (like D3D11). */
+void D3D12GraphicsEngine::SaveScreenshot() {
+    if ( !Toolbox::FolderExists( "system\\Screenshots" ) && !Toolbox::CreateDirectoryRecursive( "system\\Screenshots" ) )
+        return;
+
+    byte* data = nullptr;
+    INT2 size;
+    int pixelSize = 4;
+    GetBackbufferData( false, &data, size, pixelSize );
+    if ( !data ) return;
+    std::unique_ptr<byte[]> pixels( data );
+
+    char date[50], time[50];
+    GetDateFormat( LOCALE_SYSTEM_DEFAULT, 0, nullptr, "yyyy-MM-dd", date, 50 );
+    GetTimeFormat( LOCALE_SYSTEM_DEFAULT, 0, nullptr, "hh-mm-ss", time, 50 );
+    const std::string name = "system\\screenshots\\GD3D11_" + std::string( date ) + "__" + std::string( time ) + ".jpg";
+
+    const HRESULT coHr = CoInitializeEx( nullptr, COINIT_MULTITHREADED );
+    {
+        ComPtr<IWICImagingFactory> factory;
+        ComPtr<IWICBitmap> bitmap;
+        ComPtr<IWICFormatConverter> converter;
+        ComPtr<IWICStream> stream;
+        ComPtr<IWICBitmapEncoder> encoder;
+        ComPtr<IWICBitmapFrameEncode> frame;
+        ComPtr<IPropertyBag2> props;
+        WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
+        const std::wstring wname = Toolbox::ToWideChar( name );
+        const UINT stride = static_cast<UINT>( size.x ) * 4;
+
+        bool ok = SUCCEEDED( CoCreateInstance( CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS( &factory ) ) )
+            && SUCCEEDED( factory->CreateBitmapFromMemory( size.x, size.y, GUID_WICPixelFormat32bppBGRA, stride, stride * size.y, pixels.get(), &bitmap ) )
+            && SUCCEEDED( factory->CreateFormatConverter( &converter ) )
+            && SUCCEEDED( converter->Initialize( bitmap.Get(), GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom ) )
+            && SUCCEEDED( factory->CreateStream( &stream ) )
+            && SUCCEEDED( stream->InitializeFromFilename( wname.c_str(), GENERIC_WRITE ) )
+            && SUCCEEDED( factory->CreateEncoder( GUID_ContainerFormatJpeg, nullptr, &encoder ) )
+            && SUCCEEDED( encoder->Initialize( stream.Get(), WICBitmapEncoderNoCache ) )
+            && SUCCEEDED( encoder->CreateNewFrame( &frame, &props ) );
+        if ( ok ) {
+            PROPBAG2 option = {};
+            option.pstrName = const_cast<wchar_t*>( L"ImageQuality" );
+            VARIANT quality = {};
+            quality.vt = VT_R4;
+            quality.fltVal = 0.95f;
+            props->Write( 1, &option, &quality );
+            ok = SUCCEEDED( frame->Initialize( props.Get() ) )
+                && SUCCEEDED( frame->SetSize( size.x, size.y ) )
+                && SUCCEEDED( frame->SetPixelFormat( &format ) )
+                && SUCCEEDED( frame->WriteSource( converter.Get(), nullptr ) )
+                && SUCCEEDED( frame->Commit() )
+                && SUCCEEDED( encoder->Commit() );
+        }
+        if ( !ok ) {
+            Logging::Err( "Could not save screenshot to: {}", name );
+            return;
+        }
+    }
+    if ( SUCCEEDED( coHr ) ) CoUninitialize();
+
+    Logging::Inf( "Saving screenshot to: {}", name );
+    Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Screenshot taken: " + name );
 }
 
 
@@ -3102,7 +3225,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     const UINT swapChainFlags = ( m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0 )
         | ( m_FrameLatencyWaitableObject ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0 );
     HRESULT hr = m_SwapChain->ResizeBuffers( kBackBufferCount,
-        static_cast<UINT>( size.x ), static_cast<UINT>( size.y ), kBackBufferFormat, swapChainFlags );
+        static_cast<UINT>( size.x ), static_cast<UINT>( size.y ), m_Pipelines.SwapchainFormat, swapChainFlags );
     if ( FAILED( hr ) ) {
         Logging::Wrn( "D3D12 ResizeBuffers failed (0x{:x}).", static_cast<uint32_t>( hr ) );
         return false;

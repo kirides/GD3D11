@@ -71,6 +71,9 @@ public:
     /** Forget the OM binding. RTV/DSV contents are captured at record time, so rewriting one in place needs a rebind. */
     void InvalidateRenderTargets() noexcept { m_RTValid = false; }
 
+    /** True if the last OMSetRenderTargets bound a DSV. */
+    bool HasDepthTarget() const noexcept { return m_RTValid && m_HaveDsv; }
+
     /** Forget the IA views and root arguments, which an indirect argument stream can overwrite. */
     void InvalidateIndirectWritableState() noexcept {
         m_IBValid = false;

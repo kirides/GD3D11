@@ -2,6 +2,8 @@
 #include "D3D12Barrier.h"
 #include "../Logger.h"
 #include <d3dx12_barriers.h>
+#include <algorithm>
+#include <mutex>
 
 // Call sites think only in legacy D3D12_RESOURCE_STATES; enhanced-barrier translation and
 // buffer-vs-texture dispatch happen here. Where a legacy state doesn't map cleanly onto one
@@ -51,6 +53,88 @@ namespace {
         { D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_BARRIER_SYNC_RESOLVE,
             D3D12_BARRIER_ACCESS_RESOLVE_SOURCE, D3D12_BARRIER_LAYOUT_RESOLVE_SOURCE },
     };
+
+    /** Sync scopes D3D12 accepts alongside one access bit (Enhanced Barriers spec, as in NVRHI). Errs narrow:
+        a missing bit only widens a barrier to SYNC_ALL, an extra one would let an illegal barrier through. */
+    constexpr UINT CompatibleSync( UINT accessBit ) {
+        constexpr UINT kShading = D3D12_BARRIER_SYNC_VERTEX_SHADING | D3D12_BARRIER_SYNC_PIXEL_SHADING
+            | D3D12_BARRIER_SYNC_NON_PIXEL_SHADING | D3D12_BARRIER_SYNC_COMPUTE_SHADING | D3D12_BARRIER_SYNC_ALL_SHADING
+            | D3D12_BARRIER_SYNC_DRAW;
+        constexpr UINT kAll = D3D12_BARRIER_SYNC_ALL;
+        switch ( accessBit ) {
+        case D3D12_BARRIER_ACCESS_VERTEX_BUFFER:
+        case D3D12_BARRIER_ACCESS_STREAM_OUTPUT:
+            return kAll | D3D12_BARRIER_SYNC_VERTEX_SHADING | D3D12_BARRIER_SYNC_DRAW | D3D12_BARRIER_SYNC_ALL_SHADING;
+        case D3D12_BARRIER_ACCESS_CONSTANT_BUFFER:
+            return kAll | kShading;
+        case D3D12_BARRIER_ACCESS_INDEX_BUFFER:
+            return kAll | D3D12_BARRIER_SYNC_INDEX_INPUT | D3D12_BARRIER_SYNC_DRAW;
+        case D3D12_BARRIER_ACCESS_RENDER_TARGET:
+            return kAll | D3D12_BARRIER_SYNC_DRAW | D3D12_BARRIER_SYNC_RENDER_TARGET;
+        case D3D12_BARRIER_ACCESS_UNORDERED_ACCESS:
+            return kAll | kShading | D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW | D3D12_BARRIER_SYNC_RAYTRACING
+                | D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO;
+        case D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE:
+        case D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ:
+            return kAll | D3D12_BARRIER_SYNC_DRAW | D3D12_BARRIER_SYNC_DEPTH_STENCIL;
+        case D3D12_BARRIER_ACCESS_SHADER_RESOURCE:
+            return kAll | kShading | D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE;
+        case D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT:
+            return kAll | D3D12_BARRIER_SYNC_EXECUTE_INDIRECT;
+        case D3D12_BARRIER_ACCESS_COPY_DEST:
+        case D3D12_BARRIER_ACCESS_COPY_SOURCE:
+            return kAll | D3D12_BARRIER_SYNC_COPY;
+        case D3D12_BARRIER_ACCESS_RESOLVE_DEST:
+        case D3D12_BARRIER_ACCESS_RESOLVE_SOURCE:
+            return kAll | D3D12_BARRIER_SYNC_RESOLVE;
+        default:
+            return kAll;
+        }
+    }
+
+    /** True if every sync bit is legal with every access bit. NO_ACCESS pairs only with SYNC_NONE (COMMON). */
+    constexpr bool SyncFitsAccess( D3D12_BARRIER_SYNC sync, D3D12_BARRIER_ACCESS access ) {
+        if ( access == D3D12_BARRIER_ACCESS_NO_ACCESS ) return sync == D3D12_BARRIER_SYNC_NONE;
+        if ( sync == D3D12_BARRIER_SYNC_NONE ) return false;
+        for ( UINT bits = static_cast<UINT>( access ); bits != 0; bits &= bits - 1 ) {
+            if ( static_cast<UINT>( sync ) & ~CompatibleSync( bits & ( 0u - bits ) ) ) return false;
+        }
+        return true;
+    }
+
+    constexpr bool StateMapIsLegal() {
+        for ( const StateMapEntry& entry : kStateMap )
+            if ( !SyncFitsAccess( entry.Sync, entry.Access ) ) return false;
+        return true;
+    }
+    static_assert( StateMapIsLegal(), "kStateMap pairs a sync scope with an access type D3D12 rejects" );
+
+    /** Logs each distinct widened (sync, access) pair once, so a hint that can never be legal shows up. */
+    void LogWidenedSync( D3D12_BARRIER_SYNC sync, D3D12_BARRIER_ACCESS access ) {
+#ifdef DEBUG_D3D11
+        static std::mutex mutex;
+        static std::pair<UINT, UINT> seen[32];
+        static UINT seenCount = 0;
+        const std::pair<UINT, UINT> key( static_cast<UINT>( sync ), static_cast<UINT>( access ) );
+        std::lock_guard<std::mutex> lock( mutex );
+        if ( seenCount == std::size( seen ) || std::find( seen, seen + seenCount, key ) != seen + seenCount ) return;
+        seen[seenCount++] = key;
+        Logging::Inf( "D3D12Barrier: sync 0x{:x} is illegal with access 0x{:x}; widened to SYNC_ALL.", key.first, key.second );
+#else
+        (void)sync;
+        (void)access;
+#endif
+    }
+
+    /** The caller's hint, else the table's sync; SYNC_ALL when D3D12 would reject the pair. Combined legacy masks
+        (VB + SRV, depth read + SRV, SRV + copy source) OR rows whose scopes don't mix, and hints aren't checked. */
+    D3D12_BARRIER_SYNC LegalSync( D3D12_BARRIER_SYNC tableSync, D3D12_BARRIER_SYNC hint, D3D12_BARRIER_ACCESS access ) {
+        if ( access == D3D12_BARRIER_ACCESS_NO_ACCESS ) return tableSync;   // COMMON: SYNC_NONE, never hinted
+        const D3D12_BARRIER_SYNC sync = hint != kBarrierSyncUnspecified ? hint : tableSync;
+        if ( SyncFitsAccess( sync, access ) ) return sync;
+        LogWidenedSync( sync, access );
+        return D3D12_BARRIER_SYNC_ALL;
+    }
 
     /** Maps a legacy D3D12_RESOURCE_STATES mask to (sync, access, layout). D3D12_RESOURCE_STATE_COMMON
         (== PRESENT == 0) has no bits to look up and is special-cased. Returns false, leaving the
@@ -148,8 +232,8 @@ void D3D12Barriers::Transition( ID3D12GraphicsCommandList* list, ID3D12GraphicsC
             && MapResourceState( after, syncAfter, accessAfter, layoutAfter ) ) {
             // A caller hint narrows the table's conservative default sync scope only; access/layout
             // describe the resource state itself, not which stage performs it.
-            if ( syncBeforeHint != kBarrierSyncUnspecified ) syncBefore = syncBeforeHint;
-            if ( syncAfterHint != kBarrierSyncUnspecified ) syncAfter = syncAfterHint;
+            syncBefore = LegalSync( syncBefore, syncBeforeHint, accessBefore );
+            syncAfter = LegalSync( syncAfter, syncAfterHint, accessAfter );
             if ( IsBufferResource( resource ) ) {
                 CD3DX12_BUFFER_BARRIER bufferBarrier( syncBefore, syncAfter, accessBefore, accessAfter, resource );
                 CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_BUFFER_BARRIER*>( &bufferBarrier ) );
@@ -198,8 +282,8 @@ void TransitionBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCom
                 ok = false;
                 break;
             }
-            if ( t.SyncBefore != kBarrierSyncUnspecified ) syncBefore = t.SyncBefore;
-            if ( t.SyncAfter != kBarrierSyncUnspecified ) syncAfter = t.SyncAfter;
+            syncBefore = LegalSync( syncBefore, t.SyncBefore, accessBefore );
+            syncAfter = LegalSync( syncAfter, t.SyncAfter, accessAfter );
             if ( IsBufferResource( t.Resource ) ) {
                 bufferBarriers[numBuffer++] = CD3DX12_BUFFER_BARRIER( syncBefore, syncAfter, accessBefore, accessAfter, t.Resource );
             } else {
@@ -232,8 +316,8 @@ void TransitionBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCom
 void D3D12Barriers::UAV( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7, ID3D12Resource* resource,
     D3D12_BARRIER_SYNC syncHint ) {
     if ( list7 ) {
-        const D3D12_BARRIER_SYNC kSync = ( syncHint != kBarrierSyncUnspecified ) ? syncHint : D3D12_BARRIER_SYNC_ALL_SHADING;
         constexpr D3D12_BARRIER_ACCESS kAccess = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+        const D3D12_BARRIER_SYNC kSync = LegalSync( D3D12_BARRIER_SYNC_ALL_SHADING, syncHint, kAccess );
         if ( resource && IsBufferResource( resource ) ) {
             CD3DX12_BUFFER_BARRIER bufferBarrier( kSync, kSync, kAccess, kAccess, resource );
             CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_BUFFER_BARRIER*>( &bufferBarrier ) );
@@ -270,8 +354,8 @@ void UAVBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandLis
     if ( count == 0 ) return;
 
     if ( list7 ) {
-        const D3D12_BARRIER_SYNC kSync = ( syncHint != kBarrierSyncUnspecified ) ? syncHint : D3D12_BARRIER_SYNC_ALL_SHADING;
         constexpr D3D12_BARRIER_ACCESS kAccess = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+        const D3D12_BARRIER_SYNC kSync = LegalSync( D3D12_BARRIER_SYNC_ALL_SHADING, syncHint, kAccess );
         D3D12_TEXTURE_BARRIER textureBarriers[kMaxBatchedBarriers];
         D3D12_BUFFER_BARRIER bufferBarriers[kMaxBatchedBarriers];
         D3D12_GLOBAL_BARRIER globalBarriers[kMaxBatchedBarriers];

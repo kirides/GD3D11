@@ -233,15 +233,11 @@ void D3D12GraphicsEngine::RenderTAA() {
     {
         D3D12ResourceTransition pre[4];
         UINT n = 0;
-        if ( !m_SceneColorInPixelState ) {
-            pre[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-        }
+        if ( SceneColorTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[n] ) ) ++n;
         pre[n++] = { m_TaaHistory[readIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
         if ( SceneDepthTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[n] ) ) ++n;
         m_CmdList->TransitionBarriers( pre, n );
-        m_SceneColorInPixelState = true;
     }
 
     m_CmdList->SetPipelineState( m_Pipelines.Taa.PSO.Get() );
@@ -304,10 +300,11 @@ void D3D12GraphicsEngine::RenderTAA() {
     // Nothing downstream on this backend reads scene-colour alpha (bloom, luminance and the tonemap all take
     // .rgb), and the fog composition only preserves alpha rather than consuming it.
     {
-        m_CmdList->TransitionBarriers( {
-            { m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE },
-            { m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
-        } );
+        D3D12ResourceTransition toCopy[2] = { { m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COPY_SOURCE } };
+        UINT n = 1;
+        if ( SceneColorTransition( D3D12_RESOURCE_STATE_COPY_DEST, toCopy[n] ) ) ++n;
+        m_CmdList->TransitionBarriers( toCopy, n );
         m_CmdList->CopyResource( m_SceneColor.Get(), m_TaaHistory[writeIdx].Get() );
     }
 
@@ -325,12 +322,13 @@ void D3D12GraphicsEngine::RenderTAA() {
 
     // Rest states for the next frame: history back to UAV (both slots), scene colour back to RENDER_TARGET.
     {
-        m_CmdList->TransitionBarriers( {
+        D3D12ResourceTransition rest[3] = {
             { m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
             { m_TaaHistory[readIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-            { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET },
-        } );
-        m_SceneColorInPixelState = false;
+        };
+        UINT n = 2;
+        if ( SceneColorTransition( D3D12_RESOURCE_STATE_RENDER_TARGET, rest[n] ) ) ++n;
+        m_CmdList->TransitionBarriers( rest, n );
     }
 
     // Rebind the scene colour + depth for whatever comes next in the frame (bloom reads it as an SRV and

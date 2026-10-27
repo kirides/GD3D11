@@ -37,9 +37,7 @@ class zCVobLight;
     — Gothic's BeginScene/EndScene hooks, which fire every frame in the menu AND in-game:
       OnBeginFrame() begins the frame (reset, backbuffer -> render target, clear to a sentinel color)
       OnEndFrame()   ends the frame (render target -> present, execute, Present, fence-advance)
-    so a running game (even at the main menu) shows a solid "first-light" color. World / UI /
-    resource paths are still stubbed (safe no-ops) and land in later Phase-1/2 increments
-    (descriptors, upload ring, PSOs, DrawVertexArray, scene rendering).
+    so a running game (even at the main menu) shows a solid "first-light" color.
 
     D3D11 remains the default backend and the fallback: if device or swapchain creation fails,
     Engine::CreateGraphicsEngine keeps D3D11. */
@@ -50,6 +48,7 @@ struct GpuScenePointView;
 class D3D12GpuWorld;
 class D3D12MeshArena;
 class D3D12RayTracing;
+class D3D12HeapCheck;
 struct FrameSkelDraw;
 struct FrameAttachDraw;
 struct TransparentItem;
@@ -209,6 +208,7 @@ public:
         Binds the game's Gothic_XYZRHW_DIF_T1_Vertex buffer straight off the IA using the FF_VB_LAYOUT
         UI pipeline variant (no readback/conversion), falling back to a ring snapshot only when the
         current frame's copy of the ring-buffered D3D7 buffer is stale. */
+    XRESULT DrawScreenFade( void* camera ) override;
     XRESULT DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Records the currently-bound diffuse texture for the next 2D draw (SetTexture -> BindToSlot). */
@@ -279,6 +279,8 @@ void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory ite
         Re-tonemaps the just-rendered HDR scene into a CPU-readable 32bpp BGRA8 buffer at either 256x256
         (thumbnail) or full resolution. Caller owns *data (new[]'d) and must delete[] it. */
     void GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) override;
+    XRESULT OnKeyDown( unsigned int key ) override;
+    void SaveScreenshot();
 
 private:
     void QueueCleanupJob(std::move_only_function<void()> callback); // cleanup job runs after the calling frames fence value is completed.
@@ -302,6 +304,13 @@ private:
     // unless `exact`. SceneDepthTransition fills `out` and returns false when no barrier is needed.
     bool SceneDepthTransition( D3D12_RESOURCE_STATES access, Rhi::ResourceTransition& out, bool exact = false );
     void TransitionSceneDepth( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES access, bool exact = false );
+    // Scene color state, exact: SceneColorTransition fills `out` and returns false when it is already in `state`.
+    bool SceneColorTransition( D3D12_RESOURCE_STATES state, Rhi::ResourceTransition& out,
+        D3D12_BARRIER_SYNC syncAfter = Rhi::kBarrierSyncUnspecified );
+    void TransitionSceneColor( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES state,
+        D3D12_BARRIER_SYNC syncAfter = Rhi::kBarrierSyncUnspecified );
+    uint32_t ImportSceneColor( class D3D12RenderGraph& graph );   // RGResourceHandle tracked by m_SceneColorState
+    uint32_t ImportSceneDepth( class D3D12RenderGraph& graph );   // tracked by m_DepthState, reads widen to m_DepthReadState
     D3D12_CPU_DESCRIPTOR_HANDLE SceneDsv() const;   // the read-only view while the depth is in a read state
     void ResolveSceneToBackBuffer();  // tonemap the HDR scene onto the display target, then rebind it for the 2D UI
 
@@ -486,6 +495,8 @@ private:
 
     void InitGpuScopeMarkers();
 
+    bool m_SaveScreenshotNextFrame = false;   // set by the numpad hotkey, served at the end of the frame
+
     // Mid-frame synchronous flush for GetBackbufferData: closes + executes the currently-recorded m_CmdList
     // and blocks until the GPU has consumed it, then Resets the same allocator/list so recording can
     // continue for the rest of the frame. Unlike Present()/MoveToNextFrame() this does NOT transition the
@@ -514,7 +525,7 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Resource>       m_SceneColor;           // R16G16B16A16_FLOAT, resolution-sized
     D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferMax
     UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
-    bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
+    D3D12_RESOURCE_STATES m_SceneColorState = D3D12_RESOURCE_STATE_RENDER_TARGET;   // exact; see SceneColorTransition
     // Which RTV format/target DrawVertexArray is currently rendering into — true while the HDR scene-color
     // target is bound (BindSceneColorTarget, i.e. during OnStartWorldRendering incl. DrawSky), false once
     // ResolveSceneToBackBuffer/OnBeginFrame bind the swapchain backbuffer for the later 2D UI/HUD draws.
@@ -706,6 +717,8 @@ private:
     std::vector<UINT> m_FreeSrvSlots; // Recycled descriptor indices
     // The heap's last slot, kept out of the allocator: Shaders/D3D12/include/MaterialFx.hlsl reads it directly.
     static constexpr UINT kMaterialFxTableSlot = 65535;
+    // The two below it belong to D3D12HeapCheck (Shaders/D3D12/include/HeapCheck.hlsl), reserved whether it runs or not.
+    static constexpr UINT kReservedTopSlots = 3;
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxTable;    // DEFAULT, MaterialFx::Entry[kMaxSlots]
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxUpload;   // UPLOAD, one table per frame in flight
     uint8_t* m_MaterialFxUploadPtr = nullptr;
@@ -958,6 +971,7 @@ private:
     std::unique_ptr<D3D12MeshArena> m_AttachArena;
     // Inline ray tracing (water reflections, shadow mask); null without ray queries or when neither shader built.
     std::unique_ptr<D3D12RayTracing> m_RayTracing;
+    std::unique_ptr<D3D12HeapCheck> m_HeapCheck;   // -GPUHEAPCHECK only
     // This frame's ray-traced point shadows, decided before the light buffer is built
     bool m_RtPointShadowsActive = false;
     // Shadow-mask SRV the lit opaque passes read (UINT_MAX outside them); see BindFrameLights
@@ -1583,7 +1597,7 @@ private:
     UINT m_VelocityUavSlot = UINT_MAX;    // UAV the FillCameraVelocity compute pass writes through (bindless)
     UINT m_NormalSrvSlot = UINT_MAX;      // SRV for the debug overlay + future XeGTAO
     bool m_MotionResourcesReady = false;  // false disables the whole feature (prepass falls back to depth-only)
-    bool m_VelocityInPixelState = false;  // mirrors m_SceneColorInPixelState: tracks RT vs shader-read rest state
+    bool m_VelocityInPixelState = false;  // tracks RT vs shader-read rest state
     // The combined shader-read state m_VelocityBuffer rests in once FillCameraVelocity has run — the debug
     // overlay reads it from a pixel shader, TAA and FSR3 from compute. Named because FSR3 has to narrow it to
     // the plain NON_PIXEL state for the duration of its dispatch and put it back (see D3D12Fsr.cpp).

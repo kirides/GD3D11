@@ -40,7 +40,8 @@ public:
     // RTV heap sized like D3D12TexturePool's — a handful of transient targets per graph in practice.
     static constexpr UINT kMaxSlots = 64;
 
-    bool Attach( D3D12GraphicsEngine& engine );
+    /** aliasing=false: no heap; every name gets its own committed texture (FeatureSet.UseTransientAliasing). */
+    bool Attach( D3D12GraphicsEngine& engine, bool aliasing );
 
     /** {size, alignment} D3D12 would need for a texture matching this description, WITHOUT creating it
         — what D3D12RenderGraph's interval colorer sizes its packing against. */
@@ -104,6 +105,8 @@ private:
 
     std::vector<std::unique_ptr<Slot>> m_Slots;
     bool m_LoggedExhaustion = false;
+    bool m_Aliasing = true;
     UINT64 m_BumpOffset = 0;                            // next never-yet-claimed byte, for a NEW name only
-    std::unordered_map<std::wstring, UINT64> m_NamedRanges;   // name -> permanently-reserved offset (this epoch)
+    struct NamedRange { UINT64 Offset, Size; };
+    std::unordered_map<std::wstring, NamedRange> m_NamedRanges;   // name -> reserved range (this epoch)
 };

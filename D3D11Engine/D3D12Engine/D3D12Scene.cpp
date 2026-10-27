@@ -90,7 +90,6 @@ namespace {
         return reinterpret_cast<PFN_SERIALIZE_ROOT_SIG>( GetProcAddress( d3d12, "D3D12SerializeRootSignature" ) );
     }
 
-    // TODO: in the future make this depend on device capabilities.
     constexpr const char* Shadermodel_PS = "ps_6_6";
     constexpr const char* Shadermodel_VS = "vs_6_6";
     constexpr const char* Shadermodel_CS = "cs_6_6";
@@ -3363,6 +3362,8 @@ D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(con
     // Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
     m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || key.Material->HasAlphaTest();
     if ( m.AlphaTested ) m.Orm |= kBacklitFoliage;
+    // Waving materials take the per-material depth run too, never a merged command: their VS reads b6
+    m.AlphaTested |= MaterialFx::HasWaves( key.Material );
     m.Diffuse = PackMaterialFx( m.Diffuse, key.Material );
     return m;
 }

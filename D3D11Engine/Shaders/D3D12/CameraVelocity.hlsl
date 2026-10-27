@@ -34,7 +34,7 @@ void CSMain( uint3 tid : SV_DispatchThreadID )
     if ( tid.x >= TargetWidth || tid.y >= TargetHeight )
         return;
 
-    RWTexture2D<float2> velocity = ResourceDescriptorHeap[VelocityIndex];
+    RWTexture2D<float2> velocity = GD_HEAP( VelocityIndex );
 
     // Only fill what the prepass left untouched — a real velocity is a fraction of a screen, so anything at the
     // large negative sentinel is definitionally "nothing drew here". Testing one channel is enough (both are
@@ -43,7 +43,7 @@ void CSMain( uint3 tid : SV_DispatchThreadID )
     if ( existing.x > -1.0e3 )
         return;
 
-    Texture2D<float> depthTex = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float> depthTex = GD_HEAP( DepthIndex );
     float depth = depthTex[tid.xy].r;
 
     // Pixel centre -> UV -> NDC. The +0.5 matters: sampling the corner biases every velocity by half a texel,

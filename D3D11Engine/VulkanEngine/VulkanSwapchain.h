@@ -10,6 +10,8 @@ class VulkanDevice;
 
     Presentation needs one "render finished" semaphore per swapchain IMAGE, not per frame in flight: a
     semaphore handed to vkQueuePresentKHR is only known to be free again once that image is re-acquired.
+    A rebuilt swapchain's predecessor (and its semaphores) lives on until its presents are done: present
+    fences with swapchain_maintenance1, else a fixed number of presents later.
     Extent follows the window's client area (Win32 requires currentExtent), so a minimized window has a
     zero extent and IsUsable() stays false until it is restored. */
 class VulkanSwapchain {
@@ -19,8 +21,8 @@ public:
     VulkanSwapchain( const VulkanSwapchain& ) = delete;
     VulkanSwapchain& operator=( const VulkanSwapchain& ) = delete;
 
-    /** hdr requests an HDR10 (A2B10G10R10 + ST.2084) swapchain; falls back to SDR when the surface can't. */
-    bool Create( VulkanDevice& device, HWND window, INT2 size, uint32_t minImageCount, bool vsync, bool hdr );
+    /** sdrFormat is the SDR image format; hdr requests HDR10 (A2B10G10R10 + ST.2084), falling back to SDR. */
+    bool Create( VulkanDevice& device, HWND window, INT2 size, uint32_t minImageCount, bool vsync, VkFormat sdrFormat, bool hdr );
     /** Waits for the device to go idle, then rebuilds at `size` (the window's client area wins on Win32). */
     bool Recreate( INT2 size, bool vsync );
     void Destroy();
@@ -29,6 +31,8 @@ public:
     VkResult Acquire( VkSemaphore signal, uint32_t& outImageIndex );
     /** Tags the present with the next present id when present-wait is available. */
     VkResult Present( VkQueue queue, std::mutex& queueMutex, uint32_t imageIndex );
+    /** Switches between FIFO and uncapped presents; false means this swapchain can't, so it needs a Recreate. */
+    bool SetVSync( bool vsync );
     /** Blocks until present `presentId` (or a later one) is on screen; VK_TIMEOUT after timeoutNs. */
     VkResult WaitForPresent( uint64_t presentId, uint64_t timeoutNs );
 
@@ -55,9 +59,25 @@ public:
 private:
     enum class PresentWaitMode { None, PresentWait, PresentWait2 };
 
+    struct Retired {
+        VkSwapchainKHR Swapchain = VK_NULL_HANDLE;
+        std::vector<VkSemaphore> Semaphores;
+        uint64_t PresentCount = 0;   // m_PresentCount when it was retired
+    };
+    struct PresentFence { VkFence Fence = VK_NULL_HANDLE; VkSwapchainKHR Swapchain = VK_NULL_HANDLE; };
+    /** Presents of the successor before a retired swapchain is destroyed when there are no present fences. */
+    static constexpr uint64_t kRetirePresents = 8;
+
     PresentWaitMode QueryPresentWaitMode() const;
+    /** Per-mode surface caps; `compatible` gets the modes a swapchain created with `mode` may switch to. */
+    bool QueryPresentModeCaps( VkPresentModeKHR mode, VkSurfaceCapabilitiesKHR& caps, std::vector<VkPresentModeKHR>* compatible ) const;
     bool BuildSwapchain( INT2 size );
     void DestroyImageResources();
+    /** Moves the current swapchain and its present semaphores to m_Retired. */
+    void Retire();
+    /** Recycles signalled present fences and destroys retired swapchains nothing presents from any more. */
+    void CollectRetired( bool shutdown );
+    VkFence TakePresentFence();
 
     VulkanDevice*    m_Device = nullptr;
     HWND             m_Window = nullptr;
@@ -67,8 +87,15 @@ private:
     std::vector<VkImageView> m_Views;
     std::vector<VkSemaphore> m_PresentSemaphores;
     VkFormat         m_Format = VK_FORMAT_UNDEFINED;
+    VkFormat         m_SdrFormat = VK_FORMAT_B8G8R8A8_UNORM;
     VkColorSpaceKHR  m_ColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkPresentModeKHR m_PresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    VkPresentModeKHR m_UncappedMode = VK_PRESENT_MODE_FIFO_KHR;   // IMMEDIATE, else MAILBOX, else FIFO
+    bool             m_ModeSwitch = false;   // created with FIFO + m_UncappedMode: SetVSync switches per present
+    std::vector<Retired>      m_Retired;
+    std::vector<PresentFence> m_PresentFences;   // in flight
+    std::vector<VkFence>      m_FreeFences;
+    uint64_t         m_PresentCount = 0;     // every present, across rebuilds
     VkExtent2D       m_Extent = {};
     uint32_t         m_RequestedMinImages = 2;
     uint32_t         m_MinImageCount = 2;

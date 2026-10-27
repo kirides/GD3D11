@@ -224,7 +224,7 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
     if ( EnableOcclusion == 0 || HiZMipCount == 0 || !allInFront )
         return true;
 
-    Texture2D<float> hiz = ResourceDescriptorHeap[HiZIndex];
+    Texture2D<float> hiz = GD_HEAP( HiZIndex );
 
     float2 hizSize = float2( HiZWidth, HiZHeight );
     float2 p0 = saturate(uvMin) * hizSize;

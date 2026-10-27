@@ -20,6 +20,7 @@
 #include "../GSky.h"
 #include "../WorldObjects.h"
 #include "../zCMaterial.h"
+#include "../MaterialFx.h"
 #include "../zCTexture.h"
 #include "../zCVob.h"          // CollectTransparencyQueue: decal world positions
 #include "../zCQuadMark.h"     // CollectTransparencyQueue: quad-mark connected vob
@@ -276,12 +277,22 @@ void D3D12GraphicsEngine::DrawWorldTransparencyDepthOnly() {
     // index, i.e. a GPU fault, not just a wrong pixel.
     const uint32_t safeMat6[4] = { 0xFFFFFFFFu, 0u, m_BlackTexture->GetSrvSlot(), 0u };
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, safeMat6, 0 );
+    bool waveBound = false;
 
     for ( const std::vector<WorldTransparencyMesh>* list :
         { &g_FrameWorldTransparency, &g_FrameWorldTransparencyFoam } ) {
         for ( const WorldTransparencyMesh& entry : *list ) {
             if ( !entry.Material || !entry.Mesh || entry.Mesh->Indices.empty() ) continue;
             if ( !entry.Material->GetAniTexture() ) continue;
+            // A waving surface's VS needs its MaterialFx slot to lay the same depth its color pass drew
+            if ( MaterialFx::HasWaves( entry.Material ) ) {
+                const uint32_t waveMat6[4] = { 0xFFFFFFFFu, 0u, MaterialFx::PackDiffuseIndex( m_BlackTexture->GetSrvSlot(), entry.Material ), 0u };
+                m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, waveMat6, 0 );
+                waveBound = true;
+            } else if ( waveBound ) {
+                m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, safeMat6, 0 );
+                waveBound = false;
+            }
             m_CmdList->DrawIndexedInstanced( static_cast<UINT>( entry.Mesh->Indices.size() ), 1,
                 entry.Mesh->BaseIndexLocation, 0, 0 );
         }

@@ -55,10 +55,13 @@ struct GothicMemoryLocations {
         static const unsigned int Constructor = 0x005C8490;
         static const unsigned int Destructor = 0x005C86E0;
         static const unsigned int CreateQuadMark = 0x005C9DB0;
+        static const unsigned int ProcessAniTracker = 0x005CA410;
         static const unsigned int Offset_QuadMesh = 0x34;
         static const unsigned int Offset_Material = 0x3C;
         static const unsigned int Offset_ConnectedVob = 0x38;
         static const unsigned int Offset_DontRepositionConnectedVob = 0x48;
+        static const unsigned int Offset_AlphaFadeSpeed = 0x44;
+        static const unsigned int Offset_AniTrackerNum = 0x54;   // quadMarkAniTracker (zCArray at 0x4C).NumInArray
     };
 
     struct zCRndD3D {

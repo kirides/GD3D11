@@ -1,9 +1,11 @@
 #include "../pch.h"
 #include "VulkanDevice.h"
 #include "../D3D12Engine/D3D12ShaderBackend.h"
+#include "../RHI/GpuDebug.h"
 
 #include <dxgi1_6.h>
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -113,13 +115,56 @@ namespace {
         }
         if ( seen > kMaxRepeats ) return VK_FALSE;
         const char* suffix = seen == kMaxRepeats ? " (further repeats suppressed)" : "";
+        std::string objects;
+        for ( uint32_t i = 0; data && i < data->objectCount; ++i ) {
+            if ( !data->pObjects[i].pObjectName ) continue;
+            objects += objects.empty() ? " [objects: " : ", ";
+            objects += data->pObjects[i].pObjectName;
+        }
+        if ( !objects.empty() ) objects += "]";
 
         if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ) {
-            Logging::Err( "Vulkan validation [{}]: {}{}", id, msg, suffix );
+            Logging::Err( "Vulkan validation [{}]: {}{}{}", id, msg, objects, suffix );
         } else if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ) {
-            Logging::Wrn( "Vulkan validation [{}]: {}{}", id, msg, suffix );
+            Logging::Wrn( "Vulkan validation [{}]: {}{}{}", id, msg, objects, suffix );
         }
         return VK_FALSE;
+    }
+
+    // VK_EXT_device_address_binding_report: every GPU VA range by object, so a device-fault address can be named.
+    struct AddressBinding { uint64_t Size; VkObjectType Type; uint64_t Handle; bool Bound; uint32_t Seq; };
+    std::mutex s_BindingMutex;
+    std::map<uint64_t, AddressBinding> s_Bindings;   // base address -> last bind/unbind there
+    std::unordered_map<uint64_t, std::string> s_ObjectNames;   // handle -> last debug name
+    uint32_t s_BindingSeq = 0;
+    constexpr size_t kMaxBindings = 200000;
+
+    VKAPI_ATTR VkBool32 VKAPI_CALL AddressBindingCallback( VkDebugUtilsMessageSeverityFlagBitsEXT,
+        VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* data, void* ) {
+        if ( !( type & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT ) || !data ) return VK_FALSE;
+        for ( auto* p = static_cast<const VkBaseInStructure*>( data->pNext ); p; p = p->pNext ) {
+            if ( p->sType != VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT ) continue;
+            const auto* b = reinterpret_cast<const VkDeviceAddressBindingCallbackDataEXT*>( p );
+            const VkDebugUtilsObjectNameInfoEXT* obj = data->objectCount ? &data->pObjects[0] : nullptr;
+            std::lock_guard<std::mutex> lock( s_BindingMutex );
+            if ( s_Bindings.size() >= kMaxBindings )
+                std::erase_if( s_Bindings, []( const auto& e ) { return !e.second.Bound; } );
+            s_Bindings[b->baseAddress] = { b->size, obj ? obj->objectType : VK_OBJECT_TYPE_UNKNOWN, obj ? obj->objectHandle : 0,
+                b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_BIND_EXT, ++s_BindingSeq };
+        }
+        return VK_FALSE;
+    }
+
+    const char* ObjectTypeName( VkObjectType type ) {
+        switch ( type ) {
+        case VK_OBJECT_TYPE_BUFFER: return "buffer";
+        case VK_OBJECT_TYPE_IMAGE: return "image";
+        case VK_OBJECT_TYPE_DEVICE_MEMORY: return "memory";
+        case VK_OBJECT_TYPE_QUERY_POOL: return "query pool";
+        case VK_OBJECT_TYPE_COMMAND_BUFFER: return "command buffer";
+        case VK_OBJECT_TYPE_DESCRIPTOR_POOL: return "descriptor pool";
+        default: return "object";
+        }
     }
 
     VkDebugUtilsMessengerCreateInfoEXT MessengerCreateInfo() {
@@ -136,6 +181,8 @@ namespace {
         bool DebugUtils = false;
         bool SwapchainColorSpace = false;
         bool SurfaceCapabilities2 = false;
+        bool SurfaceMaintenance1Khr = false;
+        bool SurfaceMaintenance1Ext = false;
         bool Validation = false;
         bool RenderDoc = false;
     };
@@ -165,6 +212,11 @@ namespace {
         // Surface queries for VK_KHR_present_id2/present_wait2 support.
         out.SurfaceCapabilities2 = HasExtension( available, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME );
         if ( out.SurfaceCapabilities2 ) extensions.push_back( VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME );
+        // Instance half of swapchain_maintenance1; the device picks the matching KHR or EXT flavour.
+        out.SurfaceMaintenance1Khr = out.SurfaceCapabilities2 && HasExtension( available, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
+        if ( out.SurfaceMaintenance1Khr ) extensions.push_back( VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
+        out.SurfaceMaintenance1Ext = out.SurfaceCapabilities2 && HasExtension( available, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
+        if ( out.SurfaceMaintenance1Ext ) extensions.push_back( VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME );
 
         // Validation needs the SDK's 32-bit layer, which usually isn't installed; skip quietly without it.
         std::vector<const char*> layers;
@@ -236,6 +288,7 @@ namespace {
         VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT Mutable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
         VkPhysicalDeviceRobustness2FeaturesKHR Robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR };
         VkPhysicalDeviceFaultFeaturesEXT Fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
+        VkPhysicalDeviceAddressBindingReportFeaturesEXT AddressBinding = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };
         VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT Dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
         VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT DgcProps = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT };
         VkPhysicalDeviceMaintenance5FeaturesKHR Maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
@@ -248,6 +301,8 @@ namespace {
         VkPhysicalDevicePresentWaitFeaturesKHR PresentWait = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR };
         VkPhysicalDevicePresentId2FeaturesKHR PresentId2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR };
         VkPhysicalDevicePresentWait2FeaturesKHR PresentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
+        VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR SwapchainMaintenance1 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
+        VkPhysicalDeviceDiagnosticsConfigFeaturesNV DiagnosticsConfig = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
         VkPhysicalDeviceMemoryProperties Memory = {};
         std::vector<VkExtensionProperties> Extensions;
 
@@ -328,6 +383,7 @@ namespace {
         if ( info.MutableExtension ) { *tail = &info.Mutable; tail = &info.Mutable.pNext; }
         if ( info.Robustness2Extension ) { *tail = &info.Robustness2; tail = &info.Robustness2.pNext; }
         if ( info.Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) ) { *tail = &info.Fault; tail = &info.Fault.pNext; }
+        if ( info.Has( VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME ) ) { *tail = &info.AddressBinding; tail = &info.AddressBinding.pNext; }
         if ( info.Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) ) { *tail = &info.Dgc; tail = &info.Dgc.pNext; }
         if ( info.Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) ) { *tail = &info.Maintenance5; tail = &info.Maintenance5.pNext; }
         if ( info.Has( VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME ) ) { *tail = &info.MemoryPriority; tail = &info.MemoryPriority.pNext; }
@@ -341,6 +397,10 @@ namespace {
         if ( info.Has( VK_KHR_PRESENT_WAIT_EXTENSION_NAME ) ) { *tail = &info.PresentWait; tail = &info.PresentWait.pNext; }
         if ( info.Has( VK_KHR_PRESENT_ID_2_EXTENSION_NAME ) ) { *tail = &info.PresentId2; tail = &info.PresentId2.pNext; }
         if ( info.Has( VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME ) ) { *tail = &info.PresentWait2; tail = &info.PresentWait2.pNext; }
+        if ( info.Has( VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) || info.Has( VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) ) {
+            *tail = &info.SwapchainMaintenance1; tail = &info.SwapchainMaintenance1.pNext;
+        }
+        if ( info.Has( VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME ) ) { *tail = &info.DiagnosticsConfig; tail = &info.DiagnosticsConfig.pNext; }
         vkGetPhysicalDeviceFeatures2( device, &info.Features );
 
         vkGetPhysicalDeviceQueueFamilyProperties( device, &count, nullptr );
@@ -502,7 +562,7 @@ namespace {
             VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
             VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
             VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME, VK_AMD_ANTI_LAG_EXTENSION_NAME, VK_NV_LOW_LATENCY_2_EXTENSION_NAME,
-            VK_KHR_MAINTENANCE_6_EXTENSION_NAME,
+            VK_KHR_MAINTENANCE_6_EXTENSION_NAME, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME,
         };
         std::string present, absent;
         for ( const char* ext : kOptionalExtensions ) {
@@ -587,6 +647,10 @@ void VulkanDevice::Shutdown() {
         vkDeviceWaitIdle( m_Device );
         vkDestroyDevice( m_Device, nullptr );
         m_Device = VK_NULL_HANDLE;
+    }
+    if ( m_BindingMessenger ) {
+        vkDestroyDebugUtilsMessengerEXT( m_Instance, m_BindingMessenger, nullptr );
+        m_BindingMessenger = VK_NULL_HANDLE;
     }
     if ( m_Messenger ) {
         vkDestroyDebugUtilsMessengerEXT( m_Instance, m_Messenger, nullptr );
@@ -673,9 +737,29 @@ bool VulkanDevice::Init() {
             VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME );
     }
     m_Caps.DeviceFault = enableIf( info->Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) && info->Fault.deviceFault, VK_EXT_DEVICE_FAULT_EXTENSION_NAME );
+    m_Caps.AddressBindingReport = enableIf( m_Messenger && info->Has( VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME )
+        && info->AddressBinding.reportAddressBinding, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME );
+    if ( m_Caps.AddressBindingReport ) {
+        VkDebugUtilsMessengerCreateInfoEXT mci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+        mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+        mci.pfnUserCallback = &AddressBindingCallback;
+        if ( VkUtil::Failed( vkCreateDebugUtilsMessengerEXT( m_Instance, &mci, nullptr, &m_BindingMessenger ), "vkCreateDebugUtilsMessengerEXT (address binding)" ) ) {
+            m_BindingMessenger = VK_NULL_HANDLE;
+            m_Caps.AddressBindingReport = false;
+            extensions.pop_back();
+        }
+    }
     m_Caps.BufferMarkerAMD = enableIf( info->Has( VK_AMD_BUFFER_MARKER_EXTENSION_NAME ), VK_AMD_BUFFER_MARKER_EXTENSION_NAME );
-    m_Caps.DiagnosticCheckpointsNV = enableIf( info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ),
-        VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
+    // Checkpoints and timestamps are GPU writes into driver memory; -VKNOCHECKPOINTS / -VKNOTIMESTAMPS rule them out.
+    m_Caps.DiagnosticCheckpointsNV = enableIf( !CommandLineHas( "-VKNOCHECKPOINTS", "-vknocheckpoints" )
+        && info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ), VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
+    m_Caps.DiagnosticsConfigNV = enableIf( GpuDebug::VkAftermath() && info->Has( VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME )
+        && info->DiagnosticsConfig.diagnosticsConfig, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME );
+    if ( GpuDebug::VkAftermath() ) {
+        if ( m_Caps.DiagnosticsConfigNV ) Logging::Inf( "Vulkan: -VKAFTERMATH: device diagnostics config on; capture crashes with Nsight's GPU crash dump monitor." );
+        else Logging::Wrn( "Vulkan: -VKAFTERMATH: VK_NV_device_diagnostics_config is unavailable (NVIDIA only)." );
+    }
     m_Caps.HdrMetadata = enableIf( m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
     // Frame pacing waits on GPU completion. Present wait is opt-in (-VKPRESENTWAIT / GD3D11_VULKAN_PRESENT_WAIT=1):
@@ -693,6 +777,14 @@ bool VulkanDevice::Init() {
         extensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
         extensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
     }
+    // Present fences let a retired swapchain be destroyed once the presentation engine is done with it.
+    // -VKNOSWAPCHAINM1 falls back to destroying it a few presents later.
+    const char* swapchainM1 = setup.SurfaceMaintenance1Khr && info->Has( VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME )
+        ? VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+        : setup.SurfaceMaintenance1Ext && info->Has( VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) ? VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME : nullptr;
+    m_Caps.SwapchainMaintenance1 = enableIf( swapchainM1 && info->SwapchainMaintenance1.swapchainMaintenance1
+        && !CommandLineHas( "-VKNOSWAPCHAINM1", "-vknoswapchainm1" ), swapchainM1 );
+    if ( m_Caps.SwapchainMaintenance1 ) Logging::Inf( "Vulkan: {} enabled (present fences).", swapchainM1 );
     m_Caps.Maintenance5 = maintenance5Core || enableIf( info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME )
         && info->Maintenance5.maintenance5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
     // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
@@ -725,10 +817,12 @@ bool VulkanDevice::Init() {
     f.shaderStorageImageReadWithoutFormat = VK_TRUE;
     f.shaderStorageImageWriteWithoutFormat = VK_TRUE;
     f.fragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
+    f.vertexPipelineStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
     f.depthBiasClamp = sup.depthBiasClamp;
     f.fillModeNonSolid = sup.fillModeNonSolid;
     f.shaderInt16 = sup.shaderInt16;
     m_Caps.FragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
+    m_Caps.VertexStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
     m_Caps.DepthBiasClamp = sup.depthBiasClamp;
     m_Caps.FillModeNonSolid = sup.fillModeNonSolid;
 
@@ -762,7 +856,7 @@ bool VulkanDevice::Init() {
     f12.samplerMirrorClampToEdge = sup12.samplerMirrorClampToEdge;
     f12.bufferDeviceAddress = m_Caps.DeviceGeneratedCommands;
     m_Caps.HeapUniformBuffers = HeapUniformBuffersSupported( *info );
-    m_Caps.TimestampQueries = info->TimestampQueries;
+    m_Caps.TimestampQueries = info->TimestampQueries && !CommandLineHas( "-VKNOTIMESTAMPS", "-vknotimestamps" );
 
     VkPhysicalDeviceVulkan13Features f13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
     f13.dynamicRendering = VK_TRUE;
@@ -774,8 +868,20 @@ bool VulkanDevice::Init() {
     mutableFeatures.mutableDescriptorType = VK_TRUE;
     VkPhysicalDeviceRobustness2FeaturesKHR robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR };
     robustness2.nullDescriptor = VK_TRUE;
+    // D3D12 bounds-checks every descriptor access (stray writes dropped, reads 0) and the shaders rely on it;
+    // NVIDIA does neither without these. -VKNOROBUST turns them off for A/B tests.
+    const bool robust = !CommandLineHas( "-VKNOROBUST", "-vknorobust" );
+    f.robustBufferAccess = robust && sup.robustBufferAccess;
+    f13.robustImageAccess = robust && info->Features13.robustImageAccess;
+    robustness2.robustBufferAccess2 = f.robustBufferAccess && info->Robustness2.robustBufferAccess2;
+    robustness2.robustImageAccess2 = f13.robustImageAccess && info->Robustness2.robustImageAccess2;
+    Logging::Inf( "Vulkan: robust buffer access {}{}, robust image access {}{}.", f.robustBufferAccess ? "on" : "off",
+        m_Caps.NullDescriptor && robustness2.robustBufferAccess2 ? " (2)" : "", f13.robustImageAccess ? "on" : "off",
+        m_Caps.NullDescriptor && robustness2.robustImageAccess2 ? " (2)" : "" );
     VkPhysicalDeviceFaultFeaturesEXT fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
     fault.deviceFault = VK_TRUE;
+    VkPhysicalDeviceAddressBindingReportFeaturesEXT addressBinding = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };
+    addressBinding.reportAddressBinding = VK_TRUE;
     VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
     maintenance5.maintenance5 = VK_TRUE;
     VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
@@ -792,6 +898,10 @@ bool VulkanDevice::Init() {
     presentId2.presentId2 = VK_TRUE;
     VkPhysicalDevicePresentWait2FeaturesKHR presentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
     presentWait2.presentWait2 = VK_TRUE;
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainM1Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
+    swapchainM1Features.swapchainMaintenance1 = VK_TRUE;
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
+    diagnosticsFeatures.diagnosticsConfig = VK_TRUE;
     m_Caps.InstanceDivisor = divisorCore
         || enableIf( info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
     m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && ( divisorCore ? info->Features14.vertexAttributeInstanceRateZeroDivisor
@@ -822,6 +932,7 @@ bool VulkanDevice::Init() {
     if ( core14 ) { *tail = &f14; tail = &f14.pNext; }
     if ( m_Caps.NullDescriptor ) { *tail = &robustness2; tail = &robustness2.pNext; }
     if ( m_Caps.DeviceFault ) { *tail = &fault; tail = &fault.pNext; }
+    if ( m_Caps.AddressBindingReport ) { *tail = &addressBinding; tail = &addressBinding.pNext; }
     if ( m_Caps.Maintenance5 && !core14 ) { *tail = &maintenance5; tail = &maintenance5.pNext; }
     if ( m_Caps.DeviceGeneratedCommands ) { *tail = &dgc; tail = &dgc.pNext; }
     if ( m_Caps.MemoryPriority ) { *tail = &memoryPriority; tail = &memoryPriority.pNext; }
@@ -836,6 +947,8 @@ bool VulkanDevice::Init() {
     if ( m_Caps.PresentWait2 ) {
         *tail = &presentId2; presentId2.pNext = &presentWait2; tail = &presentWait2.pNext;
     }
+    if ( m_Caps.SwapchainMaintenance1 ) { *tail = &swapchainM1Features; tail = &swapchainM1Features.pNext; }
+    if ( m_Caps.DiagnosticsConfigNV ) { *tail = &diagnosticsFeatures; tail = &diagnosticsFeatures.pNext; }
 
     // --- Queues ---
     const float priority = 1.0f;
@@ -850,8 +963,11 @@ bool VulkanDevice::Init() {
         ++queueCount;
     }
 
+    VkDeviceDiagnosticsConfigCreateInfoNV diagnostics = { VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV, &features };
+    diagnostics.flags = VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV
+        | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV;
     VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-    dci.pNext = &features;
+    dci.pNext = m_Caps.DiagnosticsConfigNV ? static_cast<const void*>( &diagnostics ) : &features;
     dci.queueCreateInfoCount = queueCount;
     dci.pQueueCreateInfos = queues;
     dci.enabledExtensionCount = static_cast<uint32_t>( extensions.size() );
@@ -902,4 +1018,39 @@ void VulkanDevice::SetObjectName( VkObjectType type, uint64_t handle, const char
     info.objectHandle = handle;
     info.pObjectName = name;
     vkSetDebugUtilsObjectNameEXT( m_Device, &info );
+    if ( m_Caps.AddressBindingReport ) {
+        std::lock_guard<std::mutex> lock( s_BindingMutex );
+        s_ObjectNames[handle] = name;
+    }
+}
+
+std::string VulkanDevice::GetObjectName( uint64_t handle ) const {
+    if ( !m_Caps.AddressBindingReport || !handle ) return {};
+    std::lock_guard<std::mutex> lock( s_BindingMutex );
+    const auto it = s_ObjectNames.find( handle );
+    return it != s_ObjectNames.end() ? it->second : std::string();
+}
+
+void VulkanDevice::LogAddressOwners( uint64_t address, uint64_t precision ) const {
+    if ( !m_Caps.AddressBindingReport ) {
+        Logging::Wrn( "Vulkan: VK_EXT_device_address_binding_report is unavailable; the fault address can't be named." );
+        return;
+    }
+    std::lock_guard<std::mutex> lock( s_BindingMutex );
+    const uint64_t lo = address > precision ? address - precision : 0;
+    const uint64_t hi = address + precision;
+    auto describe = [&]( uint64_t base, const AddressBinding& b, const char* relation ) {
+        const auto name = s_ObjectNames.find( b.Handle );
+        Logging::Err( "  {} {} {} 0x{:X} '{}' at [0x{:X}, 0x{:X}), {} KiB, binding #{} of {}", relation, b.Bound ? "bound" : "FREED",
+            ObjectTypeName( b.Type ), b.Handle, name != s_ObjectNames.end() ? name->second : "", base, base + b.Size, b.Size / 1024,
+            b.Seq, s_BindingSeq );
+    };
+    bool any = false;
+    for ( const auto& [base, b] : s_Bindings ) {
+        if ( base < hi && base + b.Size > lo ) { describe( base, b, "covered by" ); any = true; }
+    }
+    if ( any ) return;
+    const auto above = s_Bindings.lower_bound( address );
+    if ( above != s_Bindings.begin() ) { const auto below = std::prev( above ); describe( below->first, below->second, "nothing; below:" ); }
+    if ( above != s_Bindings.end() ) describe( above->first, above->second, "nothing; above:" );
 }

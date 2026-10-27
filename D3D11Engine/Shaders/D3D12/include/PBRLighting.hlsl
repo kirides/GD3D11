@@ -38,7 +38,7 @@
 uint2 LoadRtShadowMask( float2 svposXY )
 {
     [branch] if ( RtShadowMaskIndex == 0u ) return uint2( 0, 0 );
-    Texture2D<uint2> mask = ResourceDescriptorHeap[RtShadowMaskIndex - 1u];
+    Texture2D<uint2> mask = GD_HEAP( RtShadowMaskIndex - 1u );
     return mask.Load( int3( svposXY, 0 ) );
 }
 
@@ -103,7 +103,7 @@ float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPo
         if ( hasDyn )
         {
             // The overlay's texels are finer, so it takes the un-scaled bias and a proportionally tighter disk.
-            TextureCubeArray dynCubes = ResourceDescriptorHeap[PointShadowDynIndex];
+            TextureCubeArray dynCubes = GD_HEAP( PointShadowDynIndex );
             float3 od = normalize( L + off * ( r / coarse ) );
             v = min( v, dynCubes.SampleCmpLevelZero( shadowCmp, float4( od, (float)dynSlot ), compareDepthDyn ) );
         }
@@ -263,7 +263,7 @@ static const uint ORM_FORMAT_SHIFT = 30;
 //   2 = Roughness   (_R.DDS):  r=Roughness only, AO defaults to 1, Metallic to 0
 float3 SampleOrm( uint packedOrmIndex, float2 uv )
 {
-    Texture2D ormTex = ResourceDescriptorHeap[packedOrmIndex & ORM_INDEX_MASK];
+    Texture2D ormTex = GD_HEAP( packedOrmIndex & ORM_INDEX_MASK );
     float4 s = ormTex.Sample( smp, uv );
     uint fmt = packedOrmIndex >> ORM_FORMAT_SHIFT;
     if ( fmt == 1 ) return float3( s.r, s.g, 0.0 );
@@ -389,8 +389,8 @@ float ComputeSpecularOcclusion( float NdotV, float ao, float roughness )
 // (vertex-light AO * material AO * SSAO); the caller has already folded those together.
 float3 EvaluateSkyIBL( float3 N, float3 V, float3 albedo, float roughness, float metallic, float ao )
 {
-    TextureCube irrTex  = ResourceDescriptorHeap[SkyIrradianceIndex];
-    TextureCube specTex = ResourceDescriptorHeap[SkySpecularIndex];
+    TextureCube irrTex  = GD_HEAP( SkyIrradianceIndex );
+    TextureCube specTex = GD_HEAP( SkySpecularIndex );
 
     float  NdotV = saturate( dot( N, V ) );
     float3 R = reflect( -V, N );
@@ -440,7 +440,7 @@ float SampleSkyVisibility( float3 wpos, float3 N )
 {
     [branch]
     if ( RainShadowIndex == 0xFFFFFFFFu ) return -1.0;
-    Texture2D occMap = ResourceDescriptorHeap[RainShadowIndex];
+    Texture2D occMap = GD_HEAP( RainShadowIndex );
 
     float4 clip = mul( float4( wpos + N * 20.0, 1.0 ), RainViewProj );
     float2 uv = clip.xy * float2( 0.5, -0.5 ) + 0.5;
@@ -900,7 +900,7 @@ float3 EvaluateOpaqueSSR( float3 wpos, float3 N, float3 V, float roughness, out 
     uint refineSteps = SsrPrevDepthIndex >> kSsrStepsShift;
     uint colorIdx = SsrPrevColorIndex & kSsrIndexMask;
     uint depthIdx = SsrPrevDepthIndex & kSsrIndexMask;
-    Texture2D<float> prevDepthTex = ResourceDescriptorHeap[depthIdx];
+    Texture2D<float> prevDepthTex = GD_HEAP( depthIdx );
 
     float3 R = reflect( -V, N );
     float3 origin = wpos + N * SSR_OPAQUE_START_BIAS;
@@ -961,7 +961,7 @@ float3 EvaluateOpaqueSSR( float3 wpos, float3 N, float3 V, float roughness, out 
                 // Near-field fade in from MIN_HIT_DISTANCE rather than a hard on/off, so the guard above
                 // doesn't trade a feedback blowup for a visible confidence cliff at its threshold.
                 float nearFade = smoothstep( SSR_OPAQUE_MIN_HIT_DISTANCE, SSR_OPAQUE_MIN_HIT_DISTANCE * 2.0, travelled );
-                Texture2D prevColorTex = ResourceDescriptorHeap[colorIdx];
+                Texture2D prevColorTex = GD_HEAP( colorIdx );
                 float3 hitColor = prevColorTex.SampleLevel( smpAoClamp, hitUV, 0 ).rgb;
                 // NaN/Inf would slip past the clamp below and loop through SsrPrevColor; treat as a miss
                 if ( !all( isfinite( hitColor ) ) )

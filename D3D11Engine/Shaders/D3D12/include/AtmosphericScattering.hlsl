@@ -27,50 +27,54 @@ static const float NIGHT_BRIGHTNESS = 2.0f;
     float3 AC_CameraPos; float AC_Time; float3 AC_LightPos; float AC_SceneWettness; \
     float3 AC_SpherePosition; float AC_RainFXWeight;
 
-// ATMOSPHERE_BINDLESS: no b1 cbuffer; the includer fills g_Atmosphere from a heap CBV before calling in.
+// ATMOSPHERE_BINDLESS: no b1 cbuffer; the includer passes AtmosphereData (e.g. from a heap CBV) to every function.
 struct AtmosphereData { ATMOSPHERE_FIELDS };
-#if ATMOSPHERE_BINDLESS
-static AtmosphereData g_Atmosphere;
-#define AC_Kr4PI g_Atmosphere.AC_Kr4PI
-#define AC_Km4PI g_Atmosphere.AC_Km4PI
-#define AC_g g_Atmosphere.AC_g
-#define AC_KrESun g_Atmosphere.AC_KrESun
-#define AC_KmESun g_Atmosphere.AC_KmESun
-#define AC_InnerRadius g_Atmosphere.AC_InnerRadius
-#define AC_OuterRadius g_Atmosphere.AC_OuterRadius
-#define AC_Scale g_Atmosphere.AC_Scale
-#define AC_Wavelength g_Atmosphere.AC_Wavelength
-#define AC_RayleighScaleDepth g_Atmosphere.AC_RayleighScaleDepth
-#define AC_RayleighOverScaleDepth g_Atmosphere.AC_RayleighOverScaleDepth
-#define AC_nSamples g_Atmosphere.AC_nSamples
-#define AC_fSamples g_Atmosphere.AC_fSamples
-#define AC_CameraHeight g_Atmosphere.AC_CameraHeight
-#define AC_CameraPos g_Atmosphere.AC_CameraPos
-#define AC_Time g_Atmosphere.AC_Time
-#define AC_LightPos g_Atmosphere.AC_LightPos
-#define AC_SceneWettness g_Atmosphere.AC_SceneWettness
-#define AC_SpherePosition g_Atmosphere.AC_SpherePosition
-#define AC_RainFXWeight g_Atmosphere.AC_RainFXWeight
-#else
+#if !ATMOSPHERE_BINDLESS
 cbuffer Atmosphere : register( b1 ) { ATMOSPHERE_FIELDS };
+
+AtmosphereData GetAtmosphere()
+{
+    AtmosphereData a;
+    a.AC_Kr4PI = AC_Kr4PI;
+    a.AC_Km4PI = AC_Km4PI;
+    a.AC_g = AC_g;
+    a.AC_KrESun = AC_KrESun;
+    a.AC_KmESun = AC_KmESun;
+    a.AC_InnerRadius = AC_InnerRadius;
+    a.AC_OuterRadius = AC_OuterRadius;
+    a.AC_Scale = AC_Scale;
+    a.AC_Wavelength = AC_Wavelength;
+    a.AC_RayleighScaleDepth = AC_RayleighScaleDepth;
+    a.AC_RayleighOverScaleDepth = AC_RayleighOverScaleDepth;
+    a.AC_nSamples = AC_nSamples;
+    a.AC_fSamples = AC_fSamples;
+    a.AC_CameraHeight = AC_CameraHeight;
+    a.AC_CameraPos = AC_CameraPos;
+    a.AC_Time = AC_Time;
+    a.AC_LightPos = AC_LightPos;
+    a.AC_SceneWettness = AC_SceneWettness;
+    a.AC_SpherePosition = AC_SpherePosition;
+    a.AC_RainFXWeight = AC_RainFXWeight;
+    return a;
+}
 #endif
 
 // The scale equation calculated by Vernier's Graphical Analysis
-float AC_Escale( float fCos )
+float AC_Escale( AtmosphereData a, float fCos )
 {
     float x = 1.0 - fCos;
-    return AC_RayleighScaleDepth * exp( -0.00287 + x * ( 0.459 + x * ( 3.83 + x * ( -6.80 + x * 5.25 ) ) ) );
+    return a.AC_RayleighScaleDepth * exp( -0.00287 + x * ( 0.459 + x * ( 3.83 + x * ( -6.80 + x * 5.25 ) ) ) );
 }
 
-float3 ApplyAtmosphericScatteringGround( float3 worldPosition, float3 in_color, bool applyNightshade = true )
+float3 ApplyAtmosphericScatteringGround( AtmosphereData a, float3 worldPosition, float3 in_color, bool applyNightshade = true )
 {
-    float3 camPos = AC_CameraPos;
-    float3 v3Pos = worldPosition - AC_SpherePosition;
+    float3 camPos = a.AC_CameraPos;
+    float3 v3Pos = worldPosition - a.AC_SpherePosition;
     float3 v3Ray = v3Pos - camPos;
 
-    float nightWeight = saturate( ( ( -AC_LightPos.y ) + 0.2f ) * 10.0f );
+    float nightWeight = saturate( ( ( -a.AC_LightPos.y ) + 0.2f ) * 10.0f );
 
-    float innerRadius = AC_InnerRadius;
+    float innerRadius = a.AC_InnerRadius;
 
     const int iSamples = 1;
     const int fSamples = iSamples;
@@ -81,21 +85,21 @@ float3 ApplyAtmosphericScatteringGround( float3 worldPosition, float3 in_color, 
 
     // Calculate the ray's starting position, then calculate its scattering offset
     float3 v3Start = camPos;
-    float fDepth = exp( ( innerRadius - AC_CameraHeight ) / AC_RayleighScaleDepth );
+    float fDepth = exp( ( innerRadius - a.AC_CameraHeight ) / a.AC_RayleighScaleDepth );
     float fCameraAngle = max( 1.0f, dot( -v3Ray, v3Pos ) / length( v3Pos ) );
-    float fLightAngle = dot( AC_LightPos, v3Pos ) / length( v3Pos );
-    float fCameraScale = AC_Escale( fCameraAngle );
-    float fLightScale = AC_Escale( fLightAngle );
+    float fLightAngle = dot( a.AC_LightPos, v3Pos ) / length( v3Pos );
+    float fCameraScale = AC_Escale( a, fCameraAngle );
+    float fLightScale = AC_Escale( a, fLightAngle );
     float fCameraOffset = fDepth * fCameraScale;
     float fTemp = ( fLightScale + fCameraScale );
 
     // Initialize the scattering loop variables
     float fSampleLength = fFar / fSamples;
-    float fScaledLength = fSampleLength * AC_Scale;
+    float fScaledLength = fSampleLength * a.AC_Scale;
     float3 v3SampleRay = v3Ray * fSampleLength;
     float3 v3SamplePoint = v3Start + v3SampleRay * 0.5;
 
-    float3 vInvWavelength = 1.0f / pow( AC_Wavelength, 4.0f );
+    float3 vInvWavelength = 1.0f / pow( a.AC_Wavelength, 4.0f );
 
     // Now loop through the sample rays
     float3 v3FrontColor = float3( 0.0, 0.0, 0.0 );
@@ -103,23 +107,23 @@ float3 ApplyAtmosphericScatteringGround( float3 worldPosition, float3 in_color, 
     for ( int i = 0; i < iSamples; i++ )
     {
         float fHeight = length( v3SamplePoint );
-        float fDepth = exp( AC_RayleighOverScaleDepth * ( innerRadius - fHeight ) );
+        float fDepth = exp( a.AC_RayleighOverScaleDepth * ( innerRadius - fHeight ) );
         float fScatter = fDepth * fTemp - fCameraOffset;
-        v3Attenuate = exp( -fScatter * ( vInvWavelength * AC_Kr4PI + AC_Km4PI ) );
+        v3Attenuate = exp( -fScatter * ( vInvWavelength * a.AC_Kr4PI + a.AC_Km4PI ) );
         v3FrontColor += v3Attenuate * ( fDepth * fScaledLength );
         v3SamplePoint += v3SampleRay;
     }
 
     // Shut off blue tint of geometry when raining
-    v3FrontColor = lerp( v3FrontColor, 0.0f, AC_SceneWettness );
+    v3FrontColor = lerp( v3FrontColor, 0.0f, a.AC_SceneWettness );
 
     // Finally, scale the Mie and Rayleigh colors and set up the varying variables for the pixel shader
-    float3 c0 = v3FrontColor * ( vInvWavelength * AC_KrESun + AC_KmESun );
+    float3 c0 = v3FrontColor * ( vInvWavelength * a.AC_KrESun + a.AC_KmESun );
     float3 c1 = v3Attenuate;
 
     float3 dayColor = c0 + in_color * c1;
     float3 nightColor = float3( 0.20, 0.20, 0.4 ) * NIGHT_BRIGHTNESS;
-    nightColor = lerp( nightColor, float3( 0.24, 0.24, 0.24 ) * NIGHT_BRIGHTNESS * 0.6f, AC_SceneWettness ); // Grey fog when raining
+    nightColor = lerp( nightColor, float3( 0.24, 0.24, 0.24 ) * NIGHT_BRIGHTNESS * 0.6f, a.AC_SceneWettness ); // Grey fog when raining
     float3 outColor;
 
     if ( applyNightshade )
@@ -155,11 +159,11 @@ float AC_getNearIntersection( float3 v3Pos, float3 v3Ray, float fDistance2, floa
     return 0.5 * ( -B - sqrt( fDet ) );
 }
 
-// Camera INSIDE the atmosphere shell — the normal in-game case (AC_CameraHeight < AC_OuterRadius).
-// vPos = the point on the shell relative to AC_SpherePosition; mieG = the Mie asymmetry (AC_g for the dome).
-float3 AC_ScatterSkyShell( float3 vPos, float mieG )
+// Camera INSIDE the atmosphere shell — the normal in-game case (a.AC_CameraHeight < a.AC_OuterRadius).
+// vPos = the point on the shell relative to a.AC_SpherePosition; mieG = the Mie asymmetry (a.AC_g for the dome).
+float3 AC_ScatterSkyShell( AtmosphereData a, float3 vPos, float mieG )
 {
-    float3 camPos = AC_CameraPos;
+    float3 camPos = a.AC_CameraPos;
     float3 vRay = vPos - camPos;
 
     float fFar = length( vRay );
@@ -171,123 +175,123 @@ float3 AC_ScatterSkyShell( float3 vPos, float mieG )
     float3 vStart = camPos;
 
     float fHeight = length( vStart );
-    float fDepth = exp( AC_RayleighOverScaleDepth * ( AC_InnerRadius - AC_CameraHeight ) );
+    float fDepth = exp( a.AC_RayleighOverScaleDepth * ( a.AC_InnerRadius - a.AC_CameraHeight ) );
     float fStartAngle = dot( vRay, vStart ) / fHeight;
-    float fStartOffset = fDepth * AC_Escale( fStartAngle );
+    float fStartOffset = fDepth * AC_Escale( a, fStartAngle );
 
     // Initialize the scattering loop variables
-    float fSampleLength = fFar / AC_fSamples;
-    float fScaledLength = fSampleLength * AC_Scale;
+    float fSampleLength = fFar / a.AC_fSamples;
+    float fScaledLength = fSampleLength * a.AC_Scale;
     float3 vSampleRay = vRay * fSampleLength;
     float3 vSamplePoint = vStart + vSampleRay * 0.5;
 
-    float3 vInvWavelength = 1.0f / pow( AC_Wavelength, 4.0f );
+    float3 vInvWavelength = 1.0f / pow( a.AC_Wavelength, 4.0f );
 
     // Now loop through the sample rays
     float3 vFrontColor = float3( 0.0, 0.0, 0.0 );
-    for ( int i = 0; i < AC_nSamples; i++ )
+    for ( int i = 0; i < a.AC_nSamples; i++ )
     {
         float fSampleHeight = length( vSamplePoint );
-        float fSampleDepth = exp( AC_RayleighOverScaleDepth * ( AC_InnerRadius - fSampleHeight ) );
-        float fLightAngle = dot( AC_LightPos, vSamplePoint ) / fSampleHeight;
+        float fSampleDepth = exp( a.AC_RayleighOverScaleDepth * ( a.AC_InnerRadius - fSampleHeight ) );
+        float fLightAngle = dot( a.AC_LightPos, vSamplePoint ) / fSampleHeight;
         float fCameraAngle = dot( vRay, vSamplePoint ) / fSampleHeight;
-        float fScatter = ( fStartOffset + fSampleDepth * ( AC_Escale( fLightAngle ) - AC_Escale( fCameraAngle ) ) );
+        float fScatter = ( fStartOffset + fSampleDepth * ( AC_Escale( a, fLightAngle ) - AC_Escale( a, fCameraAngle ) ) );
 
-        float3 vAttenuate = exp( -fScatter * ( vInvWavelength * AC_Kr4PI + AC_Km4PI ) );
+        float3 vAttenuate = exp( -fScatter * ( vInvWavelength * a.AC_Kr4PI + a.AC_Km4PI ) );
 
         vFrontColor += vAttenuate * ( fSampleDepth * fScaledLength );
         vSamplePoint += vSampleRay;
     }
 
     // Finally, scale the Mie and Rayleigh colors
-    float3 c0 = vFrontColor * ( vInvWavelength * AC_KrESun );
-    float3 c1 = vFrontColor * AC_KmESun;
+    float3 c0 = vFrontColor * ( vInvWavelength * a.AC_KrESun );
+    float3 c1 = vFrontColor * a.AC_KmESun;
 
     float3 vDirection = camPos - vPos;
 
-    float fCos = dot( AC_LightPos, vDirection ) / length( vDirection );
+    float fCos = dot( a.AC_LightPos, vDirection ) / length( vDirection );
     float fCos2 = fCos * fCos;
 
     return AC_getRayleighPhase( fCos2 ) * c0 + AC_getMiePhase( fCos, fCos2, mieG, mieG * mieG ) * c1 * 2.0f;
 }
 
 // 1 above the horizon, 0 below about -15 deg; the dome's lower half only shows through holes in the world.
-float AC_SkyHorizonFade( float3 worldPosition )
+float AC_SkyHorizonFade( AtmosphereData a, float3 worldPosition )
 {
-    float3 dir = normalize( worldPosition - AC_SpherePosition - AC_CameraPos );
+    float3 dir = normalize( worldPosition - a.AC_SpherePosition - a.AC_CameraPos );
     return smoothstep( -0.26f, -0.035f, dir.y );
 }
 
-float3 ApplyAtmosphericScatteringSky( float3 worldPosition )
+float3 ApplyAtmosphericScatteringSky( AtmosphereData a, float3 worldPosition )
 {
-    return AC_ScatterSkyShell( worldPosition - AC_SpherePosition, AC_g );
+    return AC_ScatterSkyShell( a, worldPosition - a.AC_SpherePosition, a.AC_g );
 }
 
 // The dome's radiance seen from the camera along `dir` (the far hit of the view ray with the outer shell).
-float3 AC_ScatterSkyDirection( float3 dir, float mieG )
+float3 AC_ScatterSkyDirection( AtmosphereData a, float3 dir, float mieG )
 {
-    float b = dot( AC_CameraPos, dir );
-    float c = dot( AC_CameraPos, AC_CameraPos ) - AC_OuterRadius * AC_OuterRadius;
+    float b = dot( a.AC_CameraPos, dir );
+    float c = dot( a.AC_CameraPos, a.AC_CameraPos ) - a.AC_OuterRadius * a.AC_OuterRadius;
     float t = -b + sqrt( max( b * b - c, 0.0 ) );
-    return AC_ScatterSkyShell( AC_CameraPos + dir * t, mieG );
+    return AC_ScatterSkyShell( a, a.AC_CameraPos + dir * t, mieG );
 }
 
 // Camera OUTSIDE the atmosphere shell. Differs from the above by starting the march at the ray's entry point
 // into the shell (AC_getNearIntersection) rather than at the camera, and by the 2.0 factor moving from the
 // Mie term onto the Rayleigh one — kept exactly as the D3D11 shader has it.
-float3 ApplyAtmosphericScatteringOuter( float3 worldPosition )
+float3 ApplyAtmosphericScatteringOuter( AtmosphereData a, float3 worldPosition )
 {
-    float3 camPos = AC_CameraPos;
-    float3 vPos = worldPosition - AC_SpherePosition;
+    float3 camPos = a.AC_CameraPos;
+    float3 vPos = worldPosition - a.AC_SpherePosition;
     float3 vRay = vPos - camPos;
 
     float fFar = length( vRay );
     vRay /= fFar;
 
     // Calculate the closest intersection of the ray with the outer atmosphere
-    float fNear = AC_getNearIntersection( camPos, vRay, AC_CameraHeight * AC_CameraHeight, AC_OuterRadius * AC_OuterRadius );
+    float fNear = AC_getNearIntersection( camPos, vRay, a.AC_CameraHeight * a.AC_CameraHeight, a.AC_OuterRadius * a.AC_OuterRadius );
 
     // Calculate the ray's starting position, then calculate its scattering offset
     float3 vStart = camPos + vRay * fNear;
     fFar -= fNear;
 
-    float fStartAngle = dot( vRay, vStart ) / AC_OuterRadius;
-    float fStartDepth = exp( -1.0 / AC_RayleighScaleDepth );
-    float fStartOffset = fStartDepth * AC_Escale( fStartAngle );
+    float fStartAngle = dot( vRay, vStart ) / a.AC_OuterRadius;
+    float fStartDepth = exp( -1.0 / a.AC_RayleighScaleDepth );
+    float fStartOffset = fStartDepth * AC_Escale( a, fStartAngle );
 
     // Initialize the scattering loop variables
-    float fSampleLength = fFar / AC_fSamples;
-    float fScaledLength = fSampleLength * AC_Scale;
+    float fSampleLength = fFar / a.AC_fSamples;
+    float fScaledLength = fSampleLength * a.AC_Scale;
     float3 vSampleRay = vRay * fSampleLength;
     float3 vSamplePoint = vStart + vSampleRay * 0.5;
 
-    float3 vInvWavelength = 1.0f / pow( AC_Wavelength, 4.0f );
+    float3 vInvWavelength = 1.0f / pow( a.AC_Wavelength, 4.0f );
 
     // Now loop through the sample rays
     float3 vFrontColor = float3( 0.0, 0.0, 0.0 );
-    for ( int i = 0; i < AC_nSamples; i++ )
+    for ( int i = 0; i < a.AC_nSamples; i++ )
     {
         float fSampleHeight = length( vSamplePoint );
-        float fSampleDepth = exp( AC_RayleighOverScaleDepth * ( AC_InnerRadius - fSampleHeight ) );
-        float fLightAngle = dot( AC_LightPos, vSamplePoint ) / fSampleHeight;
+        float fSampleDepth = exp( a.AC_RayleighOverScaleDepth * ( a.AC_InnerRadius - fSampleHeight ) );
+        float fLightAngle = dot( a.AC_LightPos, vSamplePoint ) / fSampleHeight;
         float fCameraAngle = dot( vRay, vSamplePoint ) / fSampleHeight;
-        float fScatter = ( fStartOffset + fSampleDepth * ( AC_Escale( fLightAngle ) - AC_Escale( fCameraAngle ) ) );
+        float fScatter = ( fStartOffset + fSampleDepth * ( AC_Escale( a, fLightAngle ) - AC_Escale( a, fCameraAngle ) ) );
 
-        float3 vAttenuate = exp( -fScatter * ( vInvWavelength * AC_Kr4PI + AC_Km4PI ) );
+        float3 vAttenuate = exp( -fScatter * ( vInvWavelength * a.AC_Kr4PI + a.AC_Km4PI ) );
 
         vFrontColor += vAttenuate * ( fSampleDepth * fScaledLength );
         vSamplePoint += vSampleRay;
     }
 
-    float3 c0 = vFrontColor * ( vInvWavelength * AC_KrESun ) * 2.0f;
-    float3 c1 = vFrontColor * AC_KmESun;
+    float3 c0 = vFrontColor * ( vInvWavelength * a.AC_KrESun ) * 2.0f;
+    float3 c1 = vFrontColor * a.AC_KmESun;
 
     float3 vDirection = camPos - vPos;
 
-    float fCos = dot( AC_LightPos, vDirection ) / length( vDirection );
+    float fCos = dot( a.AC_LightPos, vDirection ) / length( vDirection );
     float fCos2 = fCos * fCos;
 
-    return AC_getRayleighPhase( fCos2 ) * c0 + AC_getMiePhase( fCos, fCos2, AC_g, AC_g * AC_g ) * c1;
+    return AC_getRayleighPhase( fCos2 ) * c0 + AC_getMiePhase( fCos, fCos2, a.AC_g, a.AC_g * a.AC_g ) * c1;
 }
 
 #endif

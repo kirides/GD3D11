@@ -561,6 +561,9 @@ public:
     /** Returns all quad marks */
     const std::unordered_map<zCQuadMark*, QuadMarkInfo>& GetQuadMarks();
 
+    /** Runs zCQuadMark::Render's per-frame uv scale-up and alpha fade, which ZenGin's skipped Render would. */
+    void AnimateQuadMarks();
+
     /** Add new zCFlash object */
     void AddFlash( zCFlash* flash, zCVob* vob );
 

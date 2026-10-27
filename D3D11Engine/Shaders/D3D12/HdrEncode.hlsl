@@ -59,7 +59,7 @@ float3 LinearToPQ( float3 L )
 
 float4 PSEncode( VS_OUT i ) : SV_TARGET
 {
-    Texture2D src = ResourceDescriptorHeap[SrcIndex];
+    Texture2D src = GD_HEAP( SrcIndex );
     float3 c = src.SampleLevel( smpPoint, i.uv, 0 ).rgb;
 
     [branch] if ( EncodeMode == 0 )

@@ -72,7 +72,7 @@ float3 LowCloudTransmittedSunColor()
 //--------------------------------------------------------------------------------------
 #ifdef LOW_CLOUD_BINDLESS_NOISE
 SamplerState LC_NoiseSampler : register( s0 );   // linear WRAP
-float4 LowCloudNoise( float3 uvw ) { Texture3D t = ResourceDescriptorHeap[LC_NoiseIndex]; return t.SampleLevel( LC_NoiseSampler, uvw, 0.0f ); }
+float4 LowCloudNoise( float3 uvw ) { Texture3D t = GD_HEAP( LC_NoiseIndex ); return t.SampleLevel( LC_NoiseSampler, uvw, 0.0f ); }
 #else
 Texture3D LC_NoiseTex : register( t4 );
 SamplerState LC_NoiseSampler : register( s3 );   // linear WRAP

@@ -209,25 +209,16 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     RGResourceHandle halfHandle = RG_INVALID_HANDLE;
     RGResourceHandle gaussHHandle = RG_INVALID_HANDLE;   // Gaussian only: horizontal pass output
 
-    // --- Prepare: scene colour RENDER_TARGET -> compute-readable, depth out of DEPTH_WRITE, previous focus
-    // UAV -> readable. The DSV/RTV must be unbound first: a resource cannot be bound as a render target while
-    // read through an SRV (same dance RenderTAA / RenderBloom / RenderFogAndGodRays do). None of this touches
-    // graph resources, so it is its own tiny pass with no Read/Write, exactly like "Debug Lines"/"TAA".
-    graph.AddPass( RG_PASS_NAME( "DoF Prepare" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-        pass.m_executeCallback = [this, prevIdx]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+    // --- Prepare: scene colour and depth readable from compute, previous focus UAV -> readable, and the
+    // RTV/DSV unbound (a resource cannot stay a bound render target while read through an SRV).
+    graph.AddPass( RG_PASS_NAME( "DoF Prepare" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        builder.Read( ImportSceneColor( graph ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        builder.Read( ImportSceneDepth( graph ), kDoFDepthRead );
+        builder.TransitionExternal( m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             DX_ZONE( cmdList.Get(), "Depth of Field" );
             cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-            D3D12ResourceTransition pre[3];
-            UINT n = 0;
-            if ( !m_SceneColorInPixelState ) {
-                pre[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-            }
-            if ( SceneDepthTransition( kDoFDepthRead, pre[n] ) ) ++n;
-            pre[n++] = { m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-            cmdList.TransitionBarriers( pre, n );
-            m_SceneColorInPixelState = true;
             };
         } );
 
@@ -304,20 +295,10 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     // --- Full-res composite: a blended fullscreen draw straight onto the scene colour ---
     graph.AddPass( RG_PASS_NAME( "DoF Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
         builder.Read( halfHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-        // The pass's only visible result is the blend into m_SceneColor — a plain member, not a resource the
-        // graph owns — so nothing the graph can see depends on it having run. Without MarkExternalEffect,
-        // Execute()'s dead-pass elimination would see a pass that reads one texture and writes nothing the
-        // graph tracks, and skip the callback. See D3D12RenderPass::m_hasExternalSideEffect.
-        builder.MarkExternalEffect();
+        // The blend into the scene colour; also the only thing that puts it back from the blur's compute read.
+        builder.Write( ImportSceneColor( graph ), D3D12_RESOURCE_STATE_RENDER_TARGET );
 
         pass.m_executeCallback = [this, cb, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
-            // Unconditional, and before the early-out below: the blur pass read the scene colour from compute
-            // and "DoF Restore" no longer touches it, so this is the only thing that puts it back.
-            cmdList.TransitionBarriers( {
-                { m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-                } );
-            m_SceneColorInPixelState = false;
-
             D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
             if ( !half ) return;   // arena exhausted or creation failed (logged once by the arena) — leave the scene sharp
 

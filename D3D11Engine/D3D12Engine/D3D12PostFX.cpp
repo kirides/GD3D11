@@ -53,14 +53,6 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 
-namespace {
-    // Swapchain/backbuffer format — duplicated per-TU (internal linkage, no ODR concern), kept in sync with
-    // the copies in D3D12GraphicsEngine.cpp / D3D12PipelineState.cpp. SMAA's color copy + neighborhood pass
-    // target this format.
-    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
-}
-
-
 bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 	// Bloom pyramid (mirrors D3D11PFX_Bloom's mip-chain sizing exactly): mip i is size >> (i+1), stop once the
 	// shorter side drops below kBloomMinMipSize. Recreated on every resize; SRV/UAV heap slots are allocated
@@ -176,12 +168,8 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// bound). The prefilter is a COMPUTE shader, so this must be NON_PIXEL_SHADER_RESOURCE, not
 	// PIXEL_SHADER_RESOURCE — reading a resource through an SRV while it is in the wrong state returns garbage on
 	// real hardware (this, plus the bloom-mip UAV-vs-SRV state bug below, was the flickering-black-screen cause).
-	if ( !m_SceneColorInPixelState ) {
-		// Only the prefilter dispatch below consumes this, so the "after" sync is narrowed to compute.
-		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, kBarrierSyncUnspecified, D3D12_BARRIER_SYNC_COMPUTE_SHADING );
-		m_SceneColorInPixelState = true;
-	}
+	// Only the prefilter dispatch below consumes this, so the "after" sync is narrowed to compute.
+	TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_BARRIER_SYNC_COMPUTE_SHADING );
 	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
 	// A compute pass writes each bloom mip through a UAV; the next pass reads it through an SRV. That REQUIRES a
@@ -274,8 +262,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( finalBloomSrvSlot ) );
 	m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>( &settings.BloomStrength ), 0 );
 
-	m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-	m_SceneColorInPixelState = false;
+	TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -386,10 +373,7 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	{
 		D3D12ResourceTransition entry[2];
 		UINT n = 0;
-		if ( !m_SceneColorInPixelState ) {
-			entry[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-			m_SceneColorInPixelState = true;
-		}
+		if ( SceneColorTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, entry[n] ) ) ++n;
 		entry[n++] = { m_LumAdaptedBuffer.Get(), m_LumAdaptedBufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
 		m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 		m_CmdList->TransitionBarriers( entry, n );
@@ -406,14 +390,9 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LumPartialBuffer->GetGPUVirtualAddress() );
 	m_CmdList->Dispatch( m_LumGroupsX, m_LumGroupsY, 1 );
 
-	// Scene color is done being read (compute) this pass; hand it back to RENDER_TARGET for ResolveSceneToBackBuffer.
-	// PartialSums: UAV write (above) -> SRV read (below) needs a real state transition, not just a UAV
-	// barrier. Batched with the scene-color flip since neither depends on the other.
-	m_CmdList->TransitionBarriers( {
-		{ m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-		{ m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-	} );
-	m_SceneColorInPixelState = false;
+	// The scene color stays readable: FSR or the tonemap resolve reads it next. PartialSums: UAV write (above) ->
+	// SRV read (below) needs a real state transition, not just a UAV barrier.
+	m_CmdList->TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 
 	// --- Level 2: reduce partial sums -> one temporally-adapted luminance value ---
 	struct LumAdaptCB { UINT NumPartials; float DeltaTime; UINT FirstFrame; float Tau; };
@@ -488,7 +467,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	dd.DepthOrArraySize = 1;
 	dd.MipLevels = 1;
 	// Must match the display target byte-for-byte - a scratch stands in for it; with real HDR output that
-	// target is the FP16 extended-sRGB buffer rather than the R10G10B10A2 swapchain.
+	// target is the FP16 extended-sRGB buffer rather than the swapchain.
 	dd.Format = m_Pipelines.DisplayFormat;
 	dd.SampleDesc.Count = 1;
 	dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;

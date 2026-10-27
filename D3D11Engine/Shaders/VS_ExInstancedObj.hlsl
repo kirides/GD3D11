@@ -244,9 +244,11 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
     // Common processing for both cases
     float3 worldPos = mul(InstWorld(Input), float4(position, 1.0));
+    worldPos += MaterialWaveOffset(worldPos, false);
 
     // Calculate previous world position for motion vectors
     float3 prevWorldPos = mul(InstPrevWorld(Input), float4(prevPosition, 1.0));
+    prevWorldPos += MaterialWaveOffset(prevWorldPos, true);
 
     Output.vPosition = mul(float4(worldPos, 1.0), frame.M_ViewProj);
     Output.vTexcoord = Input.vTex1 + TexAniOffset;

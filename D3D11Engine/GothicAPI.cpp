@@ -649,6 +649,11 @@ void GothicAPI::OnWorldUpdate() {
         }
     }
 
+    if ( !State->QuadMarks.empty() ) {
+        ZoneScopedN( "AnimateQuadMarks" );
+        AnimateQuadMarks();
+    }
+
     if ( zCCamera* camera = GetSceneCamera() ) {
         RendererState.RendererInfo.FarPlane = camera->GetFarPlane();
         RendererState.RendererInfo.NearPlane = camera->GetNearPlane();
@@ -6186,6 +6191,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "EnableDriverExtensionsOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.EnableDriverExtensionsOverride ) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseMDIOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseMDIOverride ) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseLayeredRenderingOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseLayeredRenderingOverride ) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "UseTransientAliasingOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseTransientAliasingOverride ) ).c_str(), ini.c_str() );
 
     return XR_SUCCESS;
 }
@@ -6493,6 +6499,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DebugSettings.FeatureSet.EnableDriverExtensionsOverride = readFeatureOverride( "EnableDriverExtensionsOverride", legacyExtensions );
         s.DebugSettings.FeatureSet.UseMDIOverride = readFeatureOverride( "UseMDIOverride", ds.DebugSettings.FeatureSet.UseMDIOverride );
         s.DebugSettings.FeatureSet.UseLayeredRenderingOverride = readFeatureOverride( "UseLayeredRenderingOverride", ds.DebugSettings.FeatureSet.UseLayeredRenderingOverride );
+        s.DebugSettings.FeatureSet.UseTransientAliasingOverride = readFeatureOverride( "UseTransientAliasingOverride", ds.DebugSettings.FeatureSet.UseTransientAliasingOverride );
 
         // Fix the resolution if the players maximum resolution got lower
         /*RECT r;
@@ -6744,6 +6751,19 @@ QuadMarkInfo* GothicAPI::GetQuadMarkInfo( zCQuadMark* mark ) {
 /** Returns all quad marks */
 const std::unordered_map<zCQuadMark*, QuadMarkInfo>& GothicAPI::GetQuadMarks() {
     return State->QuadMarks;
+}
+
+void GothicAPI::AnimateQuadMarks() {
+    for ( auto it = State->QuadMarks.begin(); it != State->QuadMarks.end(); ) {
+        zCQuadMark* mark = it->first;
+        QuadMarkInfo& info = it->second;
+        if ( !mark->IsAnimating() && !info.Dynamic ) { ++it; continue; }
+
+        // The last animated frame turns the buffer back into a static one
+        if ( mark->IsAnimating() ) mark->ProcessAniTracker();
+        WorldConverter::UpdateQuadMarkInfo( &info, mark, info.Position );
+        it = info.Mesh ? std::next( it ) : State->QuadMarks.erase( it );   // every poly faded out
+    }
 }
 
 /** Add new zCFlash object */

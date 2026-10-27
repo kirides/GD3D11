@@ -15,7 +15,9 @@ struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };   /
 VS_OUT VSWorld( VS_IN i )
 {
     VS_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );   // world verts are already world-space (identity world)
+    // World verts are already world-space (identity world); waves match World.hlsl's VSMain
+    const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );
+    o.clip = mul( float4( wpos, 1.0 ), ViewProj );
     o.uv   = i.uv;
     return o;
 }
@@ -23,7 +25,7 @@ VS_OUT VSWorld( VS_IN i )
 float4 PSClip( VS_OUT i ) : SV_TARGET
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];   // bindless diffuse (ExecuteIndirect, P2.11)
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );   // bindless diffuse (ExecuteIndirect, P2.11)
     float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );          // same cutout as the opaque world PS so gaps don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
@@ -34,7 +36,7 @@ float4 PSClip( VS_OUT i ) : SV_TARGET
 void PSShadowClip( VS_OUT i )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );}
 
 // --- G-buffer prepass variant: depth + motion vectors + normals ---
@@ -42,8 +44,8 @@ void PSShadowClip( VS_OUT i )
 // the CSM cascade world caster is built from (D3D12ShadowMap), and that PSO binds no render targets and does not
 // bind b5 — emitting velocity/normal from the shared VS would leave its MotionCB root parameter undefined.
 //
-// World-mesh vertices are STATIC and already world-space, so the previous position is the current position: all
-// of the resulting velocity is camera motion, and it is EXACT (not the depth-reprojection approximation that
+// World-mesh vertices are already world-space and static except for material waves, so the velocity is camera
+// motion plus the wave's frame-to-frame step, and it is EXACT (not the depth-reprojection approximation that
 // FillCameraVelocity falls back to for pixels no prepass draw covered). The packed normal at offset 12 is
 // already octahedral world-space, but it is decoded per-vertex and re-encoded per-pixel here (NOT passed
 // through raw): interpolating the raw encoded pair across a triangle is only valid when its vertices share
@@ -64,18 +66,20 @@ struct VS_GBUF_OUT
 VS_GBUF_OUT VSWorldGBuf( VS_GBUF_IN i )
 {
     VS_GBUF_OUT o;
-    o.clip     = mul( float4( i.pos, 1.0 ), ViewProj );
+    const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );
+    const float3 prevPos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, true );   // only waves move
+    o.clip     = mul( float4( wpos, 1.0 ), ViewProj );
     o.uv       = i.uv;
     o.wnrm     = DecodeOctNormalMV( i.nrm );
-    o.currClip = mul( float4( i.pos, 1.0 ), UnjitteredViewProj );
-    o.prevClip = mul( float4( i.pos, 1.0 ), PrevViewProj );   // static geometry: same world position last frame
+    o.currClip = mul( float4( wpos, 1.0 ), UnjitteredViewProj );
+    o.prevClip = mul( float4( prevPos, 1.0 ), PrevViewProj );
     return o;
 }
 
 GBUF_OUT PSClipGBuf( VS_GBUF_OUT i )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );   // identical cutout to PSClip — same depth, same coverage
     GBUF_OUT o;
     o.velocity = CalculateVelocity( i.currClip, i.prevClip );

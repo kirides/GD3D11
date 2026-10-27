@@ -2,6 +2,7 @@
 #include "VulkanRhiInternal.h"
 #include "VulkanSpirvPatch.h"
 #include "../Logger.h"
+#include "../RHI/ShaderNames.h"
 
 #include <algorithm>
 #include <cctype>
@@ -380,6 +381,9 @@ namespace VulkanRhi {
             }
             p.PushOffset = pushBytes;
             p.PushStages = StagesOf( desc.pParameters[i].ShaderVisibility );
+            // An ALL block of a vertex-input (graphics) signature only reaches VS and PS here, which keeps it DGC-able
+            if ( p.PushStages == VK_SHADER_STAGE_ALL && ( desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+                p.PushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             pushRanges.push_back( { p.PushStages, pushBytes, bytes } );
             pushBytes += bytes;
             rs->m_PushConstantParams |= 1u << i;
@@ -407,6 +411,15 @@ namespace VulkanRhi {
         DeviceImpl* device = m_Device;
         VkPipeline pipeline = m_Pipeline;
         device->DeferDestroy( [device, pipeline]() { if ( pipeline ) vkDestroyPipeline( device->Vk(), pipeline, nullptr ); } );
+    }
+
+    namespace {
+        /** Names a pipeline after its shaders (D3D12ShaderBackend registers them), for breadcrumbs and validation. */
+        void NameFromShaders( DeviceImpl* device, PipelineStateImpl* pso, const std::string& name ) {
+            if ( name.empty() ) return;
+            pso->m_CrumbName = device->InternName( std::wstring( name.begin(), name.end() ).c_str() );
+            device->SetObjectName( VK_OBJECT_TYPE_PIPELINE, VkUtil::HandleToU64( pso->m_Pipeline ), name.c_str() );
+        }
     }
 
     void PipelineStateImpl::SetName( LPCWSTR name ) {
@@ -549,6 +562,8 @@ namespace VulkanRhi {
             VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
             VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_DEPTH_BIAS,
         };
+        // Without vertex bindings there is no stride to set; keeping it dynamic trips VUID-vkCmdDraw-pStrides-04913.
+        if ( vbBindings.empty() ) std::erase( dynamics, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE );
         const VulkanDeviceCaps& caps = VkCaps();
         if ( caps.DynamicBlend ) {
             dynamics.insert( dynamics.end(), { VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,
@@ -577,6 +592,7 @@ namespace VulkanRhi {
         pso->m_BindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         pso->m_RootSig = rs;
         pso->m_ColorCount = rtCount;
+        pso->m_DynamicStride = !vbBindings.empty();
         pso->m_HasDepth = desc->DSVFormat != DXGI_FORMAT_UNKNOWN;
         pso->m_UboFallback = uboFallback;
         PipelineStateImpl::Dynamic& dy = pso->m_Dynamic;
@@ -665,6 +681,8 @@ namespace VulkanRhi {
             pso->m_Shared = PublishSharedPipeline( key, pipeline );
         }
         pso->m_Pipeline = pso->m_Shared->Pipeline;
+        NameFromShaders( this, pso.Get(), ShaderNames::Describe( desc->VS.pShaderBytecode, desc->VS.BytecodeLength,
+            desc->PS.pShaderBytecode, desc->PS.BytecodeLength ) );
         *outPso = pso.Detach();
         return S_OK;
     }
@@ -700,6 +718,7 @@ namespace VulkanRhi {
             pso->m_Pipeline = VK_NULL_HANDLE;
             return E_FAIL;
         }
+        NameFromShaders( this, pso.Get(), ShaderNames::Lookup( desc->CS.pShaderBytecode, desc->CS.BytecodeLength ) );
         *outPso = pso.Detach();
         return S_OK;
     }

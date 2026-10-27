@@ -30,12 +30,12 @@ static const uint kMatSlotMask = 0x0000FFFFu;   // MaterialFx packs its table sl
 
 #ifdef RT_SCENE_HEAP_BASE
 // Heap slot RT_SCENE_HEAP_BASE + n holds what tn holds below (D3D12RayTracing::PixelScene)
-RaytracingAccelerationStructure RtsScene() { RaytracingAccelerationStructure r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE]; return r; }
-StructuredBuffer<RtGeom> RtsGeoms() { StructuredBuffer<RtGeom> r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + 1u]; return r; }
-StructuredBuffer<RtInstance> RtsInstances() { StructuredBuffer<RtInstance> r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + 2u]; return r; }
-StructuredBuffer<uint2> RtsWorldGeoms() { StructuredBuffer<uint2> r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + 3u]; return r; }
-StructuredBuffer<uint> RtsWorldMats() { StructuredBuffer<uint> r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + 4u]; return r; }
-ByteAddressBuffer RtsBuffer( uint t ) { ByteAddressBuffer r = ResourceDescriptorHeap[RT_SCENE_HEAP_BASE + t]; return r; }
+RaytracingAccelerationStructure RtsScene() { RaytracingAccelerationStructure r = GD_HEAP( RT_SCENE_HEAP_BASE ); return r; }
+StructuredBuffer<RtGeom> RtsGeoms() { StructuredBuffer<RtGeom> r = GD_HEAP( RT_SCENE_HEAP_BASE + 1u ); return r; }
+StructuredBuffer<RtInstance> RtsInstances() { StructuredBuffer<RtInstance> r = GD_HEAP( RT_SCENE_HEAP_BASE + 2u ); return r; }
+StructuredBuffer<uint2> RtsWorldGeoms() { StructuredBuffer<uint2> r = GD_HEAP( RT_SCENE_HEAP_BASE + 3u ); return r; }
+StructuredBuffer<uint> RtsWorldMats() { StructuredBuffer<uint> r = GD_HEAP( RT_SCENE_HEAP_BASE + 4u ); return r; }
+ByteAddressBuffer RtsBuffer( uint t ) { ByteAddressBuffer r = GD_HEAP( RT_SCENE_HEAP_BASE + t ); return r; }
 // Undefined again at the end of this file
 #define Scene      RtsScene()
 #define Geoms      RtsGeoms()
@@ -149,7 +149,7 @@ float TextureLod( Tri t, Texture2D tex, float coneWidth, float cosine )
 bool PassesAlpha( Tri t, float2 bary, float coneWidth, float lodBias )
 {
     if ( ( t.material & kMatAlphaTest ) == 0u || ( t.material & kMatNoTexture ) != 0u ) return true;
-    Texture2D tex = ResourceDescriptorHeap[t.material & kMatSlotMask];
+    Texture2D tex = GD_HEAP( t.material & kMatSlotMask );
     float lod = max( TextureLod( t, tex, coneWidth, 1.0 ) + lodBias, 0.0 );
     return tex.SampleLevel( smpWrap, InterpUV( t, bary ), lod ).a >= 0.5;
 }

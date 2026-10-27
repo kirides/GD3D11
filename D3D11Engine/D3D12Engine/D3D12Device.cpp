@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "D3D12Device.h"
 #include "D3D12TracyDebug.h"
+#include "../RHI/GpuDebug.h"
 
 #include <map>
 
@@ -313,10 +314,13 @@ bool D3D12Device::Init() {
     }
 
 #ifdef DEBUG_D3D11
-    constexpr bool DEBUG_D3D11_ENABLED = true;
+    constexpr bool kDebugBuild = true;
 #else
-    constexpr bool DEBUG_D3D11_ENABLED = false;
+    constexpr bool kDebugBuild = false;
 #endif
+    // -D3D12GBV: debug layer + GPU-based validation in any build (needs D3D12SDKLayers.dll).
+    const bool gbv = GpuDebug::D3D12Gbv();
+    const bool debugLayer = kDebugBuild || gbv;
 
     // Debug layer + DRED must be configured before device creation. A factory-made (Agility) device reads
     // them from the factory's configuration interfaces, not the global D3D12GetDebugInterface state.
@@ -331,14 +335,17 @@ bool D3D12Device::Init() {
         };
 
     ComPtr<ID3D12Debug> debug;
-    if ( DEBUG_D3D11_ENABLED && SUCCEEDED( getConfig( CLSID_D3D12Debug, IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( debugLayer && SUCCEEDED( getConfig( CLSID_D3D12Debug, IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
         debug->EnableDebugLayer();
         Logging::Inf( "D3D12 debug layer enabled." );
     }
 
     ComPtr<ID3D12Debug1> debug1;
-    if ( DEBUG_D3D11_ENABLED && debug && SUCCEEDED( debug.As( &debug1 ) ) ) {
-        debug1->SetEnableGPUBasedValidation( FALSE ); // NOTE: This is REALLY expensive. Only use when actually debugging hard crashes.
+    if ( debugLayer && debug && SUCCEEDED( debug.As( &debug1 ) ) ) {
+        debug1->SetEnableGPUBasedValidation( gbv ? TRUE : FALSE );   // REALLY expensive; only for hard crashes
+        if ( gbv ) Logging::Wrn( "D3D12: -D3D12GBV: GPU-based validation on; expect a large slowdown." );
+    } else if ( gbv ) {
+        Logging::Wrn( "D3D12: -D3D12GBV requested but the debug layer is unavailable (D3D12SDKLayers.dll missing?)." );
     }
 
     // Auto-breadcrumbs + context are always on (DiagnoseErrors dumps them on device removal); page faults debug-only.
@@ -346,7 +353,7 @@ bool D3D12Device::Init() {
     if ( SUCCEEDED( getConfig( CLSID_D3D12DeviceRemovedExtendedData, IID_PPV_ARGS( pDredSettings.ReleaseAndGetAddressOf() ) ) ) ) {
         pDredSettings->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
         pDredSettings->SetBreadcrumbContextEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-        if ( DEBUG_D3D11_ENABLED ) {
+        if ( debugLayer ) {
             pDredSettings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
         }
         Logging::Inf( "D3D12: DRED auto-breadcrumbs enabled ({}).", agilityDeviceFactory ? "Agility device factory" : "global" );
@@ -375,7 +382,7 @@ bool D3D12Device::Init() {
 
     // Debug-layer messages otherwise only reach OutputDebugString; a CPU-side validation removal leaves DRED empty.
     ComPtr<ID3D12InfoQueue1> infoQueue;
-    if ( DEBUG_D3D11_ENABLED && SUCCEEDED( m_Device.As( &infoQueue ) ) ) {
+    if ( debugLayer && SUCCEEDED( m_Device.As( &infoQueue ) ) ) {
         auto onMessage = []( D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id, LPCSTR desc, void* ) {
             if ( severity <= D3D12_MESSAGE_SEVERITY_ERROR )
                 Logging::Err( "D3D12 debug layer (#{}): {}", static_cast<int>( id ), desc ? desc : "" );

@@ -77,7 +77,7 @@ float3 SrgbToLinear( float3 c )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    Texture2D<float4> difTex = ResourceDescriptorHeap[DiffuseSlot( DiffuseIndex )];
+    Texture2D<float4> difTex = GD_HEAP( DiffuseSlot( DiffuseIndex ) );
     float4 t = difTex.Sample( smp, TexAniUv( i.uv, DiffuseIndex ) );
 
     // Quad marks: PS_World's "WorldMesh can always do the alphatest" — clip regardless of the material's

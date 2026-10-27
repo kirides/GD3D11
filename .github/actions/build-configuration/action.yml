@@ -20,7 +20,7 @@ runs:
     - name: Setup vcpkg
       uses: lukka/run-vcpkg@v11
       with:
-        vcpkgGitCommitId: 39344dff01c5a5a0134caf2624cdd492f05d30ea
+        vcpkgGitCommitId: 0e5030f583a5427123cd3b714255e5ae62faa3ba
         # Only clone/bootstrap vcpkg and export VCPKG_ROOT here; the actual manifest
         # install (with the x86-windows-static-md triplet) happens automatically
         # during MSBuild via vcpkg's own MSBuild integration (vcpkg.props/targets),

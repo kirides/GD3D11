@@ -7,6 +7,7 @@
 #include "D3D12TracyDebug.h"
 #include "D3D12EngineCommon.h"
 #include "../Toolbox.h"
+#include "../RHI/ShaderNames.h"
 
 #include <algorithm>
 #include <vector>
@@ -723,7 +724,9 @@ namespace {
             n.Flags = desc->Flags;
             ComPtr<ID3D12PipelineState> pso;
             const HRESULT hr = Native()->CreateGraphicsPipelineState( &n, IID_PPV_ARGS( pso.GetAddressOf() ) );
-            if ( SUCCEEDED( hr ) ) *outPso = new PipelineStateImpl( std::move( pso ), n.pRootSignature );
+            if ( FAILED( hr ) ) return hr;
+            NameFromShaders( pso.Get(), ShaderNames::Describe( n.VS.pShaderBytecode, n.VS.BytecodeLength, n.PS.pShaderBytecode, n.PS.BytecodeLength ) );
+            *outPso = new PipelineStateImpl( std::move( pso ), n.pRootSignature );
             return hr;
         }
         HRESULT CreateComputePipelineState( const Rhi::ComputePipelineStateDesc* desc, Rhi::PipelineState** outPso ) override {
@@ -735,8 +738,14 @@ namespace {
             n.Flags = desc->Flags;
             ComPtr<ID3D12PipelineState> pso;
             const HRESULT hr = Native()->CreateComputePipelineState( &n, IID_PPV_ARGS( pso.GetAddressOf() ) );
-            if ( SUCCEEDED( hr ) ) *outPso = new PipelineStateImpl( std::move( pso ), n.pRootSignature );
+            if ( FAILED( hr ) ) return hr;
+            NameFromShaders( pso.Get(), ShaderNames::Lookup( n.CS.pShaderBytecode, n.CS.BytecodeLength ) );
+            *outPso = new PipelineStateImpl( std::move( pso ), n.pRootSignature );
             return hr;
+        }
+        /** Debug-layer, GBV and DRED messages then name the shaders (D3D12ShaderBackend registers them). */
+        static void NameFromShaders( ID3D12PipelineState* pso, const std::string& name ) {
+            if ( !name.empty() ) pso->SetName( std::wstring( name.begin(), name.end() ).c_str() );
         }
         HRESULT CreateCommandSignature( const D3D12_COMMAND_SIGNATURE_DESC* desc, Rhi::RootSignature* rootSig,
             Rhi::CommandSignature** outSig ) override {

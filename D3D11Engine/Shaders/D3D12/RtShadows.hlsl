@@ -56,7 +56,7 @@ uint ComputeZSlice( float hwDepth )
 
 float RawDepth( int2 px )
 {
-    Texture2D<float> depth = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float> depth = GD_HEAP( DepthIndex );
     return depth.Load( int3( clamp( px, int2( 0, 0 ), int2( Size ) - 1 ), 0 ) );
 }
 
@@ -283,7 +283,7 @@ uint FirstLane( uint4 lanes )
 void CSMain( uint3 id : SV_DispatchThreadID )
 {
     if ( any( id.xy >= Size ) ) return;
-    RWTexture2D<uint2> outMask = ResourceDescriptorHeap[Filter != 0u ? RawIndex : OutIndex];
+    RWTexture2D<uint2> outMask = GD_HEAP( Filter != 0u ? RawIndex : OutIndex );
     int2 px = int2( id.xy );
     float raw = RawDepth( px );
     const bool separate = ( Filter & kFilterContact ) != 0u;
@@ -292,7 +292,7 @@ void CSMain( uint3 id : SV_DispatchThreadID )
         outMask[px] = uint2( 0, 0 );   // sky: nothing traced
         if ( separate )
         {
-            RWTexture2D<uint> contactOut = ResourceDescriptorHeap[ContactIndex];
+            RWTexture2D<uint> contactOut = GD_HEAP( ContactIndex );
             contactOut[px] = 0u;
         }
         return;
@@ -391,7 +391,7 @@ void CSMain( uint3 id : SV_DispatchThreadID )
     outMask[px] = m;
     if ( separate )
     {
-        RWTexture2D<uint> contactOut = ResourceDescriptorHeap[ContactIndex];
+        RWTexture2D<uint> contactOut = GD_HEAP( ContactIndex );
         contactOut[px] = contactBits;
     }
 
@@ -478,8 +478,8 @@ float ContactVisibility( bool centreMarched, bool centreHit, uint counts )
 void CSFilter( uint3 id : SV_DispatchThreadID )
 {
     if ( any( id.xy >= Size ) ) return;
-    RWTexture2D<uint2> rawMask = ResourceDescriptorHeap[RawIndex];
-    RWTexture2D<uint2> outMask = ResourceDescriptorHeap[OutIndex];
+    RWTexture2D<uint2> rawMask = GD_HEAP( RawIndex );
+    RWTexture2D<uint2> outMask = GD_HEAP( OutIndex );
     int2 px = int2( id.xy );
     uint2 c = rawMask[px];
     if ( ( c.x & kRtMaskTraced ) == 0u )
@@ -512,7 +512,7 @@ void CSFilter( uint3 id : SV_DispatchThreadID )
         outMask[px] = c;
         return;
     }
-    RWTexture2D<uint> contactMask = ResourceDescriptorHeap[ContactIndex];
+    RWTexture2D<uint> contactMask = GD_HEAP( ContactIndex );
     uint cc = contactOn ? contactMask[px] : 0u;
 
     // Per slot: lit and tap counts per ring, shadowed taps at bit 24; the shadowed taps' code sum; contact counts

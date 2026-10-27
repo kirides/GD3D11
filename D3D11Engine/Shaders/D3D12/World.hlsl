@@ -76,13 +76,15 @@ struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
+    // World verts are already world-space; DepthPrepass.hlsl's VSWorld waves them identically
+    const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );
+    o.clip = mul( float4( wpos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.col;
-    o.wpos = i.pos;                          // world verts are already world-space
+    o.wpos = wpos;
     o.wnrm = DecodeOctNormal( i.nrm );       // already world-space
     o.wtan = DecodeTangent( i.tan );         // already world-space, same basis as wnrm
-    o.fogDist = distance(i.pos, CamPosWS);
+    o.fogDist = distance(wpos, CamPosWS);
     return o;
 }
 
@@ -107,7 +109,10 @@ cbuffer QuadMarkCB : register(b4) { float4 QmWorldRow0; float4 QmWorldRow1; floa
 
 struct VS_IN_QUADMARK { float3 pos : POSITION; float3 nrm : NORMAL; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
 
-VS_OUT VSQuadMark( VS_IN_QUADMARK i )
+// Vertex alpha = zTQuadMarkAniState::alpha of a fading mark; VS_OUT's col.a means ignoreSunLight to PSMain.
+struct VS_OUT_QUADMARK { VS_OUT v; float fade : TEXCOORD6; };
+
+VS_OUT_QUADMARK VSQuadMark( VS_IN_QUADMARK i )
 {
     VS_OUT o;
     const float4 lpos = float4( i.pos, 1.0 );
@@ -124,20 +129,24 @@ VS_OUT VSQuadMark( VS_IN_QUADMARK i )
     o.wtan = float4( 0, 0, 0, 0 );   // no packed tangent on this CPU-side vertex — PerturbNormal falls back
                                       // to the derivative frame here, same as D3D11's untangented quad marks.
     o.fogDist = distance(wpos, CamPosWS);
-    return o;
+    VS_OUT_QUADMARK r;
+    r.v = o;
+    r.fade = i.col.a;
+    return r;
 }
 
+// Lit color in .rgb, the diffuse texture's alpha in .a
 float4 ShadeWorld( VS_OUT i, uniform bool alphaTest )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];   // bindless diffuse (ExecuteIndirect, P2.11)
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );   // bindless diffuse (ExecuteIndirect, P2.11)
     float4 t = difTex.Sample( smp, i.uv );
     if ( alphaTest ) clip( t.a - 0.5 );       // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 N = normalize( i.wnrm );
     float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )       // bindless normal map (BC5/BC1, Z reconstructed) if this material has one
     {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
+        Texture2D nrmTex = GD_HEAP( MatNormalIndex );
         N = PerturbNormal( N, i.wpos, i.wtan, nrmTex, i.uv, smp, MatNormalStrength );
     }
     N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), difTex, smp );
@@ -177,19 +186,26 @@ float4 ShadeWorld( VS_OUT i, uniform bool alphaTest )
     // Linear distance fog toward the (linearized) atmosphere color — keeps the HDR buffer consistently linear.
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     rgb = lerp( rgb, SrgbToLinear( FogColor ), f );
-    return float4( rgb, 1.0 );
+    return float4( rgb, t.a );
 }
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    return ShadeWorld( i, true );
+    return float4( ShadeWorld( i, true ).rgb, 1.0 );
 }
 
 // Opaque world materials after the depth prepass: depth EQUAL already rejects everything hidden, so no clip.
 [earlydepthstencil]
 float4 PSMainOpaque( VS_OUT i ) : SV_TARGET
 {
-    return ShadeWorld( i, false );
+    return float4( ShadeWorld( i, false ).rgb, 1.0 );
+}
+
+// Lit quad marks: the texture's alpha drives the blend, faded by the mark's vertex alpha like D3D11
+float4 PSQuadMark( VS_OUT_QUADMARK i ) : SV_TARGET
+{
+    const float4 c = ShadeWorld( i.v, true );
+    return float4( c.rgb, c.a * i.fade );
 }
 
 // =====================================================================================================
@@ -234,17 +250,18 @@ struct VST_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : 
 VST_OUT VSTransparent( VS_IN i )
 {
     VST_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
+    const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );   // already world-space
+    o.clip = mul( float4( wpos, 1.0 ), ViewProj );
     o.uv = i.uv;
     o.col = i.col;
-    o.wpos = i.pos;   // world verts are already world-space
+    o.wpos = wpos;
     return o;
 }
 
 float4 PSTransparent( VST_OUT i ) : SV_TARGET
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     float4 c = difTex.Sample( smp, i.uv );
     // Gothic's vertex color is a BGRA DWORD read through an R8G8B8A8 view — recover RGBA (CLAUDE.md).
     // (D3D11's PS_Simple multiplies it unswizzled, i.e. with R/B transposed; that is a latent bug there,
@@ -273,8 +290,9 @@ struct VSTE_OUT { float4 clip : SV_POSITION; float3 wpos : TEXCOORD0; float3 wnr
 VSTE_OUT VSTransparentEnv( VS_IN i )
 {
     VSTE_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
-    o.wpos = i.pos;                          // world verts are already world-space
+    const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );   // already world-space
+    o.clip = mul( float4( wpos, 1.0 ), ViewProj );
+    o.wpos = wpos;
     o.wnrm = DecodeOctNormal( i.nrm );       // already world-space
     return o;
 }
@@ -286,7 +304,7 @@ float4 PSTransparentEnv( VSTE_OUT i ) : SV_TARGET
     float3 eye = normalize( i.wpos - EnvCamPosWS );
     float3 r = normalize( reflect( eye, normalize( i.wnrm ) ) );
 
-    TextureCube envTex = ResourceDescriptorHeap[EnvCubeIndex];
+    TextureCube envTex = GD_HEAP( EnvCubeIndex );
     float3 env = envTex.Sample( smp, r ).rgb;
 
     // rgbGen IDENTITY: emitted unlit and unmodulated, only the alpha is driven. The scene target is linear
@@ -302,7 +320,7 @@ float4 PSTransparentEnv( VSTE_OUT i ) : SV_TARGET
 float4 PSTransparentFoam( VST_OUT i ) : SV_TARGET
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     float4 colour = difTex.Sample( smp, i.uv );
 
     // darken / lighten foam based on the day / night cycle
@@ -366,7 +384,7 @@ float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
     else                     { darknessFactor = 7.5 - ( 1 + SunHeight ) * 3; }
 
     // sample the texture we want to fade out and apply relevant darkness factor for day / night cycle
-    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );
     float4 color = difTex.Sample( smp, i.uv ) / darknessFactor;
 
     return float4( FinishTransparentColor( TransparencyFrameIndex, FogMode, i.clip.xy, i.wpos,

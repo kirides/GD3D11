@@ -88,7 +88,7 @@ runs:
     - name: Fetch D3D12 DXC runtime (dxcompiler/dxil)
       shell: pwsh
       env:
-        DXC_VERSION: '1.9.2607.13'
+        DXC_VERSION: '1.9.2609.5'
       run: |
         $ErrorActionPreference = "Stop"
 

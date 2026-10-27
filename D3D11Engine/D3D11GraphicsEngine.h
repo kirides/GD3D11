@@ -816,6 +816,9 @@ private:
         float EnvAlpha;
         float DetailScale;
         XMFLOAT4 ViewToWorld[3];
+        XMFLOAT4 Wave;           // MaterialFx::GetWave, zero = no waves
+        float WaveTimeMs, WavePrevTimeMs;
+        XMFLOAT2 Pad;
     };
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_MaterialFxZeroCB;   // b12 whenever no stage is active
     MaterialFxCB m_MaterialFxBound = {};

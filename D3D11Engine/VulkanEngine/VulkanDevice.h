@@ -22,15 +22,19 @@ struct VulkanDeviceCaps {
     bool SurfaceCapabilities2 = false;  // VK_KHR_get_surface_capabilities2 (instance)
     bool PresentWait = false;           // VK_KHR_present_id + present_wait
     bool PresentWait2 = false;          // VK_KHR_present_id2 + present_wait2; still needs per-surface support
+    bool SwapchainMaintenance1 = false; // KHR/EXT: present fences, present-mode switching without a rebuild
     bool HdrMetadata = false;
     bool NullDescriptor = false;        // robustness2: unbound-but-used slots read zero instead of faulting
     bool MemoryBudget = false;
     bool MemoryPriority = false;       // allocations carry a residency priority
     bool PageableMemory = false;       // the OS may page device-local memory out under pressure, like D3D12
     bool DeviceFault = false;
+    bool AddressBindingReport = false;  // GPU VA ranges reported per object, to name a device-fault address
     bool BufferMarkerAMD = false;
     bool DiagnosticCheckpointsNV = false;
+    bool DiagnosticsConfigNV = false;   // -VKAFTERMATH: shader debug info + resource tracking for Nsight Aftermath dumps
     bool FragmentStoresAndAtomics = false;
+    bool VertexStoresAndAtomics = false;
     bool DepthBiasClamp = false;
     bool FillModeNonSolid = false;
     /** Heap-indexed ConstantBuffers can live in the mutable heap (feature + limits); else they need regular bindings. */
@@ -103,10 +107,14 @@ public:
 
     /** Debug-utils object name (no-op without VK_EXT_debug_utils). */
     void SetObjectName( VkObjectType type, uint64_t handle, const char* name ) const;
+    std::string GetObjectName( uint64_t handle ) const;
+    /** Logs the objects whose GPU VA range covers address +/- precision, bound or freed (address binding report). */
+    void LogAddressOwners( uint64_t address, uint64_t precision ) const;
 
 private:
     VkInstance               m_Instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT m_Messenger = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT m_BindingMessenger = VK_NULL_HANDLE;
     VkPhysicalDevice         m_PhysicalDevice = VK_NULL_HANDLE;
     VkDevice                 m_Device = VK_NULL_HANDLE;
     VkQueue                  m_GraphicsQueue = VK_NULL_HANDLE;

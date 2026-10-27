@@ -7,12 +7,12 @@
 // Composite: Idx0 = cloud SRV, Idx1 = footprint depth SRV, Idx2 = sky cloud SRV, Idx3 = scene depth SRV
 cbuffer LowCloudPassCB : register(b0) { uint Idx0; uint Idx1; uint Idx2; uint Idx3; };
 
-float4 LowCloudLoadLayer( int2 p ) { Texture2D t = ResourceDescriptorHeap[Idx0]; return t.Load( int3( p, 0 ) ); }
-float LowCloudLoadDepth( int2 p ) { Texture2D<float> t = ResourceDescriptorHeap[Idx1]; return t.Load( int3( p, 0 ) ); }
-float4 LowCloudLoadSky( int2 p ) { Texture2D t = ResourceDescriptorHeap[Idx2]; return t.Load( int3( p, 0 ) ); }
+float4 LowCloudLoadLayer( int2 p ) { Texture2D t = GD_HEAP( Idx0 ); return t.Load( int3( p, 0 ) ); }
+float LowCloudLoadDepth( int2 p ) { Texture2D<float> t = GD_HEAP( Idx1 ); return t.Load( int3( p, 0 ) ); }
+float4 LowCloudLoadSky( int2 p ) { Texture2D t = GD_HEAP( Idx2 ); return t.Load( int3( p, 0 ) ); }
 int2 LowCloudLayerSize()
 {
-    Texture2D t = ResourceDescriptorHeap[Idx0];
+    Texture2D t = GD_HEAP( Idx0 );
     uint width, height;
     t.GetDimensions( width, height );
     return max( int2( width, height ), int2( 1, 1 ) );
@@ -28,21 +28,21 @@ int2 LowCloudLayerSize()
 [numthreads( 4, 4, 4 )]
 void CSNoise( uint3 id : SV_DispatchThreadID )
 {
-    RWTexture3D<float4> noiseOut = ResourceDescriptorHeap[Idx0];
+    RWTexture3D<float4> noiseOut = GD_HEAP( Idx0 );
     noiseOut[id] = LowCloudNoiseTexel( id );
 }
 
 [numthreads( 8, 8, 1 )]
 void CSGenerate( uint3 id : SV_DispatchThreadID )
 {
-    RWTexture2D<float4> cloudOut = ResourceDescriptorHeap[Idx1];
-    RWTexture2D<float>  depthOut = ResourceDescriptorHeap[Idx2];
-    RWTexture2D<float4> skyOut   = ResourceDescriptorHeap[Idx3];
+    RWTexture2D<float4> cloudOut = GD_HEAP( Idx1 );
+    RWTexture2D<float>  depthOut = GD_HEAP( Idx2 );
+    RWTexture2D<float4> skyOut   = GD_HEAP( Idx3 );
     uint width, height;
     cloudOut.GetDimensions( width, height );
     if ( id.x >= width || id.y >= height ) return;
 
-    Texture2D<float> depthTex = ResourceDescriptorHeap[Idx0];
+    Texture2D<float> depthTex = GD_HEAP( Idx0 );
     uint depthWidth, depthHeight;
     depthTex.GetDimensions( depthWidth, depthHeight );
     float2 uv = ( float2( id.xy ) + 0.5f ) / float2( width, height );
@@ -73,7 +73,7 @@ VS_OUT VSFullscreen( uint vid : SV_VertexID )
 // ONE / INV_SRC_ALPHA onto the scene
 float4 PSComposite( VS_OUT i ) : SV_TARGET
 {
-    Texture2D<float> sceneDepth = ResourceDescriptorHeap[Idx3];
+    Texture2D<float> sceneDepth = GD_HEAP( Idx3 );
     float4 clouds = CompositeLowClouds( i.uv, sceneDepth.Load( int3( int2( i.pos.xy ), 0 ) ), i.pos.xy );
     float3 color = pow( max( clouds.rgb / max( clouds.a, 0.00001f ), 0.0f ), 2.2f );
     return float4( color * clouds.a, clouds.a );

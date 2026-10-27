@@ -213,6 +213,7 @@ void GothicRendererSettings::ApplyDeviceCapabilities( const GraphicsDeviceCapabi
     fs.EnableDriverExtensions = resolve( fs.EnableDriverExtensionsOverride, caps.DriverExtensions );
     fs.UseMDI = resolve( fs.UseMDIOverride, caps.MultiDrawIndirect );
     fs.UseLayeredRendering = resolve( fs.UseLayeredRenderingOverride, caps.LayeredRendering );
+    fs.UseTransientAliasing = resolve( fs.UseTransientAliasingOverride, caps.TransientAliasing );
 }
 
 void GothicRendererSettings::ApplyGraphicsPreset()

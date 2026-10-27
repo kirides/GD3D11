@@ -64,8 +64,8 @@ void CSBlur( uint3 tid : SV_DispatchThreadID )
 {
     if ( any( tid.xy >= (uint2)BlurOutRes ) ) return;
 
-    Texture2D<float4>   src = ResourceDescriptorHeap[BlurSrcIndex];
-    RWTexture2D<float4> dst = ResourceDescriptorHeap[BlurOutIndex];
+    Texture2D<float4>   src = GD_HEAP( BlurSrcIndex );
+    RWTexture2D<float4> dst = GD_HEAP( BlurOutIndex );
 
     // Pass 1's source is the FULL-res frame while the step is a QUARTER-res texel: that is D3D11's downscale,
     // which renders into a quarter-res viewport with the same 0..1 UVs and a quarter-res B_PixelSize.
@@ -107,8 +107,8 @@ VS_OUT VSFullscreen( uint vid : SV_VertexID )
 
 float4 PSComposite( VS_OUT i ) : SV_TARGET
 {
-    Texture2D<float4> blurred    = ResourceDescriptorHeap[CompBlurIndex];
-    Texture2D<float4> distortion = ResourceDescriptorHeap[CompDistortionIndex];
+    Texture2D<float4> blurred    = GD_HEAP( CompBlurIndex );
+    Texture2D<float4> distortion = GD_HEAP( CompDistortionIndex );
 
     float2 uv = i.uv;
 

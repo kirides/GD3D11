@@ -11,6 +11,7 @@
 #include "../WorldConverter.h"
 #include "../VertexTypes.h"
 #include "../zCMaterial.h"
+#include "../MaterialFx.h"
 #include "../zCTexture.h"
 #include "../zCVob.h"
 #include "../zCMorphMesh.h"
@@ -46,7 +47,6 @@ void D3D12ShadowMap::Attach( D3D12GraphicsEngine& engine ) {
 using namespace DirectX;
 
 namespace {
-    // TODO: in the future make this depend on device capabilities.
     constexpr const char* Shadermodel_PS = "ps_6_6";
     constexpr const char* Shadermodel_VS = "vs_6_6";
 
@@ -941,8 +941,9 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 					}
 				}
 
+				// Waving casters also stay out of the merged opaque run: their VS reads the material
 				const bool alphaTested = ( tex && tex->HasAlphaChannel() )
-					|| meshKey.Material->HasAlphaTest();
+					|| meshKey.Material->HasAlphaTest() || MaterialFx::HasWaves( meshKey.Material );
 
 				g_WorldCasters.push_back( { mesh, m_E->PackMaterialFx( diffuseIdx, meshKey.Material ),
 					static_cast<UINT>( mesh->Indices.size() ), mesh->BaseIndexLocation, alphaTested } );

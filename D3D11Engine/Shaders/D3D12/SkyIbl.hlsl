@@ -84,7 +84,7 @@ float3 GradientSky( float3 d )
 
 float3 AtmosphereSky( float3 d )
 {
-    return AC_ScatterSkyDirection( normalize( float3( d.x, max( d.y, 0.0 ), d.z ) ), AtmoMieG );
+    return AC_ScatterSkyDirection( AtmoCB, normalize( float3( d.x, max( d.y, 0.0 ), d.z ) ), AtmoMieG );
 }
 
 // Upper-hemisphere sky; `atmoScale` maps the dome's units onto the gradient's, `atmoWeight` blends it in.
@@ -144,8 +144,6 @@ groupshared float gs_AtmoLum[64];
 [numthreads( 8, 8, 1 )]
 void CSSkyRadiance( uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex )
 {
-    // Unconditional: assigned inside the branch, DXC (-Od DXIL) dropped the per-texel dome term to 0.
-    g_Atmosphere = AtmoCB;
     float atmoScale = 0.0;
     float atmoWeight = 0.0;
     [branch]
@@ -169,7 +167,7 @@ void CSSkyRadiance( uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex )
         float atmoLum = gs_AtmoLum[0];
         atmoScale = gs_GradLum[0] / max( atmoLum, 1e-8 );
         // Hand dusk over to Gothic's own sky palette by sun height; the luminance guard only catches an empty dome.
-        atmoWeight = AtmoBlend * smoothstep( 0.05, 0.3, AC_LightPos.y ) * smoothstep( 1e-7, 1e-5, atmoLum / 64.0 );
+        atmoWeight = AtmoBlend * smoothstep( 0.05, 0.3, AtmoCB.AC_LightPos.y ) * smoothstep( 1e-7, 1e-5, atmoLum / 64.0 );
     }
 
     uint size = (uint)FaceSize;

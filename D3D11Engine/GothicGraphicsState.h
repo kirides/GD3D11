@@ -1129,6 +1129,7 @@ struct GothicRendererSettings {
         DebugSettings.FeatureSet.EnableDriverExtensionsOverride = FEATURE_AUTO;
         DebugSettings.FeatureSet.UseMDIOverride = FEATURE_AUTO;
         DebugSettings.FeatureSet.UseLayeredRenderingOverride = FEATURE_AUTO;
+        DebugSettings.FeatureSet.UseTransientAliasingOverride = FEATURE_AUTO;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1598,10 +1599,13 @@ struct GothicRendererSettings {
             bool EnableDriverExtensions;
             bool UseMDI;
             bool UseLayeredRendering;
+            // D3D12/Vulkan: render-graph scratch textures placed in one aliased heap instead of committed.
+            bool UseTransientAliasing;
 
             E_FeatureOverride EnableDriverExtensionsOverride;
             E_FeatureOverride UseMDIOverride;
             E_FeatureOverride UseLayeredRenderingOverride;
+            E_FeatureOverride UseTransientAliasingOverride;
 
             // EnableDriverExtensions can only be resolved once the device is up, but the init path has
             // to decide whether to even load NVAPI/AGS - so it asks the override instead.

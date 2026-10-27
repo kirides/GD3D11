@@ -34,13 +34,13 @@ cbuffer HiZCopyCB : register( b0 )
 [numthreads(8, 8, 1)]
 void CSCopyDepth( uint3 DTid : SV_DispatchThreadID )
 {
-    RWTexture2D<float> dst = ResourceDescriptorHeap[HZC_DstIndex];
+    RWTexture2D<float> dst = GD_HEAP( HZC_DstIndex );
     uint2 dstSize;
     dst.GetDimensions( dstSize.x, dstSize.y );
     if ( DTid.x >= dstSize.x || DTid.y >= dstSize.y )
         return;
 
-    Texture2D<float> depthTex = ResourceDescriptorHeap[HZC_DepthIndex];
+    Texture2D<float> depthTex = GD_HEAP( HZC_DepthIndex );
     uint2 srcSize;
     uint  srcMips;
     depthTex.GetDimensions( 0, srcSize.x, srcSize.y, srcMips );
@@ -72,13 +72,13 @@ cbuffer HiZReduceCB : register( b0 )
 [numthreads(8, 8, 1)]
 void CSReduce( uint3 DTid : SV_DispatchThreadID )
 {
-    RWTexture2D<float> dst = ResourceDescriptorHeap[HZR_DstIndex];
+    RWTexture2D<float> dst = GD_HEAP( HZR_DstIndex );
     uint2 dstSize;
     dst.GetDimensions( dstSize.x, dstSize.y );
     if ( DTid.x >= dstSize.x || DTid.y >= dstSize.y )
         return;
 
-    RWTexture2D<float> src = ResourceDescriptorHeap[HZR_SrcIndex];
+    RWTexture2D<float> src = GD_HEAP( HZR_SrcIndex );
     uint2 srcSize;
     src.GetDimensions( srcSize.x, srcSize.y );
 

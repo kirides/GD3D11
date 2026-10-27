@@ -870,6 +870,15 @@
     <ClInclude Include="CrashDump.h">
       <Filter>Engine</Filter>
     </ClInclude>
+    <ClInclude Include="RHI\ShaderNames.h">
+      <Filter>Engine\RHI</Filter>
+    </ClInclude>
+    <ClInclude Include="RHI\GpuDebug.h">
+      <Filter>Engine\RHI</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12HeapCheck.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1223,6 +1232,12 @@
     </ClCompile>
     <ClCompile Include="CrashDump.cpp">
       <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="RHI\ShaderNames.cpp">
+      <Filter>Engine\RHI</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12HeapCheck.cpp">
+      <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>
