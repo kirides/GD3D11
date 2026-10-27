@@ -1,7 +1,7 @@
 #ifndef WATER_VERTEX_WAVES_HLSL
 #define WATER_VERTEX_WAVES_HLSL
 // Vertex waves for water materials with a wave mode, shared by VS_ExWater (SHD_WATERANI) and the D3D12 Water.hlsl
-// VS. WorldConverter packs the material's wave parameters into the vertex color as UNORM bytes: .z = max amplitude
+// VS; every other waving material goes through ZenGinMaterialWaveOffset (MaterialFx). WorldConverter packs the material's wave parameters into the vertex color as UNORM bytes: .z = max amplitude
 // / 5, .w = speed * 10 (zero without waves), .xy = grid size in bits 0-14 plus a wall-mode flag in bit 15.
 //
 // Only the position moves. The shading normal still comes from the distortion texture, so the geometric
@@ -105,17 +105,23 @@ float ZenGinWave2D( float2 p, float gridSize, float timeSec )
     return clamp( sin( ZenGinArcTan2Approx( h.y, h.x ) + length( h ) * 1e7f ), -1.0f, 1.0f );
 }
 
-// zCPolygon::ApplyMorphing: ground modes lift the vertex, wall/env/wind modes push x and z by the same amount
+// zCPolygon::ApplyMorphing: ground modes lift the vertex, wall/env/wind modes push x and z by the same amount.
+// wave = { max amplitude, grid size, zTFFT time scale, 1 = wall mode } (MaterialFx::GetWave).
+float3 ZenGinMaterialWaveOffset( float3 positionWorld, float4 wave, float totalTimeMs )
+{
+    const bool wall = wave.w > 0.5f;
+    const float d = ZenGinWave2D( wall ? positionWorld.yz : positionWorld.xz, wave.y, totalTimeMs * 0.001f * wave.z ) * wave.x;
+    return wall ? float3( d, 0.0f, d ) : float3( 0.0f, d, 0.0f );
+}
+
 float3 ZenGinWaveOffset( float3 positionWorld, float4 vertexColor, float totalTimeMs )
 {
     const uint packed = uint( vertexColor.x * 255.0f + 0.5f ) | ( uint( vertexColor.y * 255.0f + 0.5f ) << 8 );
     const float gridSize = max( float( packed & 0x7FFFu ), 1.0f );
     const float amplitude = vertexColor.z * 1275.0f;
     // zTFFT_SLOW/NORMAL/FAST run at 0.2/0.5/2.0, half the packed 0.4/1/4 speed
-    const float timeSec = totalTimeMs * 0.001f * ( vertexColor.w * 25.5f * 0.5f );
-    const bool wall = ( packed & 0x8000u ) != 0;
-    const float d = ZenGinWave2D( wall ? positionWorld.yz : positionWorld.xz, gridSize, timeSec ) * amplitude;
-    return wall ? float3( d, 0.0f, d ) : float3( 0.0f, d, 0.0f );
+    const float timeScale = vertexColor.w * 25.5f * 0.5f;
+    return ZenGinMaterialWaveOffset( positionWorld, float4( amplitude, gridSize, timeScale, ( packed & 0x8000u ) != 0 ? 1.0f : 0.0f ), totalTimeMs );
 }
 
 // World-space offset of a water vertex; zero for water without a wave mode

@@ -118,8 +118,9 @@ bool D3D12PipelineState::CreateWorld() {
     // tables. normalIndex == 0xFFFFFFFF means "no normal map" (skip the TBN/perturb); ormIndex is always valid
     // (the default ORM slot when a material has no _FX map), so ORM is sampled branchlessly. The 3rd value is
     // the bindless diffuse index; the 4th the normal-perturb strength (World.hlsl's wet-ground path only —
-    // Vob.hlsl/Skeletal.hlsl's own MaterialCB declarations just don't read it).
-    rs.AddPerDrawConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );  // 10: b6 MaterialCB
+    // Vob.hlsl/Skeletal.hlsl's own MaterialCB declarations just don't read it). The world/VOB VSs read the
+    // diffuse index for the material's waves (MaterialWaveOffset).
+    rs.AddPerDrawConstants( 6, 4, D3D12_SHADER_VISIBILITY_ALL );  // 10: b6 MaterialCB
 
     // 11 = wind sway CB (b4, VS only) — read by Vob.hlsl's VSMain (flags/foliage sway + hero-affects-
     // bushes push); World.hlsl/Skeletal.hlsl don't declare b4 so they simply never read it. Only
@@ -181,12 +182,17 @@ bool D3D12PipelineState::CreateWorld() {
         Logging::Wrn( "D3D12: World.hlsl VSQuadMark failed to compile — quad marks will draw unlit." );
         World.QuadMarkVsBlob.Reset();
     }
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSQuadMark", Shadermodel_PS, World.QuadMarkPsBlob.ReleaseAndGetAddressOf() ) ) {
+        Logging::Wrn( "D3D12: World.hlsl PSQuadMark failed to compile — quad marks will draw unlit." );
+        World.QuadMarkPsBlob.Reset();
+    }
 
     rs.ValidateShaders( {
         { World.VsBlob.Get(),        "World.hlsl:VSMain",     D3D12_SHADER_VISIBILITY_VERTEX },
         { World.PsBlob.Get(),        "World.hlsl:PSMain",     D3D12_SHADER_VISIBILITY_PIXEL  },
         { World.OpaquePsBlob.Get(),  "World.hlsl:PSMainOpaque", D3D12_SHADER_VISIBILITY_PIXEL },
         { World.QuadMarkVsBlob.Get(),"World.hlsl:VSQuadMark", D3D12_SHADER_VISIBILITY_VERTEX },
+        { World.QuadMarkPsBlob.Get(),"World.hlsl:PSQuadMark", D3D12_SHADER_VISIBILITY_PIXEL  },
     } );
 
     // Bind Position/Normal/Tangent/TexCoord0/Color from the packed 36-byte ExVertexStructGPU via explicit
@@ -272,7 +278,7 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     //   b0 = ViewProj (16 consts, VS) — same value DrawWorldMesh uploads
     //   b5 = TransparencyCB (8 consts, PS) — the per-material FF tint + the sun height (AC_LightPos.y) the
     //        portal/foam variants darken by; passing that one scalar avoids binding the whole Atmosphere CB
-    //   b6 = MaterialCB (4 consts, PS) — reuses World.hlsl's declaration; only MatDiffuseIndex is read
+    //   b6 = MaterialCB (4 consts, VS+PS) — reuses World.hlsl's declaration; only MatDiffuseIndex is read
     //   b4 = TransparencyViewCB (16 consts, VS) — world->view, read ONLY by VSTransparentPortal
     // Register numbers match World.hlsl's existing file-scope cbuffers, so the shared VS_IN / includes there
     // need no renumbering for these extra entry points.
@@ -283,7 +289,7 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     // 1: b5 TransparencyCB { float4 TextureFactor; float SunHeight; float3 EnvCamPosWS; uint EnvCubeIndex; float3 pad }
     // The env tail is written only by the env-map overlay draw; the first 5 DWORDs keep their old meaning.
     rs.AddConstants( 5, 12, D3D12_SHADER_VISIBILITY_PIXEL );
-    rs.AddPerDrawConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 2: b6 MaterialCB { normal, orm, diffuse, normalStrength }
+    rs.AddPerDrawConstants( 6, 4, D3D12_SHADER_VISIBILITY_ALL );      // 2: b6 MaterialCB { normal, orm, diffuse, normalStrength }
     // 3: b4 TransparencyViewCB { float4x4 View } — portal VS only
     rs.AddConstants( 4, 16, D3D12_SHADER_VISIBILITY_VERTEX );
 
@@ -2929,7 +2935,7 @@ bool D3D12PipelineState::CreateSmaa() {
 }
 
 Rhi::PipelineState* D3D12PipelineState::GetOrCreateQuadMarkPipeline( const GothicBlendStateInfo& blend, bool depthWrite ) {
-    // Lit quad marks: World.RootSig + World.hlsl's VSQuadMark/PSMain. Reusing the world PIXEL shader verbatim
+    // Lit quad marks: World.RootSig + World.hlsl's VSQuadMark/PSQuadMark (ShadeWorld). Reusing the world PIXEL shader
     // is the whole point — it is what gives the marks the same SrgbToLinear -> DelightDiffuse albedo handling,
     // CSM shadows, tiled point lights, SSAO, wetness and sky IBL the world mesh gets, with no duplicated
     // lighting code to drift. Only the VS + input layout differ (see VSQuadMark), plus the blend/depth state,
@@ -2937,7 +2943,7 @@ Rhi::PipelineState* D3D12PipelineState::GetOrCreateQuadMarkPipeline( const Gothi
     const uint32_t key = BlendKey( blend ) | (depthWrite ? (1u << 31) : 0u);
     auto it = World.QuadMarkPipelines.find( key );
     if ( it != World.QuadMarkPipelines.end() ) return it->second.Get();
-    if ( !World.RootSig || !World.QuadMarkVsBlob || !World.PsBlob ) return nullptr;
+    if ( !World.RootSig || !World.QuadMarkVsBlob || !World.QuadMarkPsBlob ) return nullptr;
 
     // CPU-side ExVertexStruct (stride 60): Position @0, full-precision float3 Normal @12, TexCoord0 @24,
     // Color @40. Unlike the world mesh's packed 36-byte vertex, nothing here is quantized — quad marks are
@@ -2952,7 +2958,7 @@ Rhi::PipelineState* D3D12PipelineState::GetOrCreateQuadMarkPipeline( const Gothi
     Rhi::GraphicsPipelineStateDesc pso = {};
     pso.pRootSignature = World.RootSig.Get();
     pso.VS = { World.QuadMarkVsBlob->GetBufferPointer(), World.QuadMarkVsBlob->GetBufferSize() };
-    pso.PS = { World.PsBlob->GetBufferPointer(), World.PsBlob->GetBufferSize() };
+    pso.PS = { World.QuadMarkPsBlob->GetBufferPointer(), World.QuadMarkPsBlob->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;

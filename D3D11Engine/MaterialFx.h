@@ -6,8 +6,9 @@ class zCMaterial;
 class zCTexture;
 
 // ZenGin's per-material stages on top of the base texture: texAniMap UV scroll (every material group,
-// zCMaterial::ApplyTexAniMapping) and, on objects, the environmentalMapping overlay and the detail texture
-// (zRenderManager.cpp). World-mesh water keeps its own TexCoord2 scroll.
+// zCMaterial::ApplyTexAniMapping), vertex waves (zCPolygon::ApplyMorphing) and, on objects, the
+// environmentalMapping overlay and the detail texture (zRenderManager.cpp). Water-shaded water keeps its own
+// TexCoord2 scroll and vertex-color waves.
 namespace MaterialFx {
     // D3D12: a material's slot in the MaterialFx table rides in the bindless diffuse index's top 16 bits;
     // 0 = none. Every shader reading a diffuse index masks with kDiffuseSlotMask.
@@ -23,9 +24,10 @@ namespace MaterialFx {
         uint32_t DetailSlot;
         uint32_t EnvCubeSlot;   // entry 0: the reflection cube, 0xFFFFFFFF = env mapping off
         float EnvGlobal;        // entry 0: sky-fog luma * EnvMappingStrength
-        uint32_t Pad;
+        float WaveTimeMs;       // entry 0: this frame's wave clock
+        float Wave[4];          // see GetWave; entry 0: [0] = the previous frame's wave clock
     };
-    static_assert( sizeof( Entry ) == 32, "must match MaterialFx.hlsl" );
+    static_assert( sizeof( Entry ) == 48, "must match MaterialFx.hlsl" );
 
     /** This frame's UV offset; false (offset untouched) when the material doesn't scroll. */
     bool GetOffset( zCMaterial* mat, float2& offset );
@@ -35,6 +37,16 @@ namespace MaterialFx {
 
     /** Sky-fog luma times the user strength, 0 with env mapping off: ZenGin's stage alpha is strength * this. */
     float GetEnvGlobal();
+
+    /** Whether the material has a waveMode the non-water shaders animate. Ignores settings, so it is stable. */
+    bool HasWaves( zCMaterial* mat );
+
+    /** { max amplitude, grid size, zTFFT time scale, 1 = wall mode (pushes x and z) } of a waving material;
+        false when it doesn't wave or WaterWaves is off. */
+    bool GetWave( zCMaterial* mat, float4& wave );
+
+    /** The wave clock (total ms) of this frame and of the previous one, for motion vectors. Main thread. */
+    void GetWaveTimes( float& nowMs, float& prevMs );
 
     /** The material's detail texture and its uv scale; nullptr when it has none or detail textures are off. */
     zCTexture* GetDetailTexture( zCMaterial* mat, float& scale );

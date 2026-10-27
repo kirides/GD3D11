@@ -2738,6 +2738,38 @@ void WorldConverter::CacheMesh( const std::map<std::string, std::vector<std::pai
     fclose( f );
 }
 
+namespace {
+    ExVertexStruct LerpQuadMarkVertex( const ExVertexStruct& a, const ExVertexStruct& b, float t ) {
+        auto lerp = [t]( float x, float y ) { return x + ( y - x ) * t; };
+        ExVertexStruct v = a;
+        v.Position = float3( lerp( a.Position.x, b.Position.x ), lerp( a.Position.y, b.Position.y ), lerp( a.Position.z, b.Position.z ) );
+        v.Normal = float3( lerp( a.Normal.x, b.Normal.x ), lerp( a.Normal.y, b.Normal.y ), lerp( a.Normal.z, b.Normal.z ) );
+        v.TexCoord = float2( lerp( a.TexCoord.x, b.TexCoord.x ), lerp( a.TexCoord.y, b.TexCoord.y ) );
+        DWORD color = 0;
+        for ( int c = 0; c < 32; c += 8 ) {
+            const float ca = static_cast<float>( ( a.Color >> c ) & 0xFF ), cb = static_cast<float>( ( b.Color >> c ) & 0xFF );
+            color |= static_cast<DWORD>( lerp( ca, cb ) + 0.5f ) << c;
+        }
+        v.Color = color;
+        return v;
+    }
+
+    /** Sutherland-Hodgman against one edge of the uv unit square: keeps sign * (uv[axis] - edge) >= 0. */
+    void ClipQuadMarkPolyToUv( std::vector<ExVertexStruct>& poly, std::vector<ExVertexStruct>& scratch, int axis, float edge, float sign ) {
+        scratch.clear();
+        const size_t n = poly.size();
+        for ( size_t i = 0; i < n; ++i ) {
+            const ExVertexStruct& a = poly[i];
+            const ExVertexStruct& b = poly[( i + 1 ) % n];
+            const float da = sign * ( ( axis ? a.TexCoord.y : a.TexCoord.x ) - edge );
+            const float db = sign * ( ( axis ? b.TexCoord.y : b.TexCoord.x ) - edge );
+            if ( da >= 0.0f ) scratch.push_back( a );
+            if ( ( da >= 0.0f ) != ( db >= 0.0f ) ) scratch.push_back( LerpQuadMarkVertex( a, b, da / ( da - db ) ) );
+        }
+        poly.swap( scratch );
+    }
+}
+
 /** Updates a quadmark info */
 void WorldConverter::UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, const float3& position ) {
     zCMesh* mesh = mark->GetQuadMesh();
@@ -2746,22 +2778,22 @@ void WorldConverter::UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, c
     zCPolygon** polys = mesh->GetPolygons();
     zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : mark->GetMaterial());
 
-    std::vector<ExVertexStruct> quadVertices;
-    std::vector<ExVertexStruct> polyVertices;
+    // Main thread only (CreateQuadMark hook, GothicAPI::AnimateQuadMarks); reused so animation doesn't allocate
+    static std::vector<ExVertexStruct> quadVertices;
+    static std::vector<ExVertexStruct> polyVertices;
+    static std::vector<ExVertexStruct> clipScratch;
+    quadVertices.clear();
 
-    // Pre-count total output triangles so quadVertices doesn't reallocate
-    int totalPolyVerts = 0;
+    // Clipping to the uv square adds at most one vertex per edge
+    int maxVertices = 0;
     for ( int i = 0; i < numPolys; i++ )
-        totalPolyVerts += polys[i]->GetNumPolyVertices();
-    // TriangleFanToList turns N verts into (N-2)*3 output verts
-    quadVertices.reserve( (totalPolyVerts - numPolys * 2) * 3 );
+        maxVertices += ( polys[i]->GetNumPolyVertices() + 4 - 2 ) * 3;
 
     for ( int i = 0; i < numPolys; i++ ) {
         zCPolygon* poly = polys[i];
 
         // Extract poly vertices
         polyVertices.clear();
-        polyVertices.reserve( poly->GetNumPolyVertices() );
         for ( int v = 0; v < poly->GetNumPolyVertices(); v++ ) {
             zCVertex* vertex = poly->getVertices()[v];
             zCVertFeature* feature = poly->getFeatures()[v];
@@ -2774,8 +2806,17 @@ void WorldConverter::UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, c
             if ( mat && (mat->GetAlphaFunc() == zMAT_ALPHA_FUNC_MUL || mat->GetAlphaFunc() == zMAT_ALPHA_FUNC_MUL2) )
                 t.Color = 0xFFFFFFFF;
             else
-                t.Color = feature->lightStatic;
+                t.Color = feature->lightStatic;   // alpha = zTQuadMarkAniState::alpha while fading
+        }
 
+        // ZenGin draws the texture clamped; a scaling-up mark's uvs reach far outside [0, 1], where the
+        // clamped edge texels are transparent. Cut those parts off instead of clamping the vertex uvs.
+        for ( int axis = 0; axis < 2 && polyVertices.size() >= 3; ++axis ) {
+            ClipQuadMarkPolyToUv( polyVertices, clipScratch, axis, 0.0f, 1.0f );
+            if ( polyVertices.size() >= 3 ) ClipQuadMarkPolyToUv( polyVertices, clipScratch, axis, 1.0f, -1.0f );
+        }
+        if ( polyVertices.size() < 3 ) continue;
+        for ( ExVertexStruct& t : polyVertices ) {
             t.TexCoord.x = std::min( 1.0f, std::max( 0.0f, t.TexCoord.x ) );
             t.TexCoord.y = std::min( 1.0f, std::max( 0.0f, t.TexCoord.y ) );
         }
@@ -2784,17 +2825,31 @@ void WorldConverter::UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, c
         TriangleFanToList( &polyVertices[0], polyVertices.size(), &quadVertices );
     }
 
-    if ( quadVertices.empty() )
-        return;
-
-    info->Mesh.reset();
-    Engine::GraphicsEngine->CreateVertexBuffer( info->Mesh );
-
-    // Init and fill it
-    info->Mesh->Init( &quadVertices[0], quadVertices.size() * sizeof( ExVertexStruct ) );
-    info->NumVertices = quadVertices.size();
-
     info->Position = position;
+    if ( quadVertices.empty() ) {
+        info->Mesh.reset();
+        info->NumVertices = 0;
+        return;
+    }
+
+    const unsigned int bytes = static_cast<unsigned int>( quadVertices.size() * sizeof( ExVertexStruct ) );
+    if ( mark->IsAnimating() ) {
+        // Rewritten every frame until the animation ends; sized for the unclipped worst case
+        const unsigned int capacity = static_cast<unsigned int>( maxVertices * sizeof( ExVertexStruct ) );
+        if ( !info->Mesh || !info->Dynamic || info->Mesh->GetSizeInBytes() < bytes ) {
+            info->Mesh.reset();
+            Engine::GraphicsEngine->CreateVertexBuffer( info->Mesh );
+            info->Mesh->Init( nullptr, std::max( capacity, bytes ), GfxVertexBuffer::B_VERTEXBUFFER, GfxVertexBuffer::U_DYNAMIC, GfxVertexBuffer::CA_WRITE );
+            info->Dynamic = true;
+        }
+        info->Mesh->UpdateBuffer( quadVertices.data(), bytes );
+    } else {
+        info->Mesh.reset();
+        Engine::GraphicsEngine->CreateVertexBuffer( info->Mesh );
+        info->Mesh->Init( quadVertices.data(), bytes );
+        info->Dynamic = false;
+    }
+    info->NumVertices = static_cast<int>( quadVertices.size() );
 }
 
 /** Converts ExVertexStruct into a zCPolygon*-Attay */

@@ -33,5 +33,6 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	DoAlphaTest(color.a);
 	color.rgb *= QM_DayLight;
-	return float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), color.a);
+	// Vertex alpha = zTQuadMarkAniState::alpha of a fading mark, after the test so fading never cuts it out
+	return float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), color.a * Input.vDiffuse.a);
 }

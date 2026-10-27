@@ -381,6 +381,9 @@ namespace VulkanRhi {
             }
             p.PushOffset = pushBytes;
             p.PushStages = StagesOf( desc.pParameters[i].ShaderVisibility );
+            // An ALL block of a vertex-input (graphics) signature only reaches VS and PS here, which keeps it DGC-able
+            if ( p.PushStages == VK_SHADER_STAGE_ALL && ( desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+                p.PushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             pushRanges.push_back( { p.PushStages, pushBytes, bytes } );
             pushBytes += bytes;
             rs->m_PushConstantParams |= 1u << i;

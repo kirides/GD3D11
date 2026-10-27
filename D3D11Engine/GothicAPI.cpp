@@ -649,6 +649,11 @@ void GothicAPI::OnWorldUpdate() {
         }
     }
 
+    if ( !State->QuadMarks.empty() ) {
+        ZoneScopedN( "AnimateQuadMarks" );
+        AnimateQuadMarks();
+    }
+
     if ( zCCamera* camera = GetSceneCamera() ) {
         RendererState.RendererInfo.FarPlane = camera->GetFarPlane();
         RendererState.RendererInfo.NearPlane = camera->GetNearPlane();
@@ -6746,6 +6751,19 @@ QuadMarkInfo* GothicAPI::GetQuadMarkInfo( zCQuadMark* mark ) {
 /** Returns all quad marks */
 const std::unordered_map<zCQuadMark*, QuadMarkInfo>& GothicAPI::GetQuadMarks() {
     return State->QuadMarks;
+}
+
+void GothicAPI::AnimateQuadMarks() {
+    for ( auto it = State->QuadMarks.begin(); it != State->QuadMarks.end(); ) {
+        zCQuadMark* mark = it->first;
+        QuadMarkInfo& info = it->second;
+        if ( !mark->IsAnimating() && !info.Dynamic ) { ++it; continue; }
+
+        // The last animated frame turns the buffer back into a static one
+        if ( mark->IsAnimating() ) mark->ProcessAniTracker();
+        WorldConverter::UpdateQuadMarkInfo( &info, mark, info.Position );
+        it = info.Mesh ? std::next( it ) : State->QuadMarks.erase( it );   // every poly faded out
+    }
 }
 
 /** Add new zCFlash object */

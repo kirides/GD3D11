@@ -1,7 +1,9 @@
-// ZenGin's per-material stages (MaterialFx.h): texAniMap scroll, env overlay and detail texture. A diffuse
-// index's top 16 bits name an entry of the table behind heap slot kMaterialFxTableSlot; 0 = none.
+// ZenGin's per-material stages (MaterialFx.h): texAniMap scroll, vertex waves, env overlay and detail texture. A
+// diffuse index's top 16 bits name an entry of the table behind heap slot kMaterialFxTableSlot; 0 = none.
 #ifndef D3D12_MATERIALFX_HLSL
 #define D3D12_MATERIALFX_HLSL
+
+#include "../../include/WaterVertexWaves.hlsl"
 
 static const uint kMaterialFxTableSlot = 65535;
 static const uint kMaterialFxSlotShift = 16;
@@ -15,7 +17,8 @@ struct MaterialFxEntry
     uint   DetailSlot;
     uint   EnvCubeSlot;   // entry 0: the reflection cube, 0xFFFFFFFF = env mapping off
     float  EnvGlobal;     // entry 0: sky-fog luma * user strength
-    uint   Pad;
+    float  WaveTimeMs;    // entry 0: this frame's wave clock
+    float4 Wave;          // { amplitude (0 = none), grid, time scale, wall }; entry 0: .x = last frame's clock
 };
 
 /** The SRV heap slot of a packed diffuse index. */
@@ -36,6 +39,26 @@ MaterialFxEntry LoadMaterialFx( uint packedDiffuse )
         e = table[slot];
     }
     return e;
+}
+
+/** World-space offset of a waving material's vertex (zCPolygon::ApplyMorphing); `previous` = last frame's. */
+float3 MaterialWaveOffset( float3 positionWorld, uint packedDiffuse, bool previous )
+{
+    float3 offset = float3( 0.0, 0.0, 0.0 );
+    const uint slot = packedDiffuse >> kMaterialFxSlotShift;
+    [branch]
+    if ( slot != 0 )
+    {
+        StructuredBuffer<MaterialFxEntry> table = GD_HEAP( kMaterialFxTableSlot );
+        const float4 wave = table[slot].Wave;
+        [branch]
+        if ( wave.x > 0.0 )
+        {
+            const MaterialFxEntry frame = table[0];
+            offset = ZenGinMaterialWaveOffset( positionWorld, wave, previous ? frame.Wave.x : frame.WaveTimeMs );
+        }
+    }
+    return offset;
 }
 
 /** `uv` shifted by the material's scroll offset this frame. */

@@ -2521,6 +2521,11 @@ void D3D11GraphicsEngine::BindMaterialFx( zCMaterial* mat, bool objectFx ) {
     MaterialFxCB cb = {};
     float2 offset;
     if ( MaterialFx::GetOffset( mat, offset ) ) cb.TexAniOffset = XMFLOAT2( offset.x, offset.y );
+    float4 wave;
+    if ( MaterialFx::GetWave( mat, wave ) ) {
+        cb.Wave = wave;
+        MaterialFx::GetWaveTimes( cb.WaveTimeMs, cb.WavePrevTimeMs );
+    }
 
     ID3D11ShaderResourceView* detailSrv = nullptr;
     if ( objectFx && mat ) {
@@ -5471,9 +5476,11 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         auto _scopeDepthPrepass = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::DepthPrepass" ) );
         D3D11PipelineStateCache::SetPixelShader( GetContext().Get(), nullptr );
 
+        // Waving materials join the per-material run: the position-only VS has no MaterialFx
         auto isAlphaMesh = []( const auto& mesh ) {
             zCTexture* texture = mesh.Range.Key.Texture;
-            return texture->HasAlphaChannel() || (mesh.Range.Key.Material && mesh.Range.Key.Material->HasAlphaTest());
+            return texture->HasAlphaChannel() || (mesh.Range.Key.Material && mesh.Range.Key.Material->HasAlphaTest())
+                || MaterialFx::HasWaves( mesh.Range.Key.Material );
         };
         auto isSkipped = []( const auto& mesh ) {
             const auto alphaFunc = mesh.Range.Key.Material->GetAlphaFunc();
@@ -6026,7 +6033,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                 zCTexture* texSingle = meshPair.first.Material ? meshPair.first.Material->GetTextureSingle() : nullptr;
                 unsigned int indexCount = 0;
 
-                if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
+                // Waving casters draw per material like alpha-tested ones, so BindMaterialFx reaches the VS
+                if ( ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) || MaterialFx::HasWaves( meshPair.first.Material ) ) {
                     zCTexture* tex = meshPair.first.Material->GetAniTexture();
                     if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
                         alphaMeshes.emplace_back( tex, mesh, meshPair.first.Material );
@@ -6173,7 +6181,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
 
                 zCTexture* texSingle = meshPair.first.Material ? meshPair.first.Material->GetTextureSingle() : nullptr;
 
-                if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
+                // Waving casters draw per material like alpha-tested ones, so BindMaterialFx reaches the VS
+                if ( ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) || MaterialFx::HasWaves( meshPair.first.Material ) ) {
                     // Need alpha testing - cache texture
                     zCTexture* tex = meshPair.first.Material->GetAniTexture();
                     if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {

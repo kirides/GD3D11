@@ -59,6 +59,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	float4 vTangent = DecodeTangent( Input.vTangent );   // xyz = tangent, w = handedness sign
 
 	float3 positionWorld = mul(float4(Input.vPosition,1), cbInstance.M_World).xyz;
+	const float3 positionRest = positionWorld;
+	positionWorld += MaterialWaveOffset(positionRest, false);
 
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex2;
@@ -73,8 +75,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
 	// Motion Vectors - use UNJITTERED matrices for correct velocity
 	Output.vCurrClipPos = mul(float4(positionWorld, 1.0), frame.M_UnjitteredViewProj);
-	// For static geometry, prev world pos == curr world pos
-	Output.vPrevClipPos = mul(float4(positionWorld, 1.0), frame.M_PrevViewProj);
+	// Static geometry: only the material waves move it
+	Output.vPrevClipPos = mul(float4(positionRest + MaterialWaveOffset(positionRest, true), 1.0), frame.M_PrevViewProj);
 
 	return Output;
 }

@@ -65,4 +65,17 @@ public:
     int GetDontRepositionConnectedVob() {
         return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCQuadMark::Offset_DontRepositionConnectedVob ));
     }
+
+    /** Whether polys are still scaling up or fading out (zTQuadMarkAniState entries pending). */
+    bool IsAnimating() {
+        if constexpr ( GothicMemoryLocations::zCQuadMark::ProcessAniTracker == 0 ) return false;
+        return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCQuadMark::Offset_AniTrackerNum )) > 0;
+    }
+
+    /** One frame of zCQuadMark::Render's uv scale-up and alpha fade; deletes all polys once every one faded out. */
+    void ProcessAniTracker() {
+        if constexpr ( GothicMemoryLocations::zCQuadMark::ProcessAniTracker != 0 ) {
+            reinterpret_cast<void( __fastcall* )( zCQuadMark* )>( GothicMemoryLocations::zCQuadMark::ProcessAniTracker )( this );
+        }
+    }
 };

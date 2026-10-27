@@ -25,7 +25,7 @@ SamplerState smp : register(s0);
 #include "include/ShadowCB.hlsl"
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
-// MatDiffuseIndex (3rd field) is read only by the *Bindless PS variants below — the ExecuteIndirect VOB path
+// MatDiffuseIndex (3rd field) is read by the static-VOB VSs (material waves) and the *Bindless PS variants — the ExecuteIndirect VOB path
 // (P2.12) sets the diffuse SRV heap slot as a root constant instead of a per-draw t0 descriptor table, so the
 // whole instanced-VOB pass (color/depth/shadow) submits as one ExecuteIndirect. The classic t0-table PS
 // (PSMain/PSDepthClip/PSShadowClip, used by node attachments) simply never reads the 3rd field.
@@ -100,6 +100,7 @@ VS_OUT VSMain( VS_IN i )
     float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
 
     float3 worldPos = mul( i.iworld, float4( localPos, 1.0 ) );
+    worldPos += MaterialWaveOffset( worldPos, MatDiffuseIndex, false );   // same in VSDepth
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.icolor;
@@ -162,6 +163,7 @@ VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
     VS_DEPTH_OUT o;
     float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
     float3 worldPos = mul( i.iworld, float4( localPos, 1.0 ) );
+    worldPos += MaterialWaveOffset( worldPos, MatDiffuseIndex, false );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv = i.uv;
     return o;
@@ -359,6 +361,7 @@ VS_GBUF_OUT VSDepthGBuf( VS_GBUF_IN i )
     VS_GBUF_OUT o;
     float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
     float3 worldPos = mul( i.iworld, float4( localPos, 1.0 ) );
+    worldPos += MaterialWaveOffset( worldPos, MatDiffuseIndex, false );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv   = i.uv;
     o.wnrm = mul( (float3x3)i.iworld, i.nrm );
@@ -370,7 +373,9 @@ VS_GBUF_OUT VSDepthGBuf( VS_GBUF_IN i )
     // foliage. The hero-push term still uses the CURRENT WindPlayerPos for both evaluations (no previous-frame
     // player position is tracked), which under-reports motion only very close to the player.
     float3 prevLocalPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindPrevGlobalTime );
-    o.prevClip = mul( float4( mul( i.iprev, float4( prevLocalPos, 1.0 ) ), 1.0 ), PrevViewProj );
+    float3 prevWorldPos = mul( i.iprev, float4( prevLocalPos, 1.0 ) );
+    prevWorldPos += MaterialWaveOffset( prevWorldPos, MatDiffuseIndex, true );
+    o.prevClip = mul( float4( prevWorldPos, 1.0 ), PrevViewProj );
     return o;
 }
 

@@ -666,12 +666,13 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
     ImGui::EndDisabled();
 
     constexpr ListItem<GothicRendererSettings::E_WaterWaves> waterWaves[] = {
-        { "Off", GothicRendererSettings::WATER_WAVES_OFF, "Flat water surfaces." },
+        { "Off", GothicRendererSettings::WATER_WAVES_OFF, "Flat water surfaces, and no other material waves either." },
         { "Original", GothicRendererSettings::WATER_WAVES_ORIGINAL, "Gothic's own waves: each vertex bobs on the material's wave grid." },
         { "DX11", GothicRendererSettings::WATER_WAVES_D3D11, "A smooth rolling swell that also sways the surface sideways." },
     };
     // A runtime mode on D3D12, a shader permutation on D3D11
-    ComboRow( "Water Waves", "##WaterWaves", waterWaves, &settings.WaterWaves, nullptr, [&] {
+    ComboRow( "Water Waves", "##WaterWaves", waterWaves, &settings.WaterWaves,
+        "Other materials with a wave mode always move with Gothic's own waves unless this is Off.", [&] {
         if ( !IsD3D12() ) shadersToReload |= ShaderCategory::Water;
     } );
 

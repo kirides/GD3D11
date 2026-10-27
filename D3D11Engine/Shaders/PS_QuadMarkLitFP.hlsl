@@ -57,5 +57,6 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	litPixel += FP_ComputePointLighting(wsPosition, Input.vViewPosition, normal,
 		color.rgb, 0.0f, 1.0f, Input.vPosition.xy);
 
-	return float4(ApplyTransparencyFogWS(litPixel, wsPosition), color.a);
+	// Vertex alpha = zTQuadMarkAniState::alpha of a fading mark, after the test so fading never cuts it out
+	return float4(ApplyTransparencyFogWS(litPixel, wsPosition), color.a * Input.vDiffuse.a);
 }

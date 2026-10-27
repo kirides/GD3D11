@@ -223,6 +223,7 @@ struct QuadMarkInfo {
 
     std::unique_ptr<GfxVertexBuffer> Mesh;
     int NumVertices;
+    bool Dynamic = false;   // rewritten per frame while its zTQuadMarkAniState entries run
 
     zCQuadMark* Visual;
     float3 Position;

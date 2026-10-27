@@ -3362,6 +3362,8 @@ D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(con
     // Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
     m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || key.Material->HasAlphaTest();
     if ( m.AlphaTested ) m.Orm |= kBacklitFoliage;
+    // Waving materials take the per-material depth run too, never a merged command: their VS reads b6
+    m.AlphaTested |= MaterialFx::HasWaves( key.Material );
     m.Diffuse = PackMaterialFx( m.Diffuse, key.Material );
     return m;
 }

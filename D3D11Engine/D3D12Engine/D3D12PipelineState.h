@@ -132,10 +132,10 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            VobAlphaPsBlob;            // PSAlphaBlendBindless
         Microsoft::WRL::ComPtr<Rhi::PipelineState> VobAlphaBlendPSO;          // zMAT_ALPHA_FUNC_BLEND
         Microsoft::WRL::ComPtr<Rhi::PipelineState> VobAlphaAddPSO;            // zMAT_ALPHA_FUNC_ADD
-        // Lit quad marks (zCQuadMark). Reuses RootSig AND PsBlob (World.hlsl PSMain) — only the VS and the
-        // input layout differ (unpacked ExVertexStruct, CPU-transformed to world space; see VSQuadMark).
-        // Blend-keyed like the FX cache because the marks carry Gothic's per-material alpha funcs.
+        // Lit quad marks (zCQuadMark): RootSig + World.hlsl ShadeWorld, own VS/PS for the input layout and the
+        // fade alpha. Blend-keyed like the FX cache because the marks carry Gothic's per-material alpha funcs.
         Microsoft::WRL::ComPtr<ID3DBlob>            QuadMarkVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            QuadMarkPsBlob;   // PSQuadMark
         std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<Rhi::PipelineState>> QuadMarkPipelines;
     };
     // Water (transparent world surfaces): own root sig, the alpha-blended color PSO, plus a depth-only
