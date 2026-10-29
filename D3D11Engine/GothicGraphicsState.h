@@ -610,6 +610,7 @@ struct GothicRendererSettings {
         PerceptualQuantizerTonemap,
         ToneMap_Simple,
         ACESFittedTonemap,
+        AgXTonemap,
     };
     enum EWindQuality {
         WIND_QUALITY_NONE = 0,

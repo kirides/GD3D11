@@ -130,6 +130,27 @@ float3 ToneMap_ACESFitted( float3 x )
     return curr * whiteScale;
 }
 
+// AgX (Troy Sobotka's display transform, polynomial contrast fit as in three.js): Rec.2020 inset, log2 encode over
+// [-12.47, 4.03] EV, sigmoid, outset. Hue-stable highlights; returns LINEAR sRGB like the other operators.
+static const float3x3 AgXToRec2020 = { { 0.6274, 0.3293, 0.0433 }, { 0.0691, 0.9195, 0.0113 }, { 0.0164, 0.0880, 0.8956 } };
+static const float3x3 AgXFromRec2020 = { { 1.6605, -0.5876, -0.0728 }, { -0.1246, 1.1329, -0.0083 }, { -0.0182, -0.1006, 1.1187 } };
+static const float3x3 AgXInsetMat = { { 0.856627153315983, 0.0951212405381588, 0.0482516061458583 }, { 0.137318972929847, 0.761241990602591, 0.101439036467562 }, { 0.11189821299995, 0.0767994186031903, 0.811302368396859 } };
+static const float3x3 AgXOutsetMat = { { 1.1271005818144368, -0.11060664309660323, -0.016493938717834573 }, { -0.1413297634984383, 1.157823702216272, -0.016493938717834257 }, { -0.14132976349843826, -0.11060664309660294, 1.2519364065950405 } };
+float3 AgXContrastApprox( float3 x )
+{
+    float3 x2 = x * x;
+    float3 x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+float3 ToneMap_AgX( float3 x )
+{
+    const float minEv = -12.47393, maxEv = 4.026069;
+    float3 c = mul( AgXInsetMat, mul( AgXToRec2020, max( x, 0.0 ) ) );
+    c = saturate( ( log2( max( c, 1e-10 ) ) - minEv ) / ( maxEv - minEv ) );
+    c = mul( AgXOutsetMat, AgXContrastApprox( c ) );
+    return mul( AgXFromRec2020, pow( max( c, 0.0 ), 2.2 ) );
+}
+
 // --- Real HDR display output ---------------------------------------------------------------------------------
 // On an actual HDR scanout the operators above are exactly the wrong thing: every one of them exists to squeeze
 // an unbounded linear range into the [0,1] an SDR panel can show, and they do it by crushing (and desaturating)
@@ -197,7 +218,8 @@ float4 PSTonemap( VS_OUT i ) : SV_TARGET
     else if ( ToneMapMode == 2 ) mapped = ToneMap_ACESFilm( hdr );
     else if ( ToneMapMode == 3 ) mapped = ToneMap_PerceptualQuantizer( hdr );
     else if ( ToneMapMode == 4 ) mapped = ToneMap_Simple( hdr );
-    else                         mapped = ToneMap_ACESFitted( hdr );
+    else if ( ToneMapMode == 5 ) mapped = ToneMap_ACESFitted( hdr );
+    else                         mapped = ToneMap_AgX( hdr );
 
     float3 ldr = LinearToSrgb( saturate( mapped ) );
     // Screenshot path only (see the cbuffer note) — same order as D3D11's PS_PFX_GammaCorrectInv.

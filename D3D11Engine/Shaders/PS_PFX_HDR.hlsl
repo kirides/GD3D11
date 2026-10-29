@@ -46,6 +46,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 		float3 toneMapped = saturate(ToneMap_Simple(HDRColor, TX_Lum, SS_Linear));
 #elif USE_TONEMAP == 5
 		float3 toneMapped = saturate(ACESFittedTonemap(HDRColor, TX_Lum, SS_Linear));
+#elif USE_TONEMAP == 6
+		float3 toneMapped = saturate(AgXTonemap(HDRColor, TX_Lum, SS_Linear));
 #endif
 	
     float3 bloom = TX_Bloom.Sample(SS_Linear, Input.vTexcoord).rgb * HDR_BloomStrength;

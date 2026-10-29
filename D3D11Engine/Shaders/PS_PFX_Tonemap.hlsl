@@ -51,6 +51,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 		float3 toneMapped = ToneMap_Simple(HDRColor, TX_Lum, SS_Linear);
 #elif USE_TONEMAP == 5
 		float3 toneMapped = ACESFittedTonemap(HDRColor, TX_Lum, SS_Linear);
+#elif USE_TONEMAP == 6
+		float3 toneMapped = AgXTonemap(HDRColor, TX_Lum, SS_Linear);
 #endif
 	
 	toneMapped -= HDR_Threshold;

@@ -626,6 +626,7 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
             { "Uncharted 2", GothicRendererSettings::Uncharted2Tonemap },
             { "ACES Film", GothicRendererSettings::ACESFilmTonemap },
             { "ACES Fitted", GothicRendererSettings::ACESFittedTonemap },
+            { "AgX", GothicRendererSettings::AgXTonemap },
             { "Perceptual Quantizer", GothicRendererSettings::PerceptualQuantizerTonemap },
         };
         ComboRow( "Tone Mapping", "##ToneMap", toneMaps, &settings.HDRToneMap,

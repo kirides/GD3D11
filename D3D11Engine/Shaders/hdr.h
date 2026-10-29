@@ -203,4 +203,43 @@ float3 ACESFittedTonemap(float3 vColor, Texture2D lumTex, SamplerState samplerSt
 	return retColor;
 }
 
+// AgX (Troy Sobotka's display transform, polynomial contrast fit as in three.js): Rec.2020 inset, log2 encode over
+// [-12.47, 4.03] EV, sigmoid, outset. Hue-stable highlights, no ACES-style orange/red skew.
+static const float3x3 AgXToRec2020 = { { 0.6274, 0.3293, 0.0433 }, { 0.0691, 0.9195, 0.0113 }, { 0.0164, 0.0880, 0.8956 } };
+static const float3x3 AgXFromRec2020 = { { 1.6605, -0.5876, -0.0728 }, { -0.1246, 1.1329, -0.0083 }, { -0.0182, -0.1006, 1.1187 } };
+static const float3x3 AgXInsetMat = { { 0.856627153315983, 0.0951212405381588, 0.0482516061458583 }, { 0.137318972929847, 0.761241990602591, 0.101439036467562 }, { 0.11189821299995, 0.0767994186031903, 0.811302368396859 } };
+static const float3x3 AgXOutsetMat = { { 1.1271005818144368, -0.11060664309660323, -0.016493938717834573 }, { -0.1413297634984383, 1.157823702216272, -0.016493938717834257 }, { -0.14132976349843826, -0.11060664309660294, 1.2519364065950405 } };
+
+float3 AgXContrastApprox(float3 x)
+{
+	float3 x2 = x * x;
+	float3 x4 = x2 * x2;
+	return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+// Takes exposed linear sRGB, returns LINEAR sRGB in [0,1].
+float3 AgXTonemapOperator(float3 color)
+{
+	const float minEv = -12.47393;
+	const float maxEv = 4.026069;
+
+	color = mul(AgXInsetMat, mul(AgXToRec2020, max(color, 0.0f)));
+	color = log2(max(color, 1e-10f));
+	color = saturate((color - minEv) / (maxEv - minEv));
+	color = AgXContrastApprox(color);
+	color = mul(AgXOutsetMat, color);
+	color = pow(max(color, 0.0f), 2.2f);
+	return saturate(mul(AgXFromRec2020, color));
+}
+
+// Returns display-encoded (gamma 1/2.2) like jafEq4; PS_PFX_HDR re-linearizes with pow(2.2).
+float3 AgXTonemap(float3 vColor, Texture2D lumTex, SamplerState samplerState)
+{
+	float fLumAvg = lumTex.SampleLevel(samplerState, float2(0.5f, 0.5f), 9).r;
+
+	vColor *= (HDR_MiddleGray / fLumAvg);  // Exposure Adjustment
+
+	return pow(AgXTonemapOperator(vColor), 1 / 2.2f);
+}
+
 #endif
