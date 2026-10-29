@@ -19,7 +19,18 @@
 #include "../VulkanEngine/VulkanRhi.h"
 
 #include <FidelityFX/backend/dx12/ffx_dx12.h>
+// The DX12 and VK FFX headers define the same allocator/swapchain-key names; rename the VK copies.
+#define PfnFfxResourceAllocatorFunc PfnFfxResourceAllocatorFuncVK
+#define PfnFfxResourceDeallocatorFunc PfnFfxResourceDeallocatorFuncVK
+#define FfxFrameInterpolationSwapchainConfigureKey FfxFrameInterpolationSwapchainConfigureKeyVK
+#define FFX_FI_SWAPCHAIN_CONFIGURE_KEY_WAITCALLBACK FFX_FI_SWAPCHAIN_CONFIGURE_KEY_WAITCALLBACK_VK
+#define FFX_FI_SWAPCHAIN_CONFIGURE_KEY_FRAMEPACINGTUNING FFX_FI_SWAPCHAIN_CONFIGURE_KEY_FRAMEPACINGTUNING_VK
 #include <FidelityFX/backend/vk/ffx_vk.h>
+#undef PfnFfxResourceAllocatorFunc
+#undef PfnFfxResourceDeallocatorFunc
+#undef FfxFrameInterpolationSwapchainConfigureKey
+#undef FFX_FI_SWAPCHAIN_CONFIGURE_KEY_WAITCALLBACK
+#undef FFX_FI_SWAPCHAIN_CONFIGURE_KEY_FRAMEPACINGTUNING
 #include <FidelityFX/upscalers/fsr1/include/ffx_fsr1.h>
 #include <FidelityFX/upscalers/fsr3/include/ffx_fsr2.h>
 #include <FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h>
@@ -228,7 +239,7 @@ namespace {
             const FfxApiResourceDescription desc = g_Ffx.Vk.GetImageResourceDescription(
                 (VkImage)image, info, FFX_API_RESOURCE_USAGE_READ_ONLY );
             if ( g_Ffx.Vk.GetResourceFromHandle )
-                return g_Ffx.Vk.GetResourceFromHandle( image, desc, name, static_cast<uint32_t>( state ) );
+                return g_Ffx.Vk.GetResourceFromHandle( image, desc, name, static_cast<FfxApiResourceState>( state ) );
             // The old entry point carries the handle in a void*; a 32-bit process can't pass a wider one.
             if ( image > UINTPTR_MAX ) {
                 static bool logged = false;
@@ -240,11 +251,11 @@ namespace {
                 return FfxApiResource{};
             }
             return g_Ffx.Vk.GetResource( reinterpret_cast<void*>( static_cast<uintptr_t>( image ) ), desc, name,
-                static_cast<uint32_t>( state ) );
+                static_cast<FfxApiResourceState>( state ) );
         }
         const FfxApiResourceDescription desc =
             g_Ffx.Dx12.GetResourceDescription( D3D12Rhi::Native( res ), FFX_API_RESOURCE_USAGE_READ_ONLY );
-        return g_Ffx.Dx12.GetResource( D3D12Rhi::Native( res ), desc, name, static_cast<uint32_t>( state ) );
+        return g_Ffx.Dx12.GetResource( D3D12Rhi::Native( res ), desc, name, static_cast<FfxApiResourceState>( state ) );
     }
 
     /** DXGI format of an FSR 3 shared resource; anything new means the SDK changed and is reported. */
