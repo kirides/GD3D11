@@ -1792,6 +1792,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             {"PerceptualQuantizerTonemap", 3},
             {"ToneMap_Simple", 4},
             {"ACESFittedTonemap", 5},
+            {"AgXTonemap", 6},
         };
 
         ImGui::BeginDisabled( !settings.EnableHDR );
