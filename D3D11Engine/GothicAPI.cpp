@@ -6,6 +6,7 @@
 #include "GothicAPI.h"
 #include "GothicAPIState.h"
 #include "FloatingVobs.h"
+#include "OceanSpectrum.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
@@ -634,6 +635,13 @@ void GothicAPI::OnWorldUpdate() {
     RendererState.RendererInfo.Reset();
     RendererState.RendererInfo.FPS = GetFramesPerSecond();
     RendererState.GraphicsState.FF_Time = GetTimeSeconds();
+
+    // The CPU twin of the simulated sea (swimming, floating plants) and the clock the GPU simulation follows
+    {
+        const auto& rs = RendererState.RendererSettings;
+        OceanFFT::GetSurface().Refresh( FeatureLevel10Compatibility ? 0 : static_cast<int>( rs.WaterSimulation ), rs.WaterSeaState, rs.WaterWindAngle,
+            rs.WaterWaveScale, rs.WaterChoppiness, Engine::IsModernBackend() ? 2 : 1 );
+    }
 
     // Floating plants follow the water's vertex waves (same build gate as the waves themselves)
     if ( !State->FloatingVobs.empty() ) {
@@ -6083,6 +6091,11 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WindQuality", to_string_locale_independent( s.WindQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaves", to_string_locale_independent( (int)s.WaterWaves ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterSimulation", to_string_locale_independent( (int)s.WaterSimulation ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterSeaState", float_to_string( s.WaterSeaState, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterWaveScale", float_to_string( s.WaterWaveScale, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterChoppiness", float_to_string( s.WaterChoppiness, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterWindAngle", float_to_string( s.WaterWindAngle, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterReflectionMode", to_string_locale_independent( (int)s.WaterReflectionMode ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterRayTracing", to_string_locale_independent( (int)s.WaterRayTracing ).c_str(), ini.c_str() );
@@ -6386,6 +6399,12 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             ? GothicRendererSettings::WATER_WAVES_D3D11 : ds.WaterWaves;
         s.WaterWaves = static_cast<GothicRendererSettings::E_WaterWaves>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterWaves", legacyWaterWaves, ini.c_str() ),
             GothicRendererSettings::WATER_WAVES_OFF, GothicRendererSettings::WATER_WAVES_D3D11 ) );
+        s.WaterSimulation = static_cast<GothicRendererSettings::E_WaterSimulation>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterSimulation", ds.WaterSimulation, ini.c_str() ),
+            GothicRendererSettings::WATER_SIM_OFF, GothicRendererSettings::WATER_SIM_HIGH ) );
+        s.WaterSeaState = std::clamp( GetPrivateProfileFloatA( "Display", "WaterSeaState", ds.WaterSeaState, ini ), 0.0f, 3.0f );
+        s.WaterWaveScale = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWaveScale", ds.WaterWaveScale, ini ), 0.0f, 3.0f );
+        s.WaterChoppiness = std::clamp( GetPrivateProfileFloatA( "Display", "WaterChoppiness", ds.WaterChoppiness, ini ), 0.0f, 2.0f );
+        s.WaterWindAngle = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWindAngle", ds.WaterWindAngle, ini ), -360.0f, 360.0f );
         // Backward compat: legacy [Display]/WaterSSR bool maps to Medium/Disabled when the
         // new WaterSSRQuality key is absent.
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 4));

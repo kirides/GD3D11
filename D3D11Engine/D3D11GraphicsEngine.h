@@ -75,6 +75,7 @@ class D3D11PointLight;
 class D3D11VShader;
 class D3D11PShader;
 class D3D11PfxRenderer;
+class D3D11Ocean;
 class D3D11LineRenderer;
 class zCVobLight;
 class zCVob;
@@ -790,6 +791,7 @@ private:
 
     /** Water surface indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;
+    std::unique_ptr<D3D11Ocean> Ocean;   // optional FFT ocean (D3D11Ocean.h); created on first use
 
     std::unique_ptr<D3D11SkeletalPoseCache> m_SkeletalPoses;
 

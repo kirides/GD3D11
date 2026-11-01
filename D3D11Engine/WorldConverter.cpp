@@ -38,6 +38,72 @@
 
 extern MeshManager* s_MeshManager;
 
+namespace {
+    /** Longest edge (world units) of a sea triangle once the simulated ocean is on; the hull shader tessellates up to 64x within it. */
+    constexpr float kOceanMaxEdge = 8192.0f;
+    constexpr size_t kOceanSplitVertexBudget = 3000000;
+
+    ExVertexStruct LerpVertex( const ExVertexStruct& a, const ExVertexStruct& b ) {
+        ExVertexStruct r;
+        r.Position = float3( ( a.Position.x + b.Position.x ) * 0.5f, ( a.Position.y + b.Position.y ) * 0.5f, ( a.Position.z + b.Position.z ) * 0.5f );
+        r.Normal = float3( ( a.Normal.x + b.Normal.x ) * 0.5f, ( a.Normal.y + b.Normal.y ) * 0.5f, ( a.Normal.z + b.Normal.z ) * 0.5f );
+        r.TexCoord = float2( ( a.TexCoord.x + b.TexCoord.x ) * 0.5f, ( a.TexCoord.y + b.TexCoord.y ) * 0.5f );
+        r.TexCoord2 = float2( ( a.TexCoord2.x + b.TexCoord2.x ) * 0.5f, ( a.TexCoord2.y + b.TexCoord2.y ) * 0.5f );
+        r.Tangent = float4( ( a.Tangent.x + b.Tangent.x ) * 0.5f, ( a.Tangent.y + b.Tangent.y ) * 0.5f, ( a.Tangent.z + b.Tangent.z ) * 0.5f, a.Tangent.w );
+        r.Color = 0;
+        for ( int i = 0; i < 4; ++i ) {
+            reinterpret_cast<BYTE*>( &r.Color )[i] = static_cast<BYTE>( ( reinterpret_cast<const BYTE*>( &a.Color )[i] + reinterpret_cast<const BYTE*>( &b.Color )[i] ) / 2 );
+        }
+        return r;
+    }
+
+    /** Midpoint of an edge, computed from the endpoints in a fixed order so both triangles sharing it get bit-identical vertices. */
+    ExVertexStruct EdgeMid( const ExVertexStruct& a, const ExVertexStruct& b ) {
+        const bool swap = std::tie( b.Position.x, b.Position.y, b.Position.z ) < std::tie( a.Position.x, a.Position.y, a.Position.z );
+        return swap ? LerpVertex( b, a ) : LerpVertex( a, b );
+    }
+
+    float EdgeLengthSq( const ExVertexStruct& a, const ExVertexStruct& b ) {
+        const float dx = a.Position.x - b.Position.x, dy = a.Position.y - b.Position.y, dz = a.Position.z - b.Position.z;
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    /** Splits every edge of the triangle list [first, end) longer than maxEdge at its midpoint, until none is. An edge is split
+        by its own length alone, so triangles sharing it stay conforming (no T-junctions for the displaced sea). */
+    void SplitLongTriangles( std::vector<ExVertexStruct>& list, size_t first, float maxEdge ) {
+        std::vector<ExVertexStruct> cur( list.begin() + first, list.end() ), out;
+        const float maxSq = maxEdge * maxEdge;
+        for ( int pass = 0; pass < 16; ++pass ) {
+            out.clear();
+            out.reserve( cur.size() );
+            bool any = false;
+            for ( size_t i = 0; i + 2 < cur.size(); i += 3 ) {
+                const ExVertexStruct &a = cur[i], &b = cur[i + 1], &c = cur[i + 2];
+                const bool ab = EdgeLengthSq( a, b ) > maxSq, bc = EdgeLengthSq( b, c ) > maxSq, ca = EdgeLengthSq( c, a ) > maxSq;
+                if ( !ab && !bc && !ca ) { out.push_back( a ); out.push_back( b ); out.push_back( c ); continue; }
+                any = true;
+                const ExVertexStruct mab = ab ? EdgeMid( a, b ) : a, mbc = bc ? EdgeMid( b, c ) : a, mca = ca ? EdgeMid( c, a ) : a;
+                auto tri = [&]( const ExVertexStruct& p, const ExVertexStruct& q, const ExVertexStruct& r ) { out.push_back( p ); out.push_back( q ); out.push_back( r ); };
+                if ( ab && bc && ca ) { tri( a, mab, mca ); tri( mab, b, mbc ); tri( mca, mbc, c ); tri( mab, mbc, mca ); }
+                else if ( ab && bc ) { tri( mab, b, mbc ); tri( a, mab, mbc ); tri( a, mbc, c ); }
+                else if ( bc && ca ) { tri( mbc, c, mca ); tri( a, b, mbc ); tri( a, mbc, mca ); }
+                else if ( ca && ab ) { tri( a, mab, mca ); tri( mab, b, c ); tri( mab, c, mca ); }
+                else if ( ab ) { tri( a, mab, c ); tri( mab, b, c ); }
+                else if ( bc ) { tri( a, b, mbc ); tri( a, mbc, c ); }
+                else { tri( a, b, mca ); tri( mca, b, c ); }
+            }
+            cur.swap( out );
+            if ( !any ) break;
+            if ( cur.size() > kOceanSplitVertexBudget ) {
+                Logging::Wrn( "WorldConverter: ocean triangle split stopped at {} vertices (budget); the sea stays coarser than the simulation wants.", cur.size() );
+                break;
+            }
+        }
+        list.resize( first );
+        list.insert( list.end(), cur.begin(), cur.end() );
+    }
+}
+
 WorldConverter::WorldConverter() {}
 
 WorldConverter::~WorldConverter() {}
@@ -1108,7 +1174,13 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         }
 
         it->second->Vertices.reserve( polyVertices.size() * 3 );
+        const size_t firstNewVertex = it->second->Vertices.size();
         TriangleFanToList( &polyVertices[0], polyVertices.size(), &it->second->Vertices );
+        // The simulated sea tessellates the original triangles; split the huge ones first so the hull shader's cap suffices
+        if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() && IsOceanWaterMaterial( mat )
+            && Engine::GAPI->GetRendererState().RendererSettings.WaterSimulation != GothicRendererSettings::WATER_SIM_OFF ) {
+            SplitLongTriangles( it->second->Vertices, firstNewVertex, kOceanMaxEdge );
+        }
         if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() ) {
 #ifdef BUILD_GOTHIC_1_08k
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat );

@@ -727,6 +727,14 @@ struct GothicRendererSettings {
         WATER_WAVES_D3D11    = 2,   // Gerstner swell
     };
 
+    /** Optional FFT ocean on MT_Ocean water (tessellated); the tier picks the cascade count and tile resolution. */
+    enum E_WaterSimulation {
+        WATER_SIM_OFF    = 0,
+        WATER_SIM_LOW    = 1,   // 3 cascades of 128^2
+        WATER_SIM_MEDIUM = 2,   // 4 cascades of 256^2
+        WATER_SIM_HIGH   = 3,   // 4 cascades of 512^2 (D3D12/Vulkan only, D3D11 clamps to Medium)
+    };
+
     /** Foam along shores; 0/1/2 is what Water.hlsl and PS_Water read as WaterFrame::shoreFoam. */
     enum E_WaterShoreFoam {
         WATER_FOAM_OFF   = 0,
@@ -1025,6 +1033,11 @@ struct GothicRendererSettings {
         RunInSpacerNet = false;
         BinkVideoRunning = false;
         WaterWaves = WATER_WAVES_ORIGINAL;
+        WaterSimulation = WATER_SIM_OFF;
+        WaterSeaState = 1.0f;
+        WaterWaveScale = 1.0f;
+        WaterChoppiness = 1.0f;
+        WaterWindAngle = 0.0f;
         WaterSSRQuality = WATER_SSR_MEDIUM;
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
         WaterReflectionMode = WATER_REFLECTION_GEOMETRY_SKY;
@@ -1484,6 +1497,11 @@ struct GothicRendererSettings {
     bool RunInSpacerNet;
     bool BinkVideoRunning;
     E_WaterWaves WaterWaves;
+    E_WaterSimulation WaterSimulation;   // FFT ocean on MT_Ocean; overrides WaterWaves there. Quality change reallocates.
+    float WaterSeaState;                 // 0 calm .. 3 storm (interpolated)
+    float WaterWaveScale;                // amplitude multiplier
+    float WaterChoppiness;               // horizontal displacement multiplier
+    float WaterWindAngle;                // degrees, direction the wind blows towards
     E_WaterSSRQuality WaterSSRQuality;
     // D3D12 only: temporal SSR on opaque wet/glossy surfaces (D3D12Ssr.cpp's history + the Forward+ PS
     // marcher). Reuses E_WaterSSRQuality's step-count tiers/DISABLED value rather than a parallel enum —

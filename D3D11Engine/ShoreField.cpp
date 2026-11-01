@@ -310,10 +310,40 @@ std::unique_ptr<ShoreField> ShoreField::Bake( const std::map<int, std::map<int, 
         return nullptr;
     }
     field->Texture->SetDebugName( "ShoreField" );
+    field->Width = g.Width;
+    field->Height = g.Height;
+    field->MinX = g.MinX;
+    field->MinZ = g.MinZ;
+    field->Cell = g.Cell;
+    field->Depth.resize( g.Count() );
+    field->Distance.resize( g.Count() );
+    for ( size_t i = 0; i < g.Count(); ++i ) {
+        field->Distance[i] = texels[i * 4 + 0];
+        field->Depth[i] = texels[i * 4 + 1];
+    }
     field->Mapping = XMFLOAT4( g.MinX, g.MinZ, 1.0f / ( g.Width * g.Cell ), 1.0f / ( g.Height * g.Cell ) );
 
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>( std::chrono::steady_clock::now() - start ).count();
     Logging::Inf( "Shore field: {}x{} texels of {:.0f} units at ({:.0f}, {:.0f}), {} land / {} water, {} ms",
         g.Width, g.Height, g.Cell, g.MinX, g.MinZ, landCount, waterCount, ms );
     return field;
+}
+
+void ShoreField::Sample( float x, float z, float& distance, float& depth ) const {
+    distance = 30000.0f;   // the shaders' values away from the field
+    depth = 5000.0f;
+    if ( Depth.empty() ) return;
+    const float fx = ( x - MinX ) / Cell - 0.5f, fz = ( z - MinZ ) / Cell - 0.5f;
+    if ( fx < -0.5f || fz < -0.5f || fx > Width - 0.5f || fz > Height - 0.5f ) return;
+    const int x0 = std::clamp( static_cast<int>( std::floor( fx ) ), 0, Width - 1 ), z0 = std::clamp( static_cast<int>( std::floor( fz ) ), 0, Height - 1 );
+    const int x1 = std::min( x0 + 1, Width - 1 ), z1 = std::min( z0 + 1, Height - 1 );
+    const float tx = std::clamp( fx - static_cast<float>( x0 ), 0.0f, 1.0f ), tz = std::clamp( fz - static_cast<float>( z0 ), 0.0f, 1.0f );
+    auto lerp2 = [&]( const std::vector<uint16_t>& v ) {
+        auto at = [&]( int ix, int iz ) { return PackedVector::XMConvertHalfToFloat( v[static_cast<size_t>( iz ) * Width + ix] ); };
+        const float top = at( x0, z0 ) + ( at( x1, z0 ) - at( x0, z0 ) ) * tx;
+        const float bottom = at( x0, z1 ) + ( at( x1, z1 ) - at( x0, z1 ) ) * tx;
+        return top + ( bottom - top ) * tz;
+    };
+    distance = lerp2( Distance );
+    depth = lerp2( Depth );
 }

@@ -25,6 +25,7 @@
 #include "D3D12Texture.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12PipelineState.h"
+#include "D3D12Ocean.h"
 #include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
@@ -93,9 +94,12 @@ namespace {
         XMFLOAT4 ShoreFieldMapping;   // ShoreField::GetMapping
         UINT ShoreFieldIndex;         // 0xFFFFFFFF => no field
         float ShoreFieldState;        // WaterShoreFieldState
-        float ShoreFieldPad[2];
+        UINT OceanDispIndex;          // D3D12Ocean displacement / derivative arrays; 0xFFFFFFFF => sea not simulated
+        UINT OceanDerivIndex;
+        float OceanTile[4];           // cascade tile sizes (m), 0 = unused
+        float OceanParams[4];         // N, world units per metre, -, -
     };
-    static_assert( sizeof( WaterCBData ) == 304, "WaterCBData must match Water.hlsl's b2 layout" );
+    static_assert( sizeof( WaterCBData ) == 336, "WaterCBData must match Water.hlsl's b2 layout" );
 
     // Resting state of the water copies: the water PS and the sky-average compute pass both read them.
     constexpr D3D12_RESOURCE_STATES kWaterCopyReadState =
@@ -373,6 +377,15 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
     if ( !vb->GetResource() || !ib->GetResource() ) { ClearFrameWaterSurfaces(); return; }
 
+    // Optional FFT ocean: simulated only while the sea is drawn (D3D12Ocean.h); false falls back to the vertex waves
+    if ( m_Ocean && !g_FrameWaterSurfaces[1].empty() && Engine::GAPI->GetRendererState().RendererSettings.WaterSimulation != GothicRendererSettings::WATER_SIM_OFF
+        && ( !m_Pipelines.Water.OceanPSO || !m_Pipelines.Water.OceanDepthPrepassPSO ) ) {
+        static bool warned = false;
+        if ( !warned ) { warned = true; Logging::Wrn( "D3D12: ocean simulation is on but the tessellated water pipelines do not exist (device tessellation or pipeline creation failed above)." ); }
+    }
+    const bool oceanSimulated = m_Ocean && !g_FrameWaterSurfaces[1].empty() && m_Pipelines.Water.OceanPSO && m_Pipelines.Water.OceanDepthPrepassPSO
+        && m_Ocean->Update( Engine::GAPI->GetRendererState().RendererSettings );
+
     // ViewProj — identical derivation to DrawWorldMesh (water verts are already world-space).
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -509,6 +522,16 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
                 cb.ShoreFieldState = WaterShoreFieldState( true );
             }
         }
+        cb.OceanDispIndex = UINT_MAX;
+        cb.OceanDerivIndex = UINT_MAX;
+        if ( oceanSimulated ) {
+            const OceanFFT::Cascades& cascades = m_Ocean->Cascades();
+            cb.OceanDispIndex = m_Ocean->DispSrvSlot();
+            cb.OceanDerivIndex = m_Ocean->DerivSrvSlot();
+            for ( int c = 0; c < cascades.count; ++c ) cb.OceanTile[c] = cascades.c[c].length;
+            cb.OceanParams[0] = static_cast<float>( cascades.size );
+            cb.OceanParams[1] = OceanFFT::UnitsPerMetre;
+        }
         cb.SkyAverageIndex = skyAverageReady ? m_WaterSkyAverageSrvSlot : UINT_MAX;
         // Same build gate as D3D11's SHD_WATERANI. The Z-prepass shares the VS, so its depth moves with the waves.
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -575,9 +598,11 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     // (color writes masked, depth-write on).
     if ( m_Pipelines.Water.DepthPrepassPSO ) {
         DX_ZONE( m_CmdList.Get(), "Water Z-Prepass" );
-        m_CmdList->SetPipelineState( m_Pipelines.Water.DepthPrepassPSO.Get() );
-        for ( const auto& surfaces : g_FrameWaterSurfaces ) {
-            for ( auto const& [tex, meshes] : surfaces ) {
+        for ( UINT ocean = 0; ocean < 2; ++ocean ) {
+            const bool tessellated = ocean == 1 && oceanSimulated && copiesReady;   // the CB only carries the FFT when the copies exist
+            m_CmdList->SetPipelineState( ( tessellated ? m_Pipelines.Water.OceanDepthPrepassPSO : m_Pipelines.Water.DepthPrepassPSO ).Get() );
+            m_CmdList->IASetPrimitiveTopology( tessellated ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+            for ( auto const& [tex, meshes] : g_FrameWaterSurfaces[ocean] ) {
                 for ( MeshInfo* mesh : meshes ) {
                     if ( !mesh || mesh->Indices.empty() ) continue;
                     m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,
@@ -585,6 +610,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
                 }
             }
         }
+        m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     }
 
     // Without the scene/depth copies the refraction PS would read unbound descriptors, so skip the color
@@ -638,9 +664,11 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         m_CmdList->SetGraphicsRootConstantBufferView( 3, m_WaterCBGpu[m_FrameIndex] + kWaterAtmosphereCbOffset );
     }
 
-    m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
     unsigned int drawnIndices = 0;
-    for ( UINT ocean = 0; ocean < 2; ++ocean )
+    for ( UINT ocean = 0; ocean < 2; ++ocean ) {
+    const bool tessellated = ocean == 1 && oceanSimulated;
+    m_CmdList->SetPipelineState( ( tessellated ? m_Pipelines.Water.OceanPSO : m_Pipelines.Water.PSO ).Get() );
+    m_CmdList->IASetPrimitiveTopology( tessellated ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     for ( auto const& [tex, meshes] : g_FrameWaterSurfaces[ocean] ) {
         D3D12_GPU_DESCRIPTOR_HANDLE srv = blackSrv;
         if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
@@ -660,6 +688,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             drawnIndices += static_cast<unsigned int>( mesh->Indices.size() );
         }
     }
+    }
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;
     ClearFrameWaterSurfaces();

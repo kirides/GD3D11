@@ -504,6 +504,9 @@ namespace VulkanRhi {
         default:                                  ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
         }
 
+        VkPipelineTessellationStateCreateInfo tess = { VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO };
+        tess.patchControlPoints = 3;   // the only patch size the renderer draws
+
         VkPipelineViewportStateCreateInfo vp = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
         vp.viewportCount = 1;
         vp.scissorCount = 1;
@@ -666,6 +669,7 @@ namespace VulkanRhi {
             ci.pStages = stages;
             ci.pVertexInputState = &vi;
             ci.pInputAssemblyState = &ia;
+            if ( ia.topology == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST ) ci.pTessellationState = &tess;
             ci.pViewportState = &vp;
             ci.pRasterizationState = &rs2;
             ci.pMultisampleState = &ms;

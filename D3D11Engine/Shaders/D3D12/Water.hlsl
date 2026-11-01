@@ -71,7 +71,11 @@ cbuffer WaterCB : register(b2)
     float4 ShoreFieldMapping;    // xy = field corner (world xz), zw = 1 / its extent
     uint   ShoreFieldIndex;      // ShoreField.cpp: distance, depth, seaward xz (0xFFFFFFFF = none)
     float  ShoreFieldState;      // 0 = no shoreline field, 1 = field, 2 = debug paint
-    float2 ShoreFieldPad;
+    uint   OceanDispIndex;       // FFT ocean displacement array, D3D12Ocean.h (0xFFFFFFFF = not simulated)
+    uint   OceanDerivIndex;
+
+    float4 OceanTile;            // cascade tile sizes in metres, 0 = unused
+    float4 OceanParams;          // x tile texels N, y world units per metre, z tessellation pixels per edge, w unused
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -99,6 +103,7 @@ struct VS_OUT
     float4 col     : TEXCOORD2;
     float3 wnrm    : TEXCOORD3;   // geometric world normal — waterfall detection only
     float3 wpos    : TEXCOORD4;
+    float2 oxz     : TEXCOORD5;   // undisplaced world xz (simulated ocean only; the FFT is sampled there)
 };
 
 VS_OUT VSMain( VS_IN i )
@@ -117,6 +122,7 @@ VS_OUT VSMain( VS_IN i )
     // note) — the same convention D3D11's PS_Water/VS_ExWater rely on.
     o.vz.x = mul( float4( pos, 1.0 ), RI_View ).z;
     o.vz.y = length( mul( float4( pos, 1.0 ), RI_View ) );
+    o.oxz = i.pos.xz;
     return o;
 }
 
@@ -330,6 +336,20 @@ float4 WaterShoreField( float2 xz )
     return field.SampleLevel( smpClamp, uv, 0 );
 }
 
+// ---- simulated ocean (OceanSurface.hlsl): the tessellated sea samples the FFT cascades --------------------------------------
+#define OceanTexels OceanParams.x
+#define OceanUnitsPerMetre OceanParams.y
+float4 OceanFetchDisp( uint c, float2 uv, float lod )
+{
+    Texture2DArray<float4> t = GD_HEAP( OceanDispIndex );
+    return t.SampleLevel( smp, float3( uv, c ), lod );
+}
+float4 OceanFetchDeriv( uint c, float2 uv, float lod )
+{
+    Texture2DArray<float4> t = GD_HEAP( OceanDerivIndex );
+    return t.SampleLevel( smp, float3( uv, c ), lod );
+}
+
 float4 WaterLowClouds( float2 uv )   // stored in gamma space like the shading here
 {
     if ( LowCloudIndex == 0xFFFFFFFFu ) return float4( 0.0f, 0.0f, 0.0f, 0.0f );
@@ -364,6 +384,11 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
     return WaterToGamma( TraceWaterSSR( worldPos, dir, confidence, hitDistance ) );
 }
 
+#include "../include/OceanSurface.hlsl"
+
+// Wave height damping towards the shore: calm in the shallows and near land (OceanShoreWeight)
+float OceanDepthWeight( float2 xz ) { float4 f = WaterShoreField( xz ); return OceanShoreWeight( f.y, f.x ); }
+
 #include "../include/WaterShading.hlsl"
 
 //--------------------------------------------------------------------------------------
@@ -379,6 +404,17 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     px.surfaceViewDistance = Input.vz.y;
     px.worldPos = Input.wpos;
     px.geometricNormal = Input.wnrm;
+    px.oceanNormal = float3( 0.0f, 1.0f, 0.0f );
+    px.oceanFoam = 0.0f;
+    px.oceanActive = 0.0f;
+    float2 oceanFootprint = abs( ddx( Input.oxz ) ) + abs( ddy( Input.oxz ) );
+    [branch] if ( IsOcean != 0 && OceanDispIndex != 0xFFFFFFFFu )
+    {
+        OceanSurfaceSample os = OceanEvaluate( Input.oxz, max( oceanFootprint.x, oceanFootprint.y ) / OceanUnitsPerMetre, OceanDepthWeight( Input.oxz ) );
+        px.oceanNormal = normalize( float3( -os.slope.x, 1.0f, -os.slope.y ) );
+        px.oceanFoam = os.foam;
+        px.oceanActive = 1.0f;
+    }
 
     WaterFrame fr;
     fr.cameraPos = RI_CameraPosition;
@@ -399,4 +435,92 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
 
     // Opaque write: the see-through look is composited from the scene copy, exactly like D3D11
     return float4( WaterToLinear( ShadeWater( px, fr ) ), 1.0f );
+}
+
+//--------------------------------------------------------------------------------------
+// Simulated ocean: the same triangles, tessellated, displaced by the FFT cascades (VSOcean -> HSOcean -> DSOcean)
+//--------------------------------------------------------------------------------------
+struct TessVertex
+{
+    float3 pos  : POSITION;
+    float3 wnrm : NORMAL;
+    float2 uv   : TEXCOORD0;
+    float4 col  : TEXCOORD1;
+};
+
+TessVertex VSOcean( VS_IN i )
+{
+    TessVertex o;
+    o.pos = i.pos;
+    o.wnrm = DecodeOctNormal( i.nrm );
+    float2 ani = i.scroll * RI_TotalTime;
+    ani -= floor( ani );
+    o.uv = i.uv + ani;
+    o.col = i.col;
+    return o;
+}
+
+struct PatchTess
+{
+    float edge[3] : SV_TessFactor;
+    float inside  : SV_InsideTessFactor;
+};
+
+static const float kOceanPixelsPerEdge = 8.0f;
+
+// Edge factor from the edge's length and midpoint distance; symmetric in its endpoints so neighbouring patches agree
+float OceanEdgeFactor( float3 a, float3 b )
+{
+    float dist = length( 0.5f * ( a + b ) - RI_CameraPosition );
+    float spacing = max( dist * 0.0014f * kOceanPixelsPerEdge, 60.0f );   // ~ world units covered by kOceanPixelsPerEdge pixels
+    return clamp( length( a - b ) / spacing, 1.0f, 64.0f );
+}
+
+PatchTess OceanPatchConstants( InputPatch<TessVertex, 3> p )
+{
+    PatchTess t;
+    // All three corners outside one frustum plane (with room for the displacement) -> culled
+    float4 c0 = mul( float4( p[0].pos, 1.0f ), ViewProj ), c1 = mul( float4( p[1].pos, 1.0f ), ViewProj ), c2 = mul( float4( p[2].pos, 1.0f ), ViewProj );
+    float m = 1.35f;
+    bool outside =
+        ( c0.x < -c0.w * m && c1.x < -c1.w * m && c2.x < -c2.w * m ) || ( c0.x > c0.w * m && c1.x > c1.w * m && c2.x > c2.w * m ) ||
+        ( c0.y < -c0.w * m && c1.y < -c1.w * m && c2.y < -c2.w * m ) || ( c0.y > c0.w * m && c1.y > c1.w * m && c2.y > c2.w * m ) ||
+        ( c0.w < 0.0f && c1.w < 0.0f && c2.w < 0.0f );
+    float f0 = OceanEdgeFactor( p[1].pos, p[2].pos );   // edge i is opposite corner i
+    float f1 = OceanEdgeFactor( p[2].pos, p[0].pos );
+    float f2 = OceanEdgeFactor( p[0].pos, p[1].pos );
+    t.edge[0] = outside ? 0.0f : f0;
+    t.edge[1] = outside ? 0.0f : f1;
+    t.edge[2] = outside ? 0.0f : f2;
+    t.inside = outside ? 0.0f : max( f0, max( f1, f2 ) );
+    return t;
+}
+
+[domain( "tri" )]
+[partitioning( "fractional_odd" )]
+[outputtopology( "triangle_cw" )]
+[outputcontrolpoints( 3 )]
+[patchconstantfunc( "OceanPatchConstants" )]
+TessVertex HSOcean( InputPatch<TessVertex, 3> p, uint id : SV_OutputControlPointID )
+{
+    return p[id];
+}
+
+[domain( "tri" )]
+VS_OUT DSOcean( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatch<TessVertex, 3> p )
+{
+    float3 pos = p[0].pos * bary.x + p[1].pos * bary.y + p[2].pos * bary.z;
+    VS_OUT o;
+    o.oxz = pos.xz;
+    float dist = length( pos - RI_CameraPosition );
+    OceanSurfaceSample s = OceanEvaluate( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, OceanDepthWeight( pos.xz ) );
+    pos += s.offset;
+    o.clip = mul( float4( pos, 1.0 ), ViewProj );
+    o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
+    o.col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;
+    o.wnrm = normalize( p[0].wnrm * bary.x + p[1].wnrm * bary.y + p[2].wnrm * bary.z );
+    o.wpos = pos;
+    o.vz.x = mul( float4( pos, 1.0 ), RI_View ).z;
+    o.vz.y = length( mul( float4( pos, 1.0 ), RI_View ) );
+    return o;
 }

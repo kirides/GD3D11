@@ -498,6 +498,17 @@ struct LowCloudConstantBuffer {
 };
 static_assert( sizeof( LowCloudConstantBuffer ) == 240 );
 
+/** OceanTess.hlsl b0 (hull + domain) and PS_Water b4: the tessellated FFT ocean. Mirror of include/OceanTessCB.hlsl. */
+struct OceanTessConstants {
+    XMFLOAT4X4 ViewProj;
+    XMFLOAT4X4 View;
+    float Camera[4];
+    float Tile[4];      // cascade tile sizes (m), 0 = unused
+    float Params[4];    // N, world units per metre, shore field valid, -
+    float ShoreMap[4];  // ShoreField::GetMapping
+};
+static_assert( sizeof( OceanTessConstants ) == 192 );
+
 /** PS_Water b3: moon glint, ocean look and sky-march gate; WP_IsOcean changes per texture batch. */
 struct WaterParamsConstantBuffer {
     XMFLOAT3 WP_MoonDir;
@@ -511,7 +522,7 @@ struct WaterParamsConstantBuffer {
     float WP_OceanTexture;
     float WP_ShoreFoam;          // E_WaterShoreFoam
     float WP_ShoreFieldState;    // WaterShoreFieldState
-    float WP_Pad;
+    float WP_OceanFFT;           // 1 = the sea is simulated and tessellated (OceanTess.hlsl)
     XMFLOAT4 WP_ShoreFieldMapping;   // ShoreField::GetMapping
 };
 static_assert( sizeof( WaterParamsConstantBuffer ) == 80 );

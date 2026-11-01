@@ -820,11 +820,13 @@ bool VulkanDevice::Init() {
     f.vertexPipelineStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
     f.depthBiasClamp = sup.depthBiasClamp;
     f.fillModeNonSolid = sup.fillModeNonSolid;
+    f.tessellationShader = sup.tessellationShader;
     f.shaderInt16 = sup.shaderInt16;
     m_Caps.FragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
     m_Caps.VertexStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
     m_Caps.DepthBiasClamp = sup.depthBiasClamp;
     m_Caps.FillModeNonSolid = sup.fillModeNonSolid;
+    m_Caps.TessellationShader = sup.tessellationShader;
 
     VkPhysicalDeviceVulkan11Features f11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
     f11.shaderDrawParameters = VK_TRUE;

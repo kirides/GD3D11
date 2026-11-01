@@ -13,6 +13,8 @@ namespace {
     // is resolved at runtime, so every TU must read the single D3D12EngineCommon.h definition.
     constexpr const char* Shadermodel_PS = "ps_6_6";
     constexpr const char* Shadermodel_VS = "vs_6_6";
+    constexpr const char* Shadermodel_HS = "hs_6_6";
+    constexpr const char* Shadermodel_DS = "ds_6_6";
     constexpr const char* Shadermodel_CS = "cs_6_6";
 
     // Packs the blend-relevant fields of a Gothic blend state into a stable key for the PSO cache.
@@ -2288,6 +2290,38 @@ bool D3D12PipelineState::CreateLumAdapt() {
     return true;
 }
 
+bool D3D12PipelineState::CreateOcean() {
+    Rhi::Device* device = m_Device;
+    if ( !device ) return false;
+
+    D3D12RootLayout& rs = Layout( "Ocean" );
+    rs.AddConstants( 0, 32, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 OceanCB (pass constants + 8 bindless indices)
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+
+    auto make = [&]( ComputePipeline& pipe, const char* entry, const D3D_SHADER_MACRO* defines ) {
+        pipe.RootSig = rs.RootSig();
+        if ( !m_Shaders->CompileFromFile( "Ocean.hlsl", entry, Shadermodel_CS, pipe.CsBlob.ReleaseAndGetAddressOf(), defines ) )
+            return false;
+        rs.ValidateShaders( { { pipe.CsBlob.Get(), "Ocean.hlsl", D3D12_SHADER_VISIBILITY_ALL } } );
+        Rhi::ComputePipelineStateDesc pso = {};
+        pso.pRootSignature = pipe.RootSig.Get();
+        pso.CS = { pipe.CsBlob->GetBufferPointer(), pipe.CsBlob->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, pipe.PSO.ReleaseAndGetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (ocean {}).", entry );
+            return false;
+        }
+        return true;
+    };
+    bool ok = make( Ocean.Spectrum, "CSSpectrum", nullptr ) && make( Ocean.Evolve, "CSEvolve", nullptr )
+        && make( Ocean.Resolve, "CSResolve", nullptr ) && make( Ocean.Mip, "CSMip", nullptr );
+    static const D3D_SHADER_MACRO d128[] = { { "OCEAN_N", "128" }, { "OCEAN_LOG2N", "7" }, { nullptr, nullptr } };
+    static const D3D_SHADER_MACRO d256[] = { { "OCEAN_N", "256" }, { "OCEAN_LOG2N", "8" }, { nullptr, nullptr } };
+    static const D3D_SHADER_MACRO d512[] = { { "OCEAN_N", "512" }, { "OCEAN_LOG2N", "9" }, { nullptr, nullptr } };
+    ok = ok && make( Ocean.Fft[0], "CSFFT", d128 ) && make( Ocean.Fft[1], "CSFFT", d256 ) && make( Ocean.Fft[2], "CSFFT", d512 );
+    return ok;
+}
+
 bool D3D12PipelineState::CreateWaterSkyAverage() {
     Rhi::Device* device = m_Device;
     if ( !device ) return false;
@@ -2447,7 +2481,7 @@ bool D3D12PipelineState::CreateWater() {
     // equivalent needs five fixed t-slots, and avoids having to build a heap-contiguous descriptor run for
     // resources that live in unrelated slots.
     D3D12RootLayout& rs = Layout( "Water" );
-    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProj
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 ViewProj (the ocean's domain shader transforms too)
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 1: t0 diffuse
     // 2: b2 WaterCB (projection/view/params/bindless indices). Both CBs are per-frame ring writes that
     // DrawWaterSurfaces completes before it binds them, and no later pass rewrites them this frame.
@@ -2456,12 +2490,12 @@ bool D3D12PipelineState::CreateWater() {
     rs.AddConstants( 3, 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 4: b3 IsOcean, per texture batch
 
     // s0 — diffuse + the world-space distortion lookups.
-    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL,   // the ocean's domain shader samples the FFT
         D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
     // s1: screen-space fetches (scene copy / depth copy). CLAMP, not WRAP — a distorted UV that walks a
     // texel past the viewport edge must repeat the border pixel, not wrap around to the opposite side of
     // the screen (which shows up as a bright seam along the water's screen-edge silhouette).
-    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_ALL ) );   // the ocean's domain shader reads the shore field through it
 
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
                           | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
@@ -2534,6 +2568,7 @@ bool D3D12PipelineState::CreateWater() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (water)." );
         return false;
     }
+    const Rhi::GraphicsPipelineStateDesc colorDesc = pso;
 
     // Water depth-only prepass PSO (mirrors D3D11's DrawWaterSurfaces Z-prepass). Everything about the color
     // PSO above is kept — same root sig, same input layout, and critically the **same VS blob** — so the depth
@@ -2556,6 +2591,36 @@ bool D3D12PipelineState::CreateWater() {
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, Water.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (water depth prepass)." );
         return false;
+    }
+
+    // Simulated ocean variants (optional): the same state, tessellated
+    Water.OceanPSO.Reset();
+    Water.OceanDepthPrepassPSO.Reset();
+    if ( device->GetCaps().Tessellation
+        && m_Shaders->CompileFromFile( "Water.hlsl", "VSOcean", Shadermodel_VS, Water.OceanVsBlob.ReleaseAndGetAddressOf() )
+        && m_Shaders->CompileFromFile( "Water.hlsl", "HSOcean", Shadermodel_HS, Water.OceanHsBlob.ReleaseAndGetAddressOf() )
+        && m_Shaders->CompileFromFile( "Water.hlsl", "DSOcean", Shadermodel_DS, Water.OceanDsBlob.ReleaseAndGetAddressOf() ) ) {
+        rs.ValidateShaders( {
+            { Water.OceanVsBlob.Get(), "Water.hlsl:VSOcean", D3D12_SHADER_VISIBILITY_VERTEX },
+            { Water.OceanHsBlob.Get(), "Water.hlsl:HSOcean", D3D12_SHADER_VISIBILITY_HULL },
+            { Water.OceanDsBlob.Get(), "Water.hlsl:DSOcean", D3D12_SHADER_VISIBILITY_DOMAIN },
+        } );
+        Rhi::GraphicsPipelineStateDesc od = colorDesc;
+        od.VS = { Water.OceanVsBlob->GetBufferPointer(), Water.OceanVsBlob->GetBufferSize() };
+        od.HS = { Water.OceanHsBlob->GetBufferPointer(), Water.OceanHsBlob->GetBufferSize() };
+        od.DS = { Water.OceanDsBlob->GetBufferPointer(), Water.OceanDsBlob->GetBufferSize() };
+        od.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+        bool ok = SUCCEEDED( device->CreateGraphicsPipelineState( &od, Water.OceanPSO.ReleaseAndGetAddressOf() ) );
+        od.PS = { Water.DepthPrepassPsBlob->GetBufferPointer(), Water.DepthPrepassPsBlob->GetBufferSize() };
+        od.BlendState.RenderTarget[0] = {};
+        od.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+        od.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        ok = ok && SUCCEEDED( device->CreateGraphicsPipelineState( &od, Water.OceanDepthPrepassPSO.ReleaseAndGetAddressOf() ) );
+        if ( !ok ) {
+            Logging::Wrn( "D3D12: tessellated ocean pipelines failed; the sea keeps the vertex waves." );
+            Water.OceanPSO.Reset();
+            Water.OceanDepthPrepassPSO.Reset();
+        }
     }
     return true;
 }
@@ -4323,6 +4388,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     // Reloadable, but a reload cannot flip MorphGpu::IsActive() (it is frozen for the session — the morph
     // vertex buffers already exist in one usage or the other), so this only refreshes the shader.
     runOptional( "MorphFold", &D3D12PipelineState::CreateMorphFold );
+    runOptional( "Ocean", &D3D12PipelineState::CreateOcean );
     runFatal( "Skeletal", &D3D12PipelineState::CreateSkeletal );
     runFatal( "Skinning", &D3D12PipelineState::CreateSkinning );
     runFatal( "PointShadow", &D3D12PipelineState::CreatePointShadow );

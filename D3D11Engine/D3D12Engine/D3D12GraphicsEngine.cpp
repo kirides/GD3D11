@@ -2,6 +2,7 @@
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12LineRenderer.h"
+#include "D3D12Ocean.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include <d3dx12_barriers.h>
@@ -80,6 +81,8 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_V
     // the back-reference must be valid from construction, independent of any Init() ordering.
     m_ShadowMap.Attach( *this );
     m_PointShadows.Attach( *this );
+    m_Ocean = std::make_unique<D3D12Ocean>();
+    m_Ocean->Attach( *this );
 }
 
 void D3D12GraphicsEngine::OnInventoryVisualUsed( MeshVisualInfo* visual ) { m_VobArena->QueueVisual( visual ); }
@@ -347,6 +350,9 @@ bool D3D12GraphicsEngine::InitScene() {
             Logging::Wrn( "D3D12GraphicsEngine::Init: ray-traced shadows unavailable (RtShadows.hlsl); using shadow maps." );
         if ( !m_Pipelines.CreateRtScene() || !m_Pipelines.RtSceneInstances.PSO )
             Logging::Wrn( "D3D12GraphicsEngine::Init: RtSceneInstances.hlsl unavailable; the RT scene collects static VOBs on the CPU." );
+    }
+    if ( !m_Pipelines.CreateOcean() ) {
+        Logging::Wrn( "D3D12GraphicsEngine::Init: ocean simulation compute (Ocean.hlsl) unavailable; the sea keeps the vertex waves." );
     }
     if ( !m_Pipelines.CreateWaterSkyAverage() || !CreateWaterSkyAverage() ) {
         Logging::Wrn( "D3D12GraphicsEngine::Init: water sky average unavailable; missed sky reflections use the cube." );

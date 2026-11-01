@@ -6,6 +6,7 @@ enum class VShaderID : size_t {
     VS_ExNode,
     VS_Decal,
     VS_ExWater,
+    VS_OceanTess,
     VS_ParticlePoint,
     VS_ParticlePointShaded,
     VS_ExWS,
@@ -142,6 +143,7 @@ enum class GShaderID : size_t {
 };
 
 enum class HDShaderID : size_t {
+    HD_OceanTess,
     COUNT
 };
 
@@ -166,5 +168,11 @@ enum class CShaderID : size_t {
     CS_PFX_TAAResolve,
     CS_WaterSkyAverage,
     CS_LowCloudNoise,
+    CS_OceanSpectrum,
+    CS_OceanEvolve,
+    CS_OceanFFT128,
+    CS_OceanFFT256,
+    CS_OceanResolve,
+    CS_OceanMip,
     COUNT
 };
