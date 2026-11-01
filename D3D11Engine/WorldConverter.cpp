@@ -888,11 +888,14 @@ static bool AdditionalCheckWaterFall(const zCTexture* texture)
         && findStringIC( textureName, "_A0" ) 
         && !findStringIC( textureName, "SURFACE" )
         && !findStringIC( textureName, "STONE" )
+        && !findStringIC( textureName, "LAVA" )
+        && !findStringIC( textureName, "MAGMA" )
+        && !findStringIC( textureName, "FIRE" )
         // Fix for "Waterfalls" in snow areas, else they get the water shader
         && !findStringIC( textureName, "WINTER" ) 
     ) {
 #else
-    if ( findStringIC( textureName, "FALL" ) && (findStringIC( textureName, "SURFACE" ) || findStringIC( textureName, "STONE" )) ) {
+    if ( findStringIC( textureName, "FALL" ) && (findStringIC( textureName, "SURFACE" ) || findStringIC( textureName, "STONE" )) && !findStringIC( textureName, "LAVA" )) {
 #endif
         // Let's make it work at least with og waterfall foam
         return true;
