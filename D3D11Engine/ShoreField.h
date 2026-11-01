@@ -22,13 +22,15 @@ public:
     /** xy = world xz of the field's corner, zw = 1 / its extent: uv = ( xz - xy ) * zw. */
     const DirectX::XMFLOAT4& GetMapping() const { return Mapping; }
 
-    /** Water depth (world units) at a world position, as the shaders read it; 5000 outside the field. */
-    float DepthAt( float x, float z ) const;
+    /** The field as the shaders read it at a world position: signed distance to the shoreline and water depth (world units).
+        Far from any shore (30000, 5000) outside the field. */
+    void Sample( float x, float z, float& distance, float& depth ) const;
 
 private:
     std::unique_ptr<GfxTexture> Texture;
     DirectX::XMFLOAT4 Mapping = {};
-    std::vector<uint16_t> Depth;   // half floats, the field's depth channel
+    std::vector<uint16_t> Depth;      // half floats, the field's depth channel
+    std::vector<uint16_t> Distance;   // and its signed shoreline distance channel
     int Width = 0, Height = 0;
     float MinX = 0.0f, MinZ = 0.0f, Cell = 1.0f;
 };

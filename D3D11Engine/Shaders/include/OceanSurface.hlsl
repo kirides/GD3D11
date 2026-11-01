@@ -4,6 +4,15 @@
 #ifndef GD_OCEAN_SURFACE_HLSL
 #define GD_OCEAN_SURFACE_HLSL
 
+// Waves calm towards land: full height from OCEAN_SHORE_FAR world units out to sea, none at the waterline, and none in the shallows.
+// CPU twin: OceanFFT::WaveWeightForShore (OceanSpectrum.h); keep both in step.
+#define OCEAN_SHORE_NEAR 500.0f
+#define OCEAN_SHORE_FAR 20000.0f
+float OceanShoreWeight( float depth, float distanceToShore )
+{
+    return smoothstep( 0.0f, 600.0f, depth ) * smoothstep( OCEAN_SHORE_NEAR, OCEAN_SHORE_FAR, distanceToShore );
+}
+
 struct OceanSurfaceSample
 {
     float3 offset;   // world units, added to the undisplaced position

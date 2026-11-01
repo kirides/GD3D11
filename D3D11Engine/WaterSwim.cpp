@@ -3,6 +3,7 @@
 #include "HookedFunctions.h"
 #include "GothicAPI.h"
 #include "OceanSpectrum.h"
+#include "ShoreField.h"
 #include "zCPolygon.h"
 #include "zCMaterial.h"
 
@@ -35,7 +36,9 @@ namespace {
         if ( !info || info->MaterialType != MaterialInfo::MT_Ocean ) return;
 
         // The surface the player sees: calmer in the shallows, never below the floor
-        const float height = sea.HeightAt( testLocation->x, testLocation->z, OceanFFT::WaveWeightForDepth( depth ) );
+        float shoreDistance = 30000.0f, fieldDepth = 0.0f;
+        if ( const ShoreField* field = Engine::GAPI->GetShoreField() ) field->Sample( testLocation->x, testLocation->z, shoreDistance, fieldDepth );
+        const float height = sea.HeightAt( testLocation->x, testLocation->z, OceanFFT::WaveWeightForShore( depth, shoreDistance ) );
         state->WaterY = std::max( state->WaterY + height, state->FloorY + 1.0f );
     }
 }

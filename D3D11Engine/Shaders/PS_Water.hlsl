@@ -290,8 +290,8 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
 #endif
 }
 
-// Wave height damping towards the shore: calm where the baked field says the water is shallow
-float OceanDepthWeight( float2 xz ) { return smoothstep( 0.0f, 600.0f, WaterShoreField( xz ).y ); }
+// Wave height damping towards the shore: calm in the shallows and near land (OceanShoreWeight)
+float OceanDepthWeight( float2 xz ) { float4 f = WaterShoreField( xz ); return OceanShoreWeight( f.y, f.x ); }
 
 #include <include/WaterShading.hlsl>
 

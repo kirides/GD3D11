@@ -23,12 +23,13 @@ float4 OceanFetchDeriv( uint c, float2 uv, float lod ) { return TX_OceanDeriv.Sa
 
 #include <include/OceanSurface.hlsl>
 
-// Wave height damping towards the shore: calm where the baked field says the water is shallow
+// Wave height damping towards the shore: calm in the shallows and near land (OceanShoreWeight)
 float OceanDepthWeight( float2 xz )
 {
 	float2 uv = ( xz - oc.ShoreMap.xy ) * oc.ShoreMap.zw;
 	if ( oc.Params.z < 0.5f || any( uv < 0.0f ) || any( uv > 1.0f ) ) return 1.0f;
-	return smoothstep( 0.0f, 600.0f, TX_ShoreField.SampleLevel( SS_Linear, uv, 0 ).y );
+	float4 f = TX_ShoreField.SampleLevel( SS_Linear, uv, 0 );
+	return OceanShoreWeight( f.y, f.x );
 }
 
 struct TessVertex
