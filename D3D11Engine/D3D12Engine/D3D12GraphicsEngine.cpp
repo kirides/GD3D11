@@ -351,6 +351,9 @@ bool D3D12GraphicsEngine::InitScene() {
         if ( !m_Pipelines.CreateRtScene() || !m_Pipelines.RtSceneInstances.PSO )
             Logging::Wrn( "D3D12GraphicsEngine::Init: RtSceneInstances.hlsl unavailable; the RT scene collects static VOBs on the CPU." );
     }
+    if ( !m_Pipelines.CreateOcean() ) {
+        Logging::Wrn( "D3D12GraphicsEngine::Init: ocean simulation compute (Ocean.hlsl) unavailable; the sea keeps the vertex waves." );
+    }
     if ( !m_Pipelines.CreateWaterSkyAverage() || !CreateWaterSkyAverage() ) {
         Logging::Wrn( "D3D12GraphicsEngine::Init: water sky average unavailable; missed sky reflections use the cube." );
     }

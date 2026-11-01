@@ -2495,7 +2495,7 @@ bool D3D12PipelineState::CreateWater() {
     // s1: screen-space fetches (scene copy / depth copy). CLAMP, not WRAP — a distorted UV that walks a
     // texel past the viewport edge must repeat the border pixel, not wrap around to the opposite side of
     // the screen (which shows up as a bright seam along the water's screen-edge silhouette).
-    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_ALL ) );   // the ocean's domain shader reads the shore field through it
 
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
                           | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )

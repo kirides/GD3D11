@@ -378,6 +378,11 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     if ( !vb->GetResource() || !ib->GetResource() ) { ClearFrameWaterSurfaces(); return; }
 
     // Optional FFT ocean: simulated only while the sea is drawn (D3D12Ocean.h); false falls back to the vertex waves
+    if ( m_Ocean && !g_FrameWaterSurfaces[1].empty() && Engine::GAPI->GetRendererState().RendererSettings.WaterSimulation != GothicRendererSettings::WATER_SIM_OFF
+        && ( !m_Pipelines.Water.OceanPSO || !m_Pipelines.Water.OceanDepthPrepassPSO ) ) {
+        static bool warned = false;
+        if ( !warned ) { warned = true; Logging::Wrn( "D3D12: ocean simulation is on but the tessellated water pipelines do not exist (device tessellation or pipeline creation failed above)." ); }
+    }
     const bool oceanSimulated = m_Ocean && !g_FrameWaterSurfaces[1].empty() && m_Pipelines.Water.OceanPSO && m_Pipelines.Water.OceanDepthPrepassPSO
         && m_Ocean->Update( Engine::GAPI->GetRendererState().RendererSettings );
 

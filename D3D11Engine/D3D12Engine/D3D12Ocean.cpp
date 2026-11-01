@@ -26,6 +26,13 @@ namespace {
     }
 
     UINT Log2( UINT n ) { UINT r = 0; while ( (1u << r) < n ) ++r; return r; }
+
+    /** Logs why the simulation is skipped, once per reason. */
+    bool Skipped( const char* why ) {
+        static const char* last = nullptr;
+        if ( last != why ) { last = why; Logging::Wrn( "D3D12 ocean simulation skipped: {}", why ); }
+        return false;
+    }
 }
 
 
@@ -187,21 +194,22 @@ bool D3D12Ocean::Update( const GothicRendererSettings& settings ) {
         m_Failed = false;
         return false;
     }
-    if ( !m_E->m_FrameOpen ) return false;
+    if ( !m_E->m_FrameOpen ) return Skipped( "no open frame" );
 
     auto& po = m_E->m_Pipelines.Ocean;
     OceanFFT::Surface& surface = OceanFFT::GetSurface();
     surface.Refresh( settings.WaterSimulation, settings.WaterSeaState, settings.WaterWindAngle, settings.WaterWaveScale, settings.WaterChoppiness, 2 );
     const int quality = surface.Quality();
     const int fftIndex = quality;   // 0:128, 1:256, 2:512
-    if ( quality < 0 || !po.Spectrum.PSO || !po.Evolve.PSO || !po.Resolve.PSO || !po.Mip.PSO || !po.Fft[fftIndex].PSO ) return false;
-    if ( m_Failed && quality == m_Quality ) return false;
+    if ( quality < 0 ) return Skipped( "no quality from the surface" );
+    if ( !po.Spectrum.PSO || !po.Evolve.PSO || !po.Resolve.PSO || !po.Mip.PSO || !po.Fft[fftIndex].PSO ) return Skipped( "compute pipelines missing (see the Ocean root signature / shader errors above)" );
+    if ( m_Failed && quality == m_Quality ) return Skipped( "resource creation failed earlier" );
 
     if ( quality != m_Quality ) {
         m_Failed = !CreateResources( quality );
-        if ( m_Failed ) return false;
+        if ( m_Failed ) return Skipped( "resource creation failed" );
     }
-    if ( m_Quality < 0 ) return false;
+    if ( m_Quality < 0 ) return Skipped( "no resources" );
     if ( surface.Generation() != m_Generation ) {   // the sea state moved: bake the spectrum again
         m_Generation = surface.Generation();
         m_SpectrumDirty = true;
