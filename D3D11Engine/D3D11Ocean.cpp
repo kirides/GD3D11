@@ -114,12 +114,12 @@ bool D3D11Ocean::CreateResources( ID3D11Device* device, int quality ) {
 
 void D3D11Ocean::FillConsts( PassConsts& c, int cascade, float time, float dt, float fftDirection ) const {
     const OceanFFT::Cascade& cc = m_Cascades.c[cascade];
-    const OceanFFT::SpectrumParams& p = m_Params;
+    const OceanFFT::SpectrumParams& p = OceanFFT::GetSurface().Params();
     c.tile[0] = cc.length; c.tile[1] = cc.kLow; c.tile[2] = cc.kHigh; c.tile[3] = static_cast<float>( m_Cascades.size );
     c.wind[0] = p.windAlpha; c.wind[1] = p.windOmegaP; c.wind[2] = p.windGamma; c.wind[3] = p.windSpeed;
     c.wind2[0] = p.windAngle; c.wind2[1] = p.spreadXi; c.wind2[2] = p.shortWaveCut; c.wind2[3] = static_cast<float>( cascade );
     c.swell[0] = p.swellAlpha; c.swell[1] = p.swellOmegaP; c.swell[2] = p.swellAngle; c.swell[3] = p.swellSpread;
-    c.time[0] = time; c.time[1] = dt; c.time[2] = m_Sea.choppiness; c.time[3] = fftDirection;
+    c.time[0] = time; c.time[1] = dt; c.time[2] = OceanFFT::GetSurface().Sea().choppiness; c.time[3] = fftDirection;
     c.foam[0] = kFoamDecay; c.foam[1] = kFoamThreshold; c.foam[2] = kFoamGain; c.foam[3] = OceanFFT::RepeatTime;
 }
 
@@ -133,7 +133,10 @@ bool D3D11Ocean::Update( D3D11GraphicsEngine& engine, const GothicRendererSettin
     }
 
     auto& sm = engine.GetShaderManager();
-    const int quality = std::min( static_cast<int>( settings.WaterSimulation ) - 1, 1 );   // D3D11: Medium at most
+    OceanFFT::Surface& surface = OceanFFT::GetSurface();
+    surface.Refresh( settings.WaterSimulation, settings.WaterSeaState, settings.WaterWindAngle, settings.WaterWaveScale, settings.WaterChoppiness, 1 );   // D3D11: Medium at most
+    const int quality = surface.Quality();
+    if ( quality < 0 ) return false;
     auto& csSpectrum = sm.GetCShader( CShaderID::CS_OceanSpectrum );
     auto& csEvolve = sm.GetCShader( CShaderID::CS_OceanEvolve );
     auto& csResolve = sm.GetCShader( CShaderID::CS_OceanResolve );
@@ -147,27 +150,15 @@ bool D3D11Ocean::Update( D3D11GraphicsEngine& engine, const GothicRendererSettin
         if ( m_Failed ) return false;
     }
     if ( m_Quality < 0 ) return false;
-
-    OceanFFT::SeaState sea = OceanFFT::SeaStateForLevel( settings.WaterSeaState );
-    sea.windAngle = settings.WaterWindAngle * 0.0174532925f;
-    sea.swellAngle = sea.windAngle + 0.4f;
-    sea.scale = settings.WaterWaveScale;
-    sea.choppiness *= settings.WaterChoppiness;
-    auto differs = []( float a, float b ) { return std::abs( a - b ) > 0.01f * std::max( 1.0f, std::abs( a ) ); };
-    if ( m_SpectrumDirty || differs( sea.windSpeed, m_Sea.windSpeed ) || differs( sea.fetch, m_Sea.fetch ) || differs( sea.windAngle, m_Sea.windAngle )
-        || differs( sea.swellHeight, m_Sea.swellHeight ) || differs( sea.swellPeriod, m_Sea.swellPeriod ) || differs( sea.scale, m_Sea.scale ) ) {
+    if ( surface.Generation() != m_Generation ) {   // the sea state moved: bake the spectrum again
+        m_Generation = surface.Generation();
         m_SpectrumDirty = true;
-        m_Params = OceanFFT::MakeSpectrumParams( sea );
     }
-    m_Sea = sea;
 
-    const auto now = std::chrono::steady_clock::now();
-    float dt = m_HaveLast ? std::chrono::duration<float>( now - m_Last ).count() : 0.0f;
-    m_Last = now;
-    m_HaveLast = true;
-    dt = std::clamp( dt, 0.0f, 0.1f );
-    m_Seconds += dt;
-    const float t = static_cast<float>( std::fmod( m_Seconds, static_cast<double>( OceanFFT::RepeatTime ) ) );
+    const double seconds = surface.Seconds();
+    const float dt = static_cast<float>( std::clamp( seconds - m_PrevSeconds, 0.0, 0.1 ) );
+    m_PrevSeconds = seconds;
+    const float t = surface.WrappedSeconds();
 
     auto _scope = engine.RecordGraphicsEvent( GE_NAME( "Ocean FFT" ) );
     ID3D11DeviceContext* ctx = engine.GetContext().Get();

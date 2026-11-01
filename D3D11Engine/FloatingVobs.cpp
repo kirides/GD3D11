@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "FloatingVobs.h"
 #include "GothicAPI.h"
+#include "OceanSpectrum.h"
+#include "ShoreField.h"
 #include "WaterProfile.h"
 #include "WorldConverter.h"
 #include "WorldMeshSection.h"
@@ -171,6 +173,7 @@ bool AttachWaterBob( VobInfo* vi, const std::map<int, std::map<int, WorldMeshSec
                     if ( gap > kRestAbove || gap < -kRestBelow || std::abs( gap ) >= bestGap ) continue;
                     bestGap = std::abs( gap );
                     best = waves;
+                    best.Ocean = key.Info->MaterialType == MaterialInfo::MT_Ocean;
                     best.Corners[0] = a;
                     best.Corners[1] = b;
                     best.Corners[2] = c;
@@ -187,7 +190,17 @@ bool AttachWaterBob( VobInfo* vi, const std::map<int, std::map<int, WorldMeshSec
 
 void UpdateWaterBob( VobWaterBob& bob, float totalTimeMs, int waveMode ) {
     XMFLOAT3 offset( 0.0f, 0.0f, 0.0f );
-    if ( waveMode != GothicRendererSettings::WATER_WAVES_OFF ) {
+    const OceanFFT::Surface& sea = OceanFFT::GetSurface();
+    if ( bob.Ocean && sea.Active() ) {
+        // The simulated sea replaces the vertex waves: ride the surface point right under the plant
+        const XMFLOAT3 pos( bob.Corners[0].x * bob.Weights.x + bob.Corners[1].x * bob.Weights.y + bob.Corners[2].x * bob.Weights.z,
+            0.0f, bob.Corners[0].z * bob.Weights.x + bob.Corners[1].z * bob.Weights.y + bob.Corners[2].z * bob.Weights.z );
+        const ShoreField* field = Engine::GAPI->GetShoreField();
+        const float depth = field ? field->DepthAt( pos.x, pos.z ) : 5000.0f;
+        float d[3];
+        sea.Displacement( pos.x, pos.z, OceanFFT::WaveWeightForDepth( depth ), d );
+        offset = XMFLOAT3( d[0], d[1], d[2] );
+    } else if ( waveMode != GothicRendererSettings::WATER_WAVES_OFF ) {
         const float weights[3] = { bob.Weights.x, bob.Weights.y, bob.Weights.z };
         for ( int i = 0; i < 3; ++i ) {
             const XMFLOAT3 corner = WaveOffset( bob.Corners[i], bob, totalTimeMs, waveMode );

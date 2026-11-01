@@ -6,6 +6,7 @@
 #include "GothicAPI.h"
 #include "GothicAPIState.h"
 #include "FloatingVobs.h"
+#include "OceanSpectrum.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
@@ -634,6 +635,13 @@ void GothicAPI::OnWorldUpdate() {
     RendererState.RendererInfo.Reset();
     RendererState.RendererInfo.FPS = GetFramesPerSecond();
     RendererState.GraphicsState.FF_Time = GetTimeSeconds();
+
+    // The CPU twin of the simulated sea (swimming, floating plants) and the clock the GPU simulation follows
+    {
+        const auto& rs = RendererState.RendererSettings;
+        OceanFFT::GetSurface().Refresh( FeatureLevel10Compatibility ? 0 : static_cast<int>( rs.WaterSimulation ), rs.WaterSeaState, rs.WaterWindAngle,
+            rs.WaterWaveScale, rs.WaterChoppiness, Engine::IsModernBackend() ? 2 : 1 );
+    }
 
     // Floating plants follow the water's vertex waves (same build gate as the waves themselves)
     if ( !State->FloatingVobs.empty() ) {

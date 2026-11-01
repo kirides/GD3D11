@@ -1189,6 +1189,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="OceanSpectrum.h" />
     <ClInclude Include="D3D12Engine\D3D12Ocean.h" />
     <ClInclude Include="D3D11Ocean.h" />
+    <ClInclude Include="WaterSwim.h" />
     <ClInclude Include="D3D12Engine\D3D12Device.h" />
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h" />
     <ClInclude Include="D3D12Engine\D3D12EngineCommon.h" />
@@ -1436,6 +1437,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="OceanSpectrum.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Ocean.cpp" />
     <ClCompile Include="D3D11Ocean.cpp" />
+    <ClCompile Include="WaterSwim.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp" />
     <ClCompile Include="D3D12Engine\D3D12DoF.cpp" />
     <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">

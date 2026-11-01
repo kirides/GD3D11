@@ -1,6 +1,8 @@
 #pragma once
 #include <map>
 #include <memory>
+#include <vector>
+#include <cstdint>
 
 class GfxTexture;
 struct WorldMeshSectionInfo;
@@ -20,7 +22,13 @@ public:
     /** xy = world xz of the field's corner, zw = 1 / its extent: uv = ( xz - xy ) * zw. */
     const DirectX::XMFLOAT4& GetMapping() const { return Mapping; }
 
+    /** Water depth (world units) at a world position, as the shaders read it; 5000 outside the field. */
+    float DepthAt( float x, float z ) const;
+
 private:
     std::unique_ptr<GfxTexture> Texture;
     DirectX::XMFLOAT4 Mapping = {};
+    std::vector<uint16_t> Depth;   // half floats, the field's depth channel
+    int Width = 0, Height = 0;
+    float MinX = 0.0f, MinZ = 0.0f, Cell = 1.0f;
 };

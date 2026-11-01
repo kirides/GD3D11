@@ -303,6 +303,10 @@ struct GothicMemoryLocations {
 
     };
 
+    struct zCCollObjectCharacter {
+        static const unsigned int FindFloorWaterCeiling = 0x00553F10;   // __fastcall( zVEC3 const&, zTSpatialState& )
+    };
+
     struct zCPolygon {
         static const unsigned int Offset_PolyPlane = 0x08;
         static const unsigned int Offset_VerticesArray = 0x00;

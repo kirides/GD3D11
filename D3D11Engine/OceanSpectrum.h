@@ -4,7 +4,9 @@
 // CPU side of OceanFFT.hlsl: keep both in step. SI units (metres, seconds); Gothic's world unit is the centimetre.
 
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <vector>
 
 namespace OceanFFT {
 
@@ -58,5 +60,53 @@ struct Cascades {
 Cascades CascadesFor( int quality );
 // fills heightVar / slopeVar of each cascade for a sea state (coarse 64^2 sampling of the band)
 void CascadeStats( Cascades& cs, const SpectrumParams& p );
+
+/** CPU mirror of the simulated sea for gameplay (swimming, floating plants), and the one clock + sea state the GPU simulation
+    of every backend follows. Only the long cascades are summed (a few hundred modes): the short ripples do not move a body.
+    Refresh() once per frame from the main thread; it is cheap when nothing changed. */
+class Surface {
+public:
+    /** simulation: 0 off, 1..3 low..high; maxQuality caps the tier (D3D11 1). windAngle in degrees. */
+    void Refresh( int simulation, float seaState, float windAngleDeg, float waveScale, float choppiness, int maxQuality );
+
+    bool Active() const { return m_Active; }
+    int Quality() const { return m_Quality; }
+    uint32_t Generation() const { return m_Generation; }   // bumps when the spectrum (h0) has to be rebuilt
+    const SeaState& Sea() const { return m_Sea; }
+    const SpectrumParams& Params() const { return m_Params; }
+    const Cascades& GetCascades() const { return m_Cascades; }
+    double Seconds() const { return m_Seconds; }            // monotonic, independent of game pause
+    float WrappedSeconds() const { return m_Wrapped; }      // modulo RepeatTime, what the shaders use
+
+    /** Displacement (world units) of the surface point whose rest position is (x, z); weight 0..1 calms the waves (shore). */
+    void Displacement( float x, float z, float weight, float out[3] ) const;
+    /** Height offset (world units) of the surface above the world position (x, z), allowing for the choppy horizontal shift. */
+    float HeightAt( float x, float z, float weight ) const;
+
+private:
+    struct Mode { float kx, kz, k, omega, h0r, h0i, gr, gi, hr, hi; };
+    void BuildModes();
+    void EvolveModes();
+
+    bool m_Active = false;
+    int m_Quality = -1;
+    uint32_t m_Generation = 0;
+    SeaState m_Sea{};
+    SpectrumParams m_Params{};
+    Cascades m_Cascades{};
+    std::vector<Mode> m_Modes;
+    double m_Seconds = 0.0;
+    float m_Wrapped = 0.0f;
+    std::chrono::steady_clock::time_point m_Last{};
+    bool m_HaveLast = false;
+};
+
+Surface& GetSurface();
+
+/** Wave damping towards the shore from the water depth (world units), the CPU twin of OceanDepthWeight in the water shaders. */
+inline float WaveWeightForDepth( float depth ) {
+    const float t = depth <= 0.0f ? 0.0f : ( depth >= 600.0f ? 1.0f : depth / 600.0f );
+    return t * t * ( 3.0f - 2.0f * t );
+}
 
 }  // namespace OceanFFT

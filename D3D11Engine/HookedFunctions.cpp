@@ -1,3 +1,4 @@
+#include "WaterSwim.h"
 #include "pch.h"
 #include "HookedFunctions.h"
 
@@ -62,6 +63,7 @@ void HookedFunctionInfo::InitHooks() {
     zCMaterial::Hook();
     zCBspNode::Hook();
     zCPolygon::Hook();
+    WaterSwim::Hook();
     zCPathSearch::Hook();
     zFILE::Hook();
     zCOption::Hook();

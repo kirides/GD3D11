@@ -425,6 +425,7 @@ struct VobWaterBob {
     float Amplitude;       // the water's wave parameters, quantized like its vertex color
     float Speed;
     float GridSize;
+    bool Ocean;            // rests on sea water: follows the simulated ocean when it is on
     XMFLOAT3 Offset;       // this frame's displacement
     XMFLOAT3 PrevOffset;   // last frame's, for motion vectors
     bool HasOffset;

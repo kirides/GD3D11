@@ -61,12 +61,9 @@ private:
     UINT m_SlotDispFull = UINT_MAX, m_SlotDerivFull = UINT_MAX;
     bool m_SlotsAllocated = false;
 
-    OceanFFT::SpectrumParams m_Params{};
-    OceanFFT::SeaState m_Sea{};
     bool m_SpectrumDirty = true;
-    std::chrono::steady_clock::time_point m_Last{};
-    bool m_HaveLast = false;
-    double m_Seconds = 0.0;
+    uint32_t m_Generation = ~0u;   // OceanFFT::Surface generation the baked spectrum belongs to
+    double m_PrevSeconds = 0.0;
     bool m_Ready = false;
     bool m_Failed = false;
 };

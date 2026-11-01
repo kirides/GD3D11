@@ -187,4 +187,155 @@ void CascadeStats( Cascades& cs, const SpectrumParams& p ) {
     }
 }
 
+// ---- CPU surface ------------------------------------------------------------------------------------------------------------
+
+namespace {
+
+// Mirrors of the hash and gaussian pair in OceanFFT.hlsl, so the CPU waves are the GPU waves
+uint32_t HashU32( uint32_t v ) {
+    const uint32_t state = v * 747796405u + 2891336453u;
+    const uint32_t word = ( ( state >> ( ( state >> 28u ) + 4u ) ) ^ state ) * 277803737u;
+    return ( word >> 22u ) ^ word;
+}
+
+void GaussianPair( uint32_t x, uint32_t z, uint32_t c, float out[2] ) {
+    const uint32_t h1 = HashU32( x + HashU32( z + HashU32( c + 0x9e3779b9u ) ) );
+    const uint32_t h2 = HashU32( h1 ^ 0x68bc21ebu );
+    const float u1 = std::max( static_cast<float>( h1 >> 8 ) * ( 1.0f / 16777216.0f ), 1e-7f );
+    const float u2 = static_cast<float>( h2 >> 8 ) * ( 1.0f / 16777216.0f );
+    const float r = std::sqrt( -2.0f * std::log( u1 ) );
+    const float a = 6.28318530718f * u2;
+    out[0] = r * std::cos( a );
+    out[1] = r * std::sin( a );
+}
+
+// h0 of texel (x, z) of cascade c, 0 outside its band
+void H0( int x, int z, int n, const Cascade& cc, uint32_t c, const SpectrumParams& p, float out[2] ) {
+    const float dk = 6.28318530718f / cc.length;
+    const float kx = static_cast<float>( x - n / 2 ) * dk, kz = static_cast<float>( z - n / 2 ) * dk;
+    const float k = std::sqrt( kx * kx + kz * kz );
+    out[0] = out[1] = 0.0f;
+    if ( k < cc.kLow || k >= cc.kHigh || k < 1e-6f ) return;
+    const float amp = 0.5f * std::sqrt( static_cast<float>( SpectrumK( kx, kz, p ) ) ) * dk;
+    float g[2];
+    GaussianPair( static_cast<uint32_t>( x ), static_cast<uint32_t>( z ), c, g );
+    out[0] = g[0] * amp;
+    out[1] = g[1] * amp;
+}
+
+}  // namespace
+
+Surface& GetSurface() {
+    static Surface surface;
+    return surface;
+}
+
+void Surface::BuildModes() {
+    m_Modes.clear();
+    const int n = m_Cascades.size;
+    const float w0 = 6.28318530718f / RepeatTime;
+    for ( int c = 0; c < m_Cascades.count; ++c ) {
+        const Cascade& cc = m_Cascades.c[c];
+        if ( cc.length < 20.0f || cc.kHigh > 1e8f ) continue;   // the ripple cascades do not move a body
+        const float dk = 6.28318530718f / cc.length;
+        const int radius = static_cast<int>( std::ceil( cc.kHigh / dk ) ) + 1;
+        for ( int pz = std::max( 0, n / 2 - radius ); pz <= std::min( n - 1, n / 2 + radius ); ++pz ) {
+            for ( int px = std::max( 0, n / 2 - radius ); px <= std::min( n - 1, n / 2 + radius ); ++px ) {
+                float h[2], hm[2];
+                H0( px, pz, n, cc, static_cast<uint32_t>( c ), m_Params, h );
+                if ( h[0] == 0.0f && h[1] == 0.0f ) continue;
+                H0( ( n - px ) % n, ( n - pz ) % n, n, cc, static_cast<uint32_t>( c ), m_Params, hm );   // the -k texel
+                Mode m;
+                m.kx = static_cast<float>( px - n / 2 ) * dk;
+                m.kz = static_cast<float>( pz - n / 2 ) * dk;
+                m.k = std::sqrt( m.kx * m.kx + m.kz * m.kz );
+                m.omega = std::floor( std::sqrt( static_cast<float>( Gravity ) * m.k ) / w0 ) * w0;
+                m.h0r = h[0]; m.h0i = h[1];
+                m.gr = hm[0]; m.gi = -hm[1];   // conj( h0( -k ) )
+                m.hr = m.hi = 0.0f;
+                m_Modes.push_back( m );
+            }
+        }
+    }
+}
+
+void Surface::EvolveModes() {
+    for ( Mode& m : m_Modes ) {
+        const float ph = m.omega * m_Wrapped;
+        const float c = std::cos( ph ), s = std::sin( ph );
+        // h = h0 e^{i w t} + conj( h0( -k ) ) e^{-i w t}
+        m.hr = m.h0r * c - m.h0i * s + m.gr * c + m.gi * s;
+        m.hi = m.h0r * s + m.h0i * c - m.gr * s + m.gi * c;
+    }
+}
+
+void Surface::Refresh( int simulation, float seaState, float windAngleDeg, float waveScale, float choppiness, int maxQuality ) {
+    if ( simulation <= 0 ) {
+        m_Active = false;
+        m_Quality = -1;
+        return;
+    }
+    const int quality = std::min( simulation - 1, maxQuality );
+    SeaState sea = SeaStateForLevel( seaState );
+    sea.windAngle = windAngleDeg * 0.0174532925f;
+    sea.swellAngle = sea.windAngle + 0.4f;
+    sea.scale = waveScale;
+    sea.choppiness *= choppiness;
+
+    auto differs = []( float a, float b ) { return std::abs( a - b ) > 0.01f * std::max( 1.0f, std::abs( a ) ); };
+    const bool rebuild = quality != m_Quality || differs( sea.windSpeed, m_Sea.windSpeed ) || differs( sea.fetch, m_Sea.fetch )
+        || differs( sea.windAngle, m_Sea.windAngle ) || differs( sea.swellHeight, m_Sea.swellHeight )
+        || differs( sea.swellPeriod, m_Sea.swellPeriod ) || differs( sea.scale, m_Sea.scale );
+    m_Sea.choppiness = sea.choppiness;
+    if ( rebuild ) {
+        m_Sea = sea;
+        m_Quality = quality;
+        m_Params = MakeSpectrumParams( sea );
+        m_Cascades = CascadesFor( quality );
+        ++m_Generation;
+        BuildModes();
+    }
+
+    // One clock for the CPU waves and every backend simulation
+    const auto now = std::chrono::steady_clock::now();
+    const float dt = m_HaveLast ? std::clamp( std::chrono::duration<float>( now - m_Last ).count(), 0.0f, 0.1f ) : 0.0f;
+    m_Last = now;
+    m_HaveLast = true;
+    m_Seconds += dt;
+    m_Wrapped = static_cast<float>( std::fmod( m_Seconds, static_cast<double>( RepeatTime ) ) );
+    EvolveModes();
+    m_Active = true;
+}
+
+void Surface::Displacement( float x, float z, float weight, float out[3] ) const {
+    const float X = x / UnitsPerMetre, Z = z / UnitsPerMetre;
+    float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+    for ( const Mode& m : m_Modes ) {
+        const float theta = m.kx * X + m.kz * Z;
+        const float c = std::cos( theta ), s = std::sin( theta );
+        const float a = m.hr * c - m.hi * s;   // Re( h e^{i theta} ): the height
+        const float b = m.hr * s + m.hi * c;   // Im: the choppy shift is Re( -i kx / k h e^{i theta} )
+        const float f = b / m.k;
+        dy += a;
+        dx += m.kx * f;
+        dz += m.kz * f;
+    }
+    const float scale = UnitsPerMetre * weight;
+    out[0] = dx * m_Sea.choppiness * scale;
+    out[1] = dy * scale;
+    out[2] = dz * m_Sea.choppiness * scale;
+}
+
+float Surface::HeightAt( float x, float z, float weight ) const {
+    if ( !m_Active || weight <= 0.0f ) return 0.0f;
+    float px = x, pz = z, d[3] = {};
+    for ( int i = 0; i < 3; ++i ) {   // find the rest position whose displaced position is (x, z)
+        Displacement( px, pz, weight, d );
+        px = x - d[0];
+        pz = z - d[2];
+    }
+    Displacement( px, pz, weight, d );
+    return d[1];
+}
+
 }  // namespace OceanFFT
