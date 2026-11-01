@@ -886,7 +886,7 @@ static bool AdditionalCheckWaterFall(const zCTexture* texture)
 #ifdef BUILD_GOTHIC_2_6_fix
     if ( findStringIC( textureName, "FALL" )
         && findStringIC( textureName, "_A0" ) 
-        && !findStringIC( textureName, "SURFACE" )
+        && ( !findStringIC( textureName, "SURFACE" ) || findStringIC( textureName, "HITSURFACE" ) )
         && !findStringIC( textureName, "STONE" )
         && !findStringIC( textureName, "LAVA" )
         && !findStringIC( textureName, "MAGMA" )
@@ -1130,8 +1130,14 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             // Give water surfaces a water-shader
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat );
             if ( info ) {
-                info->PixelShader = PShaderID::PS_Water;
-                info->MaterialType = IsOceanWaterMaterial( mat ) ? MaterialInfo::MT_Ocean : MaterialInfo::MT_Water;
+                if ( key.Texture && findStringIC( key.Texture->GetNameView(), "HITSURFACE" ) && checkWaterFallCached( key.Texture ) ) {
+                    // Waterfall impact sheet is alpha-blended foam, not water
+                    mat->SetAlphaFunc( zMAT_ALPHA_FUNC_BLEND );
+                    info->MaterialType = MaterialInfo::MT_WaterfallFoam;
+                } else {
+                    info->PixelShader = PShaderID::PS_Water;
+                    info->MaterialType = IsOceanWaterMaterial( mat ) ? MaterialInfo::MT_Ocean : MaterialInfo::MT_Water;
+                }
             }
 #endif
         }
