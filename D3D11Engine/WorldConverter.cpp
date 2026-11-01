@@ -927,6 +927,43 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         return it->second;
     };
 
+    // ZenGin moves each shared zCVertex once, so water touching a waving material waves with it. Remember the
+    // packed wave bytes (color .xyzw) per vertex position and give them to every water vertex there.
+    struct PosKey {
+        UINT x, y, z;
+        bool operator==( const PosKey& o ) const { return x == o.x && y == o.y && z == o.z; }
+    };
+    struct PosKeyHash {
+        size_t operator()( const PosKey& k ) const { return ( k.x * 73856093u ) ^ ( k.y * 19349663u ) ^ ( k.z * 83492791u ); }
+    };
+    auto makeKey = []( const XMFLOAT3& p ) { return PosKey{ std::bit_cast<UINT>( p.x ), std::bit_cast<UINT>( p.y ), std::bit_cast<UINT>( p.z ) }; };
+    auto packWave = []( zCMaterial* m ) -> DWORD {
+        DWORD c = 0;
+        BYTE* b = reinterpret_cast<BYTE*>( &c );
+        b[2] = static_cast<BYTE>( m->GetWaveMaxAmplitude() / 5.f );
+        b[3] = static_cast<BYTE>( m->GetWaveSpeed() * 10.f );
+        // Grid size + wall flag; alpha-tested water draws with PS_Diffuse, which reads .y as vertex light
+        if ( !m->HasAlphaTest() ) {
+            const UINT grid = static_cast<UINT>( std::clamp( m->GetWaveGridSize() + 0.5f, 1.0f, 32767.0f ) );
+            const UINT packed = grid | ( m->GetWaveMode() >= zTMode_AMBIENT_WALL ? 0x8000u : 0u );
+            b[0] = static_cast<BYTE>( packed & 0xFF );
+            b[1] = static_cast<BYTE>( packed >> 8 );
+        }
+        return c;
+    };
+    std::unordered_map<PosKey, DWORD, PosKeyHash> waveByPos;
+    for ( unsigned int i = 0; i < numPolygons; i++ ) {
+        zCPolygon* poly = polys[i];
+        zCMaterial* mat = poly->GetMaterial();
+        if ( !mat || poly->GetPolyFlags()->GhostOccluder || mat->GetMatGroup() != zMAT_GROUP_WATER || mat->GetWaveMode() == zTMode_NONE ) {
+            continue;
+        }
+        const DWORD packed = packWave( mat );
+        for ( int v = 0; v < poly->GetNumPolyVertices(); v++ ) {
+            waveByPos.try_emplace( makeKey( poly->getVertices()[v]->Position ), packed );
+        }
+    }
+
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
         zCPolygon* poly = polys[i];
 
@@ -1050,16 +1087,14 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                     t.TexCoord2 = float2( 0.0f, 0.0f );
                 }
 
-                if ( mat->GetWaveMode() != zTMode_NONE ) {
-                    reinterpret_cast<BYTE*>(&t.Color)[2] = static_cast<BYTE>(mat->GetWaveMaxAmplitude() / 5.f);
-                    reinterpret_cast<BYTE*>(&t.Color)[3] = static_cast<BYTE>(mat->GetWaveSpeed() * 10.f);
-                    // Grid size (bits 0-14) + wall-mode flag (bit 15) for the original waves. Only water-shaded
-                    // materials: alpha-tested water draws with PS_Diffuse, which reads .y as vertex lighting.
+                // Wave bytes come from the first waving water poly at this position, so shared edges move together
+                const auto waveIt = waveByPos.find( makeKey( vertex->Position ) );
+                if ( waveIt != waveByPos.end() ) {
+                    reinterpret_cast<BYTE*>(&t.Color)[2] = reinterpret_cast<const BYTE*>(&waveIt->second)[2];
+                    reinterpret_cast<BYTE*>(&t.Color)[3] = reinterpret_cast<const BYTE*>(&waveIt->second)[3];
                     if ( !mat->HasAlphaTest() ) {
-                        const UINT grid = static_cast<UINT>( std::clamp( mat->GetWaveGridSize() + 0.5f, 1.0f, 32767.0f ) );
-                        const UINT packed = grid | (mat->GetWaveMode() >= zTMode_AMBIENT_WALL ? 0x8000u : 0u);
-                        reinterpret_cast<BYTE*>(&t.Color)[0] = static_cast<BYTE>(packed & 0xFF);
-                        reinterpret_cast<BYTE*>(&t.Color)[1] = static_cast<BYTE>(packed >> 8);
+                        reinterpret_cast<BYTE*>(&t.Color)[0] = reinterpret_cast<const BYTE*>(&waveIt->second)[0];
+                        reinterpret_cast<BYTE*>(&t.Color)[1] = reinterpret_cast<const BYTE*>(&waveIt->second)[1];
                     }
                 } else {
                     reinterpret_cast<BYTE*>(&t.Color)[2] = 0;
