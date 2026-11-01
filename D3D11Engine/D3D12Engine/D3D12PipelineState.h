@@ -149,6 +149,10 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthPrepassPSO;      // reuses VsBlob — see CreateWater()
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassPsBlob;   // PSDepth (writes nothing)
+        // Simulated ocean (D3D12Ocean.h): the same draws through VSOcean/HSOcean/DSOcean as 3-point patches. Optional: null when the
+        // device has no tessellation, in which case the sea keeps the vertex waves.
+        Microsoft::WRL::ComPtr<ID3DBlob>            OceanVsBlob, OceanHsBlob, OceanDsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> OceanPSO, OceanDepthPrepassPSO;
     };
     // 2D UI / HUD family: one root sig (b0 viewport consts, t0 SRV, b1 FF state) + one VS/PS pair.
     // PSOs are built per (blend,depth) key on demand and cached. Vertex ring buffers stay in the engine.
@@ -682,6 +686,7 @@ public:
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
     bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
     bool CreateWorldCull();   // GPU world-mesh cluster cull (WorldCull.hlsl); non-fatal
+    bool CreateOcean();       // FFT ocean compute passes (Shaders/D3D12/Ocean.hlsl; b0 32 consts, everything else bindless)
     bool CreateMorphFold();   // GPU morph-mesh fold compute (b0 8 consts, t0-t2 root SRVs, u0 root UAV)
     bool CreateSkinning();    // compute skinning (b0 4 consts, t0-t3 root SRVs, u0-u1 root UAVs)
     bool CreateLines();       // debug/editor line lists (world-space depth-tested + screen-space xyzrhw)
@@ -760,6 +765,7 @@ public:
     // other optional pipelines it must be built before any world is converted, and a failure here has to
     // leave the CPU deform as the path rather than silently drop the morphing.
     ComputePipeline  MorphFold;
+    struct OceanPipelines { ComputePipeline Spectrum, Evolve, Resolve, Mip; ComputePipeline Fft[3]; /* N = 128, 256, 512 */ } Ocean;
     ComputePipeline  Skinning;      // Shaders/D3D12/SkinVertices.hlsl — poses every prepared skinned mesh once a frame
     /** Input layout of the vertices SkinVertices.hlsl writes: {pos, uv} on slot 0, plus {octahedral normal,
         previous pos} on slot 1 when `withNormalStream`. */

@@ -635,6 +635,9 @@ struct WaterPixel
     float  surfaceViewDistance;
     float3 worldPos;
     float3 geometricNormal;   // world space
+    float3 oceanNormal;       // FFT ocean shading normal (valid when oceanActive)
+    float  oceanFoam;         // FFT ocean whitecap coverage 0..1
+    float  oceanActive;       // 1 on simulated ocean water, 0 elsewhere
 };
 
 struct WaterFrame
@@ -692,6 +695,12 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
 
     float3 wavesFres = WaterWaveNormal( distortionBig );
     float3 wavesSmall = normalize( distortionSmall.xzy * float3( 1, 10, 1 ) );
+    [branch] if ( px.oceanActive > 0.5f )
+    {
+        // The simulated sea replaces the texture waves; a little of the small distortion stays as ripples on top
+        wavesFres = px.oceanNormal;
+        wavesSmall = normalize( px.oceanNormal + float3( wavesSmall.x, 0.0f, wavesSmall.z ) * 0.35f );
+    }
 
     // Shore surf from the baked field; its swell tilts the surface before anything reflects off it
     bool foamOn = fr.shoreFoam > 1.5f || ( fr.shoreFoam > 0.5f && isOcean );
@@ -909,30 +918,43 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float rayFloorRun = straightColumn * length( viewDirection.xz );
     bool plumbUseful = straightColumn < 5900.0f && rayFloorDepth - 1.5f * rayFloorRun < foamMaxDepth;
     bool nearShore = fieldOn ? ( coast.distance < ( isOcean ? 2600.0f : 600.0f ) || coast.depth < foamMaxDepth * 2.0f ) : plumbUseful;
-    [branch] if ( foamFade > 0.001f && nearShore )
+    // Whitecaps of the simulated sea ride the same foam layer as the surf
+    bool shoreFoamCase = foamFade > 0.001f && nearShore;
+    float whitecap = 0.0f;
+    float whitecapFade = 0.0f;
+    [branch] if ( px.oceanActive > 0.5f && topSide > 0.5f )
     {
+        whitecapFade = flatness * ( 1.0f - smoothstep( WATER_FOAM_FADE_DISTANCE * 0.55f, WATER_FOAM_FADE_DISTANCE, px.surfaceViewDistance ) );
+        whitecap = px.oceanFoam;
+    }
+    [branch] if ( shoreFoamCase || ( whitecap > 0.01f && whitecapFade > 0.001f ) )
+    {
+        float foamFadeUsed = max( shoreFoamCase ? foamFade : 0.0f, whitecapFade );
         // Depth under the pixel: the plumb line finds the waterline exactly where it sees the floor. Otherwise the
         // view ray's floor (exact looking straight down; steep banks have no shallows, so its run stands in) or
         // the baked depth.
-        float plumb = -1.0f;
-        [branch] if ( plumbUseful )
-            plumb = WaterPlumbDepth( px.worldPos, fr.cameraPos, foamMaxDepth, viewDirection.y, footprint );
-        float localDepth = min( plumb >= 0.0f ? plumb : rayFloorDepth, straightColumn );
-        if ( fieldOn && plumb < 0.0f ) localDepth = min( localDepth, coast.depth );
-
         float2 foamXZ = px.worldPos.xz + distortionSmall.xy * 14.0f;
-        float amount;
+        float amount = 0.0f;
         float aeration = 0.0f;
-        [branch] if ( fieldOn )
+        [branch] if ( shoreFoamCase )
         {
-            amount = WaterSurfFoamAmount( coast, surf, localDepth, px.worldPos.xz, fr.time, isOcean, isolatedShallow, aeration );
-            // The bore carries the foam up the shore; the backwash stretches it along the shore normal
-            foamXZ += coast.seaward * ( surf.carried - coast.distance * ( 1.0f - 1.0f / surf.stretch ) );
+            float plumb = -1.0f;
+            [branch] if ( plumbUseful )
+                plumb = WaterPlumbDepth( px.worldPos, fr.cameraPos, foamMaxDepth, viewDirection.y, footprint );
+            float localDepth = min( plumb >= 0.0f ? plumb : rayFloorDepth, straightColumn );
+            if ( fieldOn && plumb < 0.0f ) localDepth = min( localDepth, coast.depth );
+            [branch] if ( fieldOn )
+            {
+                amount = WaterSurfFoamAmount( coast, surf, localDepth, px.worldPos.xz, fr.time, isOcean, isolatedShallow, aeration );
+                // The bore carries the foam up the shore; the backwash stretches it along the shore normal
+                foamXZ += coast.seaward * ( surf.carried - coast.distance * ( 1.0f - 1.0f / surf.stretch ) );
+            }
+            else
+            {
+                amount = WaterBandFoamAmount( px.worldPos.xz, localDepth, fr.time, isOcean, isolatedShallow );
+            }
         }
-        else
-        {
-            amount = WaterBandFoamAmount( px.worldPos.xz, localDepth, fr.time, isOcean, isolatedShallow );
-        }
+        amount = max( amount * ( shoreFoamCase ? 1.0f : 0.0f ), whitecap * whitecapFade / max( foamFadeUsed, 0.001f ) );
         WaterFoamSample foam = WaterFoamCover( foamXZ, amount, fr.time, footprint, isOcean );
 
         float3 foamNormal = normalize( float3( -foam.slope.x * WATER_FOAM_BUMP, 1.0f, -foam.slope.y * WATER_FOAM_BUMP ) );
@@ -950,9 +972,9 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
 
         // Water churned up behind the bores turns milky before any foam sits on it
         float3 milky = lerp( color, foamLight * lerp( 1.0f, waterHue, 0.5f ) * 0.8f, 0.5f );
-        color = lerp( color, milky, aeration * 0.32f * foamFade );
-        color *= 1.0f - foam.rim * 0.14f * foamFade;
-        color = lerp( color, foamColor, foam.opacity * foamFade );
+        color = lerp( color, milky, aeration * 0.32f * foamFadeUsed );
+        color *= 1.0f - foam.rim * 0.14f * foamFadeUsed;
+        color = lerp( color, foamColor, foam.opacity * foamFadeUsed );
     }
 
     [branch] if ( fr.shoreFieldState > 1.5f && topSide > 0.5f )

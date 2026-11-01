@@ -56,6 +56,15 @@ void ShaderRegistry::Build() {
 #endif
         }) );
 
+    // Simulated ocean (FL11): the water mesh through hull/domain shaders, displaced by the FFT cascades
+    if ( !FeatureLevel10Compatibility ) {
+        Shaders.push_back( ShaderInfo::make<VShaderID::VS_OceanTess>( "VS_OceanTess.hlsl" )
+            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )
+            .with_category( ShaderCategory::Water ) );
+        Shaders.push_back( ShaderInfo::make<HDShaderID::HD_OceanTess>( "OceanTess.hlsl" )
+            .with_category( ShaderCategory::Water ) );
+    }
+
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ParticlePoint>( "VS_ParticlePoint.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_11_VS_ParticlePoint ) );
 
@@ -511,6 +520,20 @@ void ShaderRegistry::Build() {
 
         // Tileable 3D noise for the low clouds, generated once
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_LowCloudNoise>( "CS_LowCloudNoise.hlsl" ) );
+
+        // FFT ocean simulation passes (OceanFFT.hlsl); the FFT is compiled per tile size
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_OceanSpectrum>( "CS_Ocean.hlsl" )
+            .with_macros( {{ "OCEAN_PASS_SPECTRUM", "1" }} ).with_category( ShaderCategory::Water ) );
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_OceanEvolve>( "CS_Ocean.hlsl" )
+            .with_macros( {{ "OCEAN_PASS_EVOLVE", "1" }} ).with_category( ShaderCategory::Water ) );
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_OceanFFT128>( "CS_Ocean.hlsl" )
+            .with_macros( {{ "OCEAN_PASS_FFT", "1" }, { "OCEAN_N", "128" }, { "OCEAN_LOG2N", "7" }} ).with_category( ShaderCategory::Water ) );
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_OceanFFT256>( "CS_Ocean.hlsl" )
+            .with_macros( {{ "OCEAN_PASS_FFT", "1" }, { "OCEAN_N", "256" }, { "OCEAN_LOG2N", "8" }} ).with_category( ShaderCategory::Water ) );
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_OceanResolve>( "CS_Ocean.hlsl" )
+            .with_macros( {{ "OCEAN_PASS_RESOLVE", "1" }} ).with_category( ShaderCategory::Water ) );
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_OceanMip>( "CS_Ocean.hlsl" )
+            .with_macros( {{ "OCEAN_PASS_MIP", "1" }} ).with_category( ShaderCategory::Water ) );
 
         // Optional Forward+ smooth-normals-from-depth pass (feeds SAO/ASSAO AO producers)
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_GenerateNormalsFromDepth>( "CS_GenerateNormalsFromDepth.hlsl" ));

@@ -37,7 +37,7 @@ cbuffer WaterParams : register( b3 )
 	float WP_OceanTexture;      // 0 = pure water body, 1 = legacy-strength texture blend
 	float WP_ShoreFoam;         // 0 = off, 1 = ocean only, 2 = all water
 	float WP_ShoreFieldState;   // 0 = no shoreline field, 1 = field, 2 = debug paint
-	float WP_Pad;
+	float WP_OceanFFT;          // 1 = the sea is simulated (OceanTess.hlsl)
 	float4 WP_ShoreFieldMapping; // xy = field corner (world xz), zw = 1 / its extent
 };
 
@@ -56,6 +56,20 @@ Texture2D	TX_WaterSurfaceDepth : register( t6 ); // live depth after the water p
 Texture2D	TX_LowClouds : register( t7 );         // premultiplied low cloud layer; unbound = no clouds
 Texture2D<float> TX_SkyAverage : register( t8 );   // 4x1 average on-screen sky (rgb, valid); unbound = none
 Texture2D	TX_ShoreField : register( t9 );        // ShoreField.cpp: distance, depth, seaward xz
+Texture2DArray<float4> TX_OceanDisp : register( t10 );    // simulated ocean (D3D11Ocean.h)
+Texture2DArray<float4> TX_OceanDeriv : register( t11 );
+
+#include <include/OceanTessCB.hlsl>
+cbuffer OceanCB : register( b4 )
+{
+	OceanTessData oc;
+};
+#define OceanTile oc.Tile
+#define OceanTexels oc.Params.x
+#define OceanUnitsPerMetre oc.Params.y
+float4 OceanFetchDisp( uint c, float2 uv, float lod ) { return TX_OceanDisp.SampleLevel( SS_Linear, float3( uv, c ), lod ); }
+float4 OceanFetchDeriv( uint c, float2 uv, float lod ) { return TX_OceanDeriv.SampleLevel( SS_Linear, float3( uv, c ), lod ); }
+#include <include/OceanSurface.hlsl>
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -67,6 +81,7 @@ struct PS_INPUT
 	float4 vDiffuse			: TEXCOORD2;
 	float3 vNormalWS		: TEXCOORD4;
 	float3 vWorldPosition	: TEXCOORD5;
+	float2 vOceanXZ			: TEXCOORD6;
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -275,6 +290,9 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
 #endif
 }
 
+// Wave height damping towards the shore: calm where the baked field says the water is shallow
+float OceanDepthWeight( float2 xz ) { return smoothstep( 0.0f, 600.0f, WaterShoreField( xz ).y ); }
+
 #include <include/WaterShading.hlsl>
 
 //--------------------------------------------------------------------------------------
@@ -289,6 +307,17 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	px.surfaceViewDistance = Input.vTexcoord2.y;
 	px.worldPos = Input.vWorldPosition;
 	px.geometricNormal = Input.vNormalWS;
+	px.oceanNormal = float3( 0.0f, 1.0f, 0.0f );
+	px.oceanFoam = 0.0f;
+	px.oceanActive = 0.0f;
+	float2 oceanFootprint = abs( ddx( Input.vOceanXZ ) ) + abs( ddy( Input.vOceanXZ ) );
+	[branch] if ( WP_IsOcean > 0.5f && WP_OceanFFT > 0.5f )
+	{
+		OceanSurfaceSample os = OceanEvaluate( Input.vOceanXZ, max( oceanFootprint.x, oceanFootprint.y ) / OceanUnitsPerMetre, OceanDepthWeight( Input.vOceanXZ ) );
+		px.oceanNormal = normalize( float3( -os.slope.x, 1.0f, -os.slope.y ) );
+		px.oceanFoam = os.foam;
+		px.oceanActive = 1.0f;
+	}
 
 	WaterFrame fr;
 	fr.cameraPos = RI_CameraPosition;

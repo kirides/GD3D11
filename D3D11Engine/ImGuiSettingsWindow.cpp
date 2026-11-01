@@ -677,6 +677,22 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         if ( !IsD3D12() ) shadersToReload |= ShaderCategory::Water;
     } );
 
+    constexpr ListItem<GothicRendererSettings::E_WaterSimulation> waterSims[] = {
+        { "Off", GothicRendererSettings::WATER_SIM_OFF, "The sea uses the Water Waves mode above." },
+        { "Low", GothicRendererSettings::WATER_SIM_LOW, "Simulated ocean waves, 3 cascades of 128x128." },
+        { "Medium", GothicRendererSettings::WATER_SIM_MEDIUM, "Simulated ocean waves, 4 cascades of 256x256." },
+        { "High", GothicRendererSettings::WATER_SIM_HIGH, "Simulated ocean waves, 4 cascades of 512x512. Medium on D3D11." },
+    };
+    ComboRow( "Ocean Simulation", "##WaterSimulation", waterSims, &settings.WaterSimulation,
+        "Physically based sea waves with choppy crests and whitecaps, on the sea only. Needs hardware tessellation and compute shaders; uses video memory. Switching it on from Off takes effect on the next world load." );
+    ImGui::BeginDisabled( settings.WaterSimulation == GothicRendererSettings::WATER_SIM_OFF );
+    SliderFloatRow( "Sea State", "##WaterSeaState", &settings.WaterSeaState, 0.0f, 3.0f, "%.1f",
+        "0 = calm, 1 = moderate, 2 = rough, 3 = storm." );
+    SliderFloatRow( "Wave Height", "##WaterWaveScale", &settings.WaterWaveScale, 0.0f, 3.0f );
+    SliderFloatRow( "Wave Choppiness", "##WaterChoppiness", &settings.WaterChoppiness, 0.0f, 2.0f );
+    SliderFloatRow( "Wind Direction", "##WaterWindAngle", &settings.WaterWindAngle, -180.0f, 180.0f, "%.0f" );
+    ImGui::EndDisabled();
+
     constexpr ListItem<GothicRendererSettings::E_OceanColor> oceanColors[] = {
         { "Natural", GothicRendererSettings::OCEAN_COLOR_NATURAL, "Coastal sea water with the classic water texture, in every world." },
         { "Per World", GothicRendererSettings::OCEAN_COLOR_PER_WORLD, "Clear turquoise sea in Jharkendar, natural elsewhere." },

@@ -2,6 +2,7 @@
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12LineRenderer.h"
+#include "D3D12Ocean.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include <d3dx12_barriers.h>
@@ -80,6 +81,8 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_V
     // the back-reference must be valid from construction, independent of any Init() ordering.
     m_ShadowMap.Attach( *this );
     m_PointShadows.Attach( *this );
+    m_Ocean = std::make_unique<D3D12Ocean>();
+    m_Ocean->Attach( *this );
 }
 
 void D3D12GraphicsEngine::OnInventoryVisualUsed( MeshVisualInfo* visual ) { m_VobArena->QueueVisual( visual ); }

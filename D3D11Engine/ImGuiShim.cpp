@@ -1199,6 +1199,17 @@ void ImGuiShim::RenderSettingsWindow()
                 }
             }
             {
+                const char* simLevels[] = { "Off", "Low", "Medium", "High" };   // E_WaterSimulation
+                int sim = settings.WaterSimulation;
+                if ( ImGui::Combo( "Ocean simulation", &sim, simLevels, IM_ARRAYSIZE( simLevels ) ) )
+                    settings.WaterSimulation = (GothicRendererSettings::E_WaterSimulation)sim;
+                ImGui::SetItemTooltip( "FFT sea waves on MT_Ocean water; the quality tier reallocates the simulation." );
+                ImGui::SliderFloat( "Sea state", &settings.WaterSeaState, 0.0f, 3.0f );
+                ImGui::SliderFloat( "Wave height", &settings.WaterWaveScale, 0.0f, 3.0f );
+                ImGui::SliderFloat( "Wave choppiness", &settings.WaterChoppiness, 0.0f, 2.0f );
+                ImGui::SliderFloat( "Wind direction", &settings.WaterWindAngle, -180.0f, 180.0f );
+            }
+            {
                 const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High", "Ultra" };
                 int ssr = settings.WaterSSRQuality;
                 if ( ImGui::Combo( "Water Reflections (SSR)", &ssr, ssrLevels, IM_ARRAYSIZE( ssrLevels ) ) ) {

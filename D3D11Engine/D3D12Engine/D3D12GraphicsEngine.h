@@ -43,6 +43,7 @@ class zCVobLight;
     Engine::CreateGraphicsEngine keeps D3D11. */
 class D3D12VobArena;
 class D3D12GpuScene;
+class D3D12Ocean;
 struct GpuSceneCasterView;
 struct GpuScenePointView;
 class D3D12GpuWorld;
@@ -62,6 +63,7 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     // rather than widening the engine's public surface for them.
     friend class D3D12ShadowMap;
     friend class D3D12PointShadows;
+    friend class D3D12Ocean;
     // Same deal: the VOB mega-buffer arena needs the allocator + the fence-deferred cleanup to swap its
     // buffers out from under frames that may still be reading them.
     friend class D3D12VobArena;
@@ -1259,6 +1261,7 @@ private:
     // the per-slot command lists, and the shared shadow CB the lit passes bind).
     D3D12ShadowMap     m_ShadowMap;
     D3D12PointShadows  m_PointShadows;
+    std::unique_ptr<D3D12Ocean> m_Ocean;   // optional FFT ocean (D3D12Ocean.h); created in the constructor
 
 
     // ---- Multi-threaded shadow culling + DEFERRED shadow command recording (plan item #7 + the overlap pass) ----

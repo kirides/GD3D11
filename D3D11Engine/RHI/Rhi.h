@@ -253,6 +253,8 @@ namespace Rhi {
         bool RayQuery = false;
         /** Vertex and pixel shaders may write UAVs (always on D3D12; Vulkan needs the stores-and-atomics features). */
         bool ShaderStoresAllStages = true;
+        /** Hull/domain stages with patch topologies (always on D3D12; Vulkan needs the tessellationShader feature). */
+        bool Tessellation = true;
         UINT VendorId = 0;
         LUID AdapterLuid = {};
     };

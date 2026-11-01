@@ -7,6 +7,7 @@
 #include "D3D11GShader.h"
 #include "D3D11HDShader.h"
 #include "D3D11LineRenderer.h"
+#include "D3D11Ocean.h"
 #include "D3D11OcclusionQuerry.h"
 #include "D3D11PShader.h"
 #include "D3D11PfxRenderer.h"
@@ -5668,6 +5669,17 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     CopyDepthStencil();
     const bool skyAverageReady = UpdateWaterSkyAverage( sceneCopy->GetShaderResView().Get() );
 
+    // Optional FFT ocean: simulated while the sea is drawn, tessellated through VS_OceanTess + OceanTess.hlsl
+    bool oceanSim = false;
+    {
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( !FrameWaterSurfaces[1].empty() && rs.WaterSimulation != GothicRendererSettings::WATER_SIM_OFF && !FeatureLevel10Compatibility
+            && GetShaderManager().GetHDShader( HDShaderID::HD_OceanTess ) && GetShaderManager().GetVShader( VShaderID::VS_OceanTess ) ) {
+            if ( !Ocean ) Ocean = std::make_unique<D3D11Ocean>();
+            oceanSim = Ocean->Update( *this, rs );
+        }
+    }
+
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
 
@@ -5727,7 +5739,58 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     }
 
     constexpr unsigned int argStride = sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
-    
+
+    // The ocean batches come last (batches are built non-ocean first); their args start here
+    unsigned int oceanArgStart = static_cast<unsigned int>( waterDrawArgs.size() );
+    for ( const auto& batch : waterBatches ) {
+        if ( batch.ocean ) { oceanArgStart = batch.argsOffset; break; }
+    }
+
+    // Simulated ocean: VS_OceanTess + hull/domain as 3-point patches. The constants ride one ring allocation (HS/DS b0, PS b4).
+    ConstantBufferAllocation oceanCbAlloc = {};
+    ID3D11ShaderResourceView* oceanShoreSrv = nullptr;
+    if ( oceanSim ) {
+        VS_ExConstantBuffer_PerFrame frameCb;
+        PreparePerFrameConstantBuffer( frameCb );
+        OceanTessConstants oc = {};
+        oc.ViewProj = frameCb.ViewProj;
+        oc.View = frameCb.View;
+        const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+        oc.Camera[0] = camPos.x; oc.Camera[1] = camPos.y; oc.Camera[2] = camPos.z;
+        const OceanFFT::Cascades& cascades = Ocean->Cascades();
+        for ( int c = 0; c < cascades.count; ++c ) oc.Tile[c] = cascades.c[c].length;
+        oc.Params[0] = static_cast<float>( cascades.size );
+        oc.Params[1] = OceanFFT::UnitsPerMetre;
+        if ( ShoreField* shoreField = Engine::GAPI->GetShoreField() ) {
+            oceanShoreSrv = D3D11Texture::From( shoreField->GetTexture() )->GetShaderResourceView().Get();
+            const XMFLOAT4 map = shoreField->GetMapping();
+            oc.Params[2] = oceanShoreSrv ? 1.0f : 0.0f;
+            oc.ShoreMap[0] = map.x; oc.ShoreMap[1] = map.y; oc.ShoreMap[2] = map.z; oc.ShoreMap[3] = map.w;
+        }
+        oceanCbAlloc = AllocateDynamicCB( &oc );
+    }
+    auto bindOceanTess = [&]() {
+        SetActiveVertexShader( VShaderID::VS_OceanTess );
+        ActiveVS->Apply();
+        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &totalTime, sizeof( totalTime ) );
+        SetActiveHDShader( HDShaderID::HD_OceanTess );
+        ActiveHDS->Apply();
+        GetConstantBufferPool()->BindHS( 0, oceanCbAlloc );
+        GetConstantBufferPool()->BindDS( 0, oceanCbAlloc );
+        ID3D11ShaderResourceView* dsSrvs[3] = { Ocean->DispSRV(), Ocean->DerivSRV(), oceanShoreSrv };
+        GetContext()->DSSetShaderResources( 0, 3, dsSrvs );
+        GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST );
+    };
+    auto unbindOceanTess = [&]() {
+        D3D11HDShader::Unbind();
+        ID3D11ShaderResourceView* nullDs[3] = {};
+        GetContext()->DSSetShaderResources( 0, 3, nullDs );
+        GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        SetActiveVertexShader( VShaderID::VS_ExWater );
+        ActiveVS->Apply();
+        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &totalTime, sizeof( totalTime ) );
+    };
+
     // === Z-Prepass ===
     {
         ZoneScopedN( "DrawWaterSurfaces::ZPrepass" );
@@ -5753,10 +5816,17 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
                 WaterIndirectBuffer->UpdateBuffer( waterDrawArgs.data(), static_cast<unsigned int>( requiredSize ) );
             }
 
-            DrawMultiIndexedInstancedIndirect( Context.Get(),
-                static_cast<unsigned int>( waterDrawArgs.size() ),
-                WaterIndirectBuffer->GetIndirectBuffer().Get(),
-                0, argStride );
+            const unsigned int totalArgs = static_cast<unsigned int>( waterDrawArgs.size() );
+            const unsigned int plainArgs = oceanSim ? oceanArgStart : totalArgs;
+            if ( plainArgs > 0 ) {
+                DrawMultiIndexedInstancedIndirect( Context.Get(), plainArgs, WaterIndirectBuffer->GetIndirectBuffer().Get(), 0, argStride );
+            }
+            if ( oceanSim && totalArgs > oceanArgStart ) {
+                bindOceanTess();
+                DrawMultiIndexedInstancedIndirect( Context.Get(), totalArgs - oceanArgStart, WaterIndirectBuffer->GetIndirectBuffer().Get(),
+                    oceanArgStart * argStride, argStride );
+                unbindOceanTess();
+            }
         } else {
             // FL10 fallback: direct DrawIndexed per mesh
             for ( const auto& args : waterDrawArgs ) {
@@ -5843,21 +5913,31 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         waterParams.WP_ShoreFoam = WaterShoreFoamMode();
         auto bindWaterParams = [&]( bool ocean ) {
             waterParams.WP_IsOcean = ocean ? 1.0f : 0.0f;
+            waterParams.WP_OceanFFT = ( ocean && oceanSim ) ? 1.0f : 0.0f;
             BindDynamicCBToPixelShader( 3, AllocateDynamicCB( &waterParams ) );
         };
 
         if ( !FeatureLevel10Compatibility ) {
             // MDI path: one MDI call per texture batch
+            bool tessBound = false;
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
                 bindWaterParams( batch.ocean );
+                if ( batch.ocean && oceanSim && !tessBound ) {
+                    bindOceanTess();
+                    BindDynamicCBToPixelShader( 4, oceanCbAlloc );
+                    ID3D11ShaderResourceView* psSrvs[2] = { Ocean->DispSRV(), Ocean->DerivSRV() };
+                    GetContext()->PSSetShaderResources( 10, 2, psSrvs );
+                    tessBound = true;
+                }
 
                 DrawMultiIndexedInstancedIndirect( Context.Get(),
                     batch.drawCount,
                     WaterIndirectBuffer->GetIndirectBuffer().Get(),
                     batch.argsOffset * argStride, argStride );
             }
+            if ( tessBound ) unbindOceanTess();
         } else {
             // FL10 fallback: per-texture loop with direct DrawIndexed
             for ( const auto& batch : waterBatches ) {
@@ -5874,7 +5954,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
-    GetContext()->PSSetShaderResources( 0, 10, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 0, 12, s_nullSRVs );
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );

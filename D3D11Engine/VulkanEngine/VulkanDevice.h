@@ -37,6 +37,7 @@ struct VulkanDeviceCaps {
     bool VertexStoresAndAtomics = false;
     bool DepthBiasClamp = false;
     bool FillModeNonSolid = false;
+    bool TessellationShader = false;
     /** Heap-indexed ConstantBuffers can live in the mutable heap (feature + limits); else they need regular bindings. */
     bool HeapUniformBuffers = false;
     bool TimestampQueries = false;

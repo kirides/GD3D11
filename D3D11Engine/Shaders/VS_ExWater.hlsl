@@ -35,6 +35,7 @@ struct VS_OUTPUT
 	float4 vDiffuse			: TEXCOORD2;
 	float3 vNormalWS		: TEXCOORD4;
 	float3 vWorldPosition	: TEXCOORD5;
+	float2 vOceanXZ			: TEXCOORD6;   // simulated ocean only (OceanTess.hlsl); unused here
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -64,6 +65,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	Output.vDiffuse  = Input.vDiffuse;
     Output.vNormalWS = DecodeOctNormal( Input.vNormalOct );
 	Output.vWorldPosition = positionWorld;
+	Output.vOceanXZ = Input.vPosition.xz;
 	Output.vTexcoord2.x = mul(float4(positionWorld,1), frame.M_View).z;
 	Output.vTexcoord2.y = length(mul(float4(positionWorld,1), frame.M_View));
 	//Output.vWorldPosition = positionWorld;
