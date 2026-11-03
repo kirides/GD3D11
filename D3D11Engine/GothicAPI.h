@@ -932,6 +932,10 @@ public:
     /** Returns the player-vob */
     zCVob* GetPlayerVob();
 
+    /** Origin for player-centred effects (point lights, wind, grass): camera in Spacer_NET, else the player; fallback if none */
+    XMVECTOR XM_CALLCONV GetEffectOriginXM( FXMVECTOR fallback );
+    XMFLOAT3 GetEffectOrigin( const XMFLOAT3& fallback = XMFLOAT3( 0, 0, 0 ) );
+
     /** Returns the map of static mesh visuals */
     const gtl::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*>& GetStaticMeshVisuals();
 

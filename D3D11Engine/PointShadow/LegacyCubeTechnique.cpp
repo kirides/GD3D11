@@ -299,9 +299,7 @@ XRESULT LegacyCubeTechnique::DrawShadows( std::vector<VobLightInfo*>& lights ) {
     graphicsEngine->SetDefaultStates();
 
     const XMVECTOR vPlayerPosition =
-        Engine::GAPI->GetPlayerVob() != nullptr
-        ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM()
-        : xmFltMax;
+        Engine::GAPI->GetEffectOriginXM( xmFltMax );
 
     const bool partialShadowUpdate = settings.PartialDynamicShadowUpdates;
     const bool staticOnlyMode = settings.EnablePointlightShadows == GothicRendererSettings::PLS_STATIC_ONLY;

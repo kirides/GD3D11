@@ -330,10 +330,9 @@ void PointLightSlotSelector::BuildCandidates( std::vector<Candidate>& out ) {
     // The player's own bounding sphere, for the "standing inside this light" test below. Its position, not
     // the camera's: the shadow that must never be deferred is the one cast around the player.
     const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
-    XMVECTOR playerPos = XMVectorZero();
+    XMVECTOR playerPos = Engine::GAPI->GetEffectOriginXM( XMVectorZero() );
     float playerRadius = 0.0f;
     if ( playerVob ) {
-        playerPos = playerVob->GetPositionWorldXM();
         const zTBBox3D& bb = playerVob->GetBBox();
         const XMVECTOR half = XMVectorScale(
             XMVectorSubtract( XMLoadFloat3( &bb.Max ), XMLoadFloat3( &bb.Min ) ), 0.5f );

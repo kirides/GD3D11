@@ -4413,7 +4413,7 @@ void GothicAPI::CollectVisibleVobs(
     }
 
     XMVECTOR cameraPosition = GetCameraPositionXM();
-    XMVECTOR playerPosition = Engine::GAPI->GetPlayerVob() != nullptr ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM() : XMVectorSet( FLT_MAX, FLT_MAX, FLT_MAX, 0 );
+    XMVECTOR playerPosition = Engine::GAPI->GetEffectOriginXM( XMVectorSet( FLT_MAX, FLT_MAX, FLT_MAX, 0 ) );
     // Take cameraposition if we are freelooking
     if ( zCCamera::IsFreeLookActive() ) {
         playerPosition = cameraPosition;
@@ -5707,6 +5707,21 @@ void GothicAPI::SetPlayerPosition( const XMFLOAT3& pos ) {
 /** Returns the player-vob */
 zCVob* GothicAPI::GetPlayerVob() {
     return oCGame::GetPlayer();
+}
+
+XMVECTOR XM_CALLCONV GothicAPI::GetEffectOriginXM( FXMVECTOR fallback ) {
+#ifdef BUILD_SPACER_NET
+    return GetCameraPositionXM();
+#else
+    zCVob* player = GetPlayerVob();
+    return player ? player->GetPositionWorldXM() : fallback;
+#endif
+}
+
+XMFLOAT3 GothicAPI::GetEffectOrigin( const XMFLOAT3& fallback ) {
+    XMFLOAT3 r;
+    XMStoreFloat3( &r, GetEffectOriginXM( XMLoadFloat3( &fallback ) ) );
+    return r;
 }
 
 /** Loads resources created for this .ZEN */
