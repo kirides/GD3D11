@@ -23,6 +23,8 @@ public:
     /** Once per frame, main thread: true when Bake() should run again (setting switched on, or a baked light
         was removed, moved or switched off). Rate-limited. */
     bool NeedsRebake();
+    /** Bake again on the next frame, ignoring the cache file. */
+    void RequestRebake();
 
     /** Baked data present and the setting on. */
     bool IsActive() const;

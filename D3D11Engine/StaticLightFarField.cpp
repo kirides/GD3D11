@@ -11,14 +11,17 @@
 #include "zCMaterial.h"
 #include "zCTexture.h"
 #include <mutex>
+#include <array>
 
 namespace {
     constexpr uint32_t kCacheMagic = 0x46464C53;   // 'SLFF'
-    constexpr uint32_t kCacheVersion = 6;
+    constexpr uint32_t kCacheVersion = 8;   // bump with every change to what the bake computes
     constexpr float kLightFactor = 1.2f;           // BuildFrameLightBuffer / CullLights RGB scale
     constexpr uint32_t kWorldOwner = UINT32_MAX;     // Tri::Owner of world-mesh triangles (VOBs: their index)
     constexpr uint32_t kSkipNone = UINT32_MAX - 1;   // Occluded(): no owner is skipped
     constexpr float kSurfaceBias = 4.0f;           // ray start off the surface, world units
+    constexpr float kLightRadius = 20.0f;          // soft shadows: shadow rays aim at points this far around the flame
+    constexpr int kLightSamples = 16;              // centre + 15 sphere points; 4 first, all only where those disagree
     constexpr float kCornerPull = 15.0f;           // corner samples move this far into their triangle
     constexpr float kLightClearance = 8.0f;        // ignore hits this close to the light; wall torches sit ~20 from the wall
     constexpr float kMaxLampVobSize = 300.0f;      // bbox diagonal: a VOB this small around the light is its lamp
@@ -30,6 +33,7 @@ namespace {
     constexpr float kMinOccluderVobSize = 150.0f;  // bbox diagonal; props smaller than this cast nothing
     constexpr size_t kRecheckFrames = 120;
     constexpr double kMinRebakeSeconds = 5.0;
+    constexpr size_t kMaxUnmatchedVertices = 32;   // more geometry than this changed: re-bake
 
     /** Wall clock: ZenGin's timer stands still during a world load. */
     double NowSeconds() {
@@ -68,10 +72,52 @@ namespace {
         return n;
     }
 
-    uint64_t Fnv( uint64_t h, const void* data, size_t bytes ) {
-        const uint8_t* p = static_cast<const uint8_t*>( data );
-        for ( size_t i = 0; i < bytes; ++i ) h = ( h ^ p[i] ) * 1099511628211ull;
-        return h;
+    // --- Cache: entries keyed by content, not by index. The wrapped vertex order follows a map keyed by material
+    // pointers, so it differs on every launch; validity is an order-independent hash of what the bake read.
+    uint64_t Mix( uint64_t x ) {   // splitmix64 finalizer
+        x += 0x9E3779B97F4A7C15ull;
+        x = ( x ^ ( x >> 30 ) ) * 0xBF58476D1CE4E5B9ull;
+        x = ( x ^ ( x >> 27 ) ) * 0x94D049BB133111EBull;
+        return x ^ ( x >> 31 );
+    }
+    int32_t Quantize( float v ) { return static_cast<int32_t>( std::lround( v * 4.0f ) ); }
+
+    struct CacheEntry {
+        int32_t X, Y, Z;
+        uint32_t Tag;     // vertex: oct normal; VOB: quantized bbox diagonal
+        uint32_t Value;
+    };
+    CacheEntry MakeEntry( const XMFLOAT3& p, uint32_t tag ) { return { Quantize( p.x ), Quantize( p.y ), Quantize( p.z ), tag, 0 }; }
+    bool EntryLess( const CacheEntry& a, const CacheEntry& b ) {
+        if ( a.X != b.X ) return a.X < b.X;
+        if ( a.Y != b.Y ) return a.Y < b.Y;
+        if ( a.Z != b.Z ) return a.Z < b.Z;
+        return a.Tag < b.Tag;
+    }
+    bool EntrySame( const CacheEntry& a, const CacheEntry& b ) { return a.X == b.X && a.Y == b.Y && a.Z == b.Z && a.Tag == b.Tag; }
+    uint64_t EntryHash( const CacheEntry& e ) {
+        const uint64_t yz = ( static_cast<uint64_t>( static_cast<uint32_t>( e.Y ) ) << 32 ) | static_cast<uint32_t>( e.Z );
+        return Mix( Mix( static_cast<uint32_t>( e.X ) ) ^ yz ) ^ Mix( e.Tag );
+    }
+
+    /** Fills `values` (indexed like `keys`) from a sorted cache table; returns how many keys found no entry. */
+    size_t MatchEntries( const std::vector<CacheEntry>& keys, const std::vector<CacheEntry>& table, std::vector<uint32_t>& values ) {
+        std::vector<uint32_t> order( keys.size() );
+        for ( uint32_t i = 0; i < order.size(); ++i ) order[i] = i;
+        std::sort( order.begin(), order.end(), [&]( uint32_t a, uint32_t b ) { return EntryLess( keys[a], keys[b] ); } );
+        values.assign( keys.size(), 0 );
+        size_t missing = 0, t = 0;
+        for ( uint32_t i : order ) {
+            while ( t < table.size() && EntryLess( table[t], keys[i] ) ) ++t;
+            if ( t < table.size() && EntrySame( table[t], keys[i] ) ) values[i] = table[t].Value;
+            else ++missing;
+        }
+        return missing;
+    }
+
+    std::string SanitizeFileName( std::string s ) {
+        for ( char& c : s ) if ( !std::isalnum( static_cast<unsigned char>( c ) ) && c != '-' ) c = '_';
+        return s;
     }
 
     struct Aabb {
@@ -288,6 +334,7 @@ struct StaticLightFarField::Impl {
     double LastBakeTime = -1.0e9;
     bool RebakePending = false;
     bool Attempted = false;   // Bake() ran for this world: the vobs are all registered
+    bool ForceRebake = false; // RequestRebake: bake now and ignore the cache
 };
 
 StaticLightFarField::StaticLightFarField() : m( std::make_unique<Impl>() ) {}
@@ -328,7 +375,7 @@ void StaticLightFarField::Reset() {
 
 void StaticLightFarField::Crossfade( bool active, float& nearRadius, float& invFade ) {
     const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
-    nearRadius = s.StaticLightFarFieldBakeOnly ? -1.0e7f : s.StaticLightNearRadius;   // debug: the bake everywhere
+    nearRadius = s.StaticLightBakedOnly ? -1.0e7f : s.StaticLightNearRadius;   // baked only: the bake everywhere
     invFade = active ? 1.0f / std::max( 1.0f, s.StaticLightFadeWidth ) : 0.0f;
 }
 
@@ -368,13 +415,22 @@ void StaticLightFarField::Bake( const std::vector<VobInfo*>& vobs ) {
         lightInfos.push_back( info );
     }
 
-    // World clusters, in GPU vertex order terms (mesh base vertex + local index)
+    // World clusters, in GPU vertex order terms (mesh base vertex + local index). Alongside: every vertex's cache
+    // key, and the geometry hash - triangle totals only, since vertex welding varies between launches
     std::vector<ClusterRef> clusters;
+    std::vector<CacheEntry> vertexKeys( m->Normals.size(), CacheEntry{} );
+    uint64_t geometryHash = 0;
     for ( auto& [x, row] : Engine::GAPI->GetWorldSections() ) {
         for ( auto& [z, section] : row ) {
             for ( auto& [key, mesh] : section.WorldMeshes ) {
                 if ( !mesh || mesh->Indices.empty() || mesh->CpuVertices.empty() ) continue;
                 const bool occluder = IsOccluderMaterial( key );
+                for ( size_t i = 0; i < mesh->CpuVertices.size(); ++i ) {
+                    const size_t id = mesh->BaseVertexLocation + i;
+                    if ( id >= vertexKeys.size() ) break;
+                    vertexKeys[id] = MakeEntry( mesh->CpuVertices[i].Position, m->Normals[id] );
+                }
+                geometryHash += mesh->Indices.size() + ( occluder ? static_cast<uint64_t>( mesh->Indices.size() ) << 32 : 0ull );
                 auto add = [&]( uint32_t off, uint32_t cnt ) {
                     ClusterRef c{ mesh, off, cnt, {}, occluder };
                     for ( uint32_t i = off; i < off + cnt && i < mesh->Indices.size(); ++i )
@@ -426,37 +482,66 @@ void StaticLightFarField::Bake( const std::vector<VobInfo*>& vobs ) {
         return a.Center.z < b.Center.z;
         } );
 
-    // Cache key: geometry, lights, VOB placement
-    uint64_t hash = 1469598103934665603ull;
-    hash = Fnv( hash, &kCacheVersion, sizeof( kCacheVersion ) );
-    hash = Fnv( hash, m->Normals.data(), m->Normals.size() * sizeof( uint32_t ) );
+    // Validity: bake version, lights, world geometry and the occluding VOBs - all order-independent
+    uint64_t hash = Mix( kCacheVersion ) ^ Mix( geometryHash );
     for ( const LightSnap& l : m->Lights ) {
-        hash = Fnv( hash, &l.Pos, sizeof( l.Pos ) );
-        hash = Fnv( hash, &l.Range, sizeof( l.Range ) );
-        hash = Fnv( hash, &l.Color, sizeof( l.Color ) );
+        const CacheEntry e = MakeEntry( l.Pos, static_cast<uint32_t>( Quantize( l.Range ) ) );
+        const uint64_t rgb = ( static_cast<uint64_t>( Quantize( l.Color.x * 255.0f ) ) << 40 )
+            ^ ( static_cast<uint64_t>( Quantize( l.Color.y * 255.0f ) ) << 20 ) ^ static_cast<uint64_t>( Quantize( l.Color.z * 255.0f ) );
+        hash += Mix( EntryHash( e ) ^ Mix( rgb ) );
     }
+    std::vector<CacheEntry> vobKeys;
+    vobKeys.reserve( vobRefs.size() );
     for ( const VobRef& r : vobRefs ) {
-        hash = Fnv( hash, &r.Center, sizeof( r.Center ) );
-        hash = Fnv( hash, &r.Occluder, sizeof( r.Occluder ) );
+        vobKeys.push_back( MakeEntry( r.Center, static_cast<uint32_t>( Quantize( r.Diagonal ) ) ) );
+        if ( !r.Occluder ) continue;
+        uint64_t tris = 0;
+        for ( const MeshInfo* mi : r.Meshes ) tris += mi->Indices.size();
+        const uint64_t rot = ( static_cast<uint64_t>( static_cast<uint32_t>( Quantize( r.World._11 * 1000.0f ) ) ) << 32 )
+            | static_cast<uint32_t>( Quantize( r.World._13 * 1000.0f ) );
+        hash += Mix( EntryHash( vobKeys.back() ) ^ Mix( tris ) ^ Mix( rot ) );
     }
-    for ( const ClusterRef& c : clusters ) hash = Fnv( hash, &c.Bounds, sizeof( c.Bounds ) );
 
+    // One file per mod and world, so two mods with a NEWWORLD don't evict each other
     const WorldInfo* world = Engine::GAPI->GetLoadedWorldInfo();
     const std::string cacheDir = std::string( ENGINE_BASE_DIR ) + "cache";
-    const std::string cachePath = cacheDir + "\\FarField_" + ( world ? world->WorldName : std::string( "unknown" ) ) + ".bin";
+    const std::string cachePath = cacheDir + "\\FarField_" + SanitizeFileName( Engine::GAPI->GetGameName() ) + "_"
+        + SanitizeFileName( world ? world->WorldName : std::string( "unknown" ) ) + ".bin";
+    // Pre-v8 caches had no mod name in the file name
+    DeleteFileA( ( cacheDir + "\\FarField_" + ( world ? world->WorldName : std::string( "unknown" ) ) + ".bin" ).c_str() );
     const uint32_t vertexCount = static_cast<uint32_t>( m->Normals.size() );
     const uint32_t vobCount = static_cast<uint32_t>( vobRefs.size() );
 
     std::vector<uint32_t> vobPacked( vobCount, 0 );
     bool fromCache = false;
-    if ( FILE* f = fopen( cachePath.c_str(), "rb" ) ) {
+    const bool ignoreCache = m->ForceRebake;
+    m->ForceRebake = false;
+    std::string cacheResult = ignoreCache ? "rebake requested" : "no cache file";
+    if ( FILE* f = ignoreCache ? nullptr : fopen( cachePath.c_str(), "rb" ) ) {
         uint32_t hdr[4] = {};
         uint64_t fileHash = 0;
-        if ( fread( hdr, sizeof( hdr ), 1, f ) == 1 && fread( &fileHash, sizeof( fileHash ), 1, f ) == 1
-            && hdr[0] == kCacheMagic && hdr[1] == kCacheVersion && hdr[2] == vertexCount && hdr[3] == vobCount && fileHash == hash ) {
-            m_VertexIrradiance.resize( vertexCount );
-            fromCache = fread( m_VertexIrradiance.data(), sizeof( uint32_t ), vertexCount, f ) == vertexCount
-                && ( vobCount == 0 || fread( vobPacked.data(), sizeof( uint32_t ), vobCount, f ) == vobCount );
+        if ( fread( hdr, sizeof( hdr ), 1, f ) != 1 || fread( &fileHash, sizeof( fileHash ), 1, f ) != 1 || hdr[0] != kCacheMagic ) {
+            cacheResult = "unreadable cache file";
+        } else if ( hdr[1] != kCacheVersion ) {
+            cacheResult = "bake version changed";
+        } else if ( fileHash != hash ) {
+            cacheResult = "lights or geometry changed";
+        } else {
+            std::vector<CacheEntry> vertexTable( hdr[2] ), vobTable( hdr[3] );
+            if ( fread( vertexTable.data(), sizeof( CacheEntry ), vertexTable.size(), f ) != vertexTable.size()
+                || fread( vobTable.data(), sizeof( CacheEntry ), vobTable.size(), f ) != vobTable.size() ) {
+                cacheResult = "truncated cache file";
+            } else {
+                const size_t missing = MatchEntries( vertexKeys, vertexTable, m_VertexIrradiance );
+                if ( missing > kMaxUnmatchedVertices ) {
+                    cacheResult = std::format( "{} vertices not in the cache", missing );
+                    m_VertexIrradiance.clear();
+                } else {
+                    MatchEntries( vobKeys, vobTable, vobPacked );   // unmatched VOBs keep no far field
+                    fromCache = true;
+                    cacheResult = "cache hit";
+                }
+            }
         }
         fclose( f );
     }
@@ -542,11 +627,51 @@ void StaticLightFarField::Bake( const std::vector<VobInfo*>& vobs ) {
             bvh.Build( std::move( tris ) );
 
             // Traced from the light outward, so the clearance skips the lamp's own geometry
-            auto visible = [&]( const XMFLOAT3& p, float dist, uint32_t owner ) {
-                const XMFLOAT3 dir( ( p.x - L.Pos.x ) / dist, ( p.y - L.Pos.y ) / dist, ( p.z - L.Pos.z ) / dist );
+            // Points on the flame for soft shadows: the centre, plus the sphere points the centre itself can see,
+            // so none of them ends up behind the wall a torch hangs on
+            static const std::array<XMFLOAT3, kLightSamples - 1> s_sphere = [] {
+                std::array<XMFLOAT3, kLightSamples - 1> d{};
+                for ( int k = 0; k < kLightSamples - 1; ++k ) {   // Fibonacci sphere
+                    const float y = 1.0f - 2.0f * ( k + 0.5f ) / ( kLightSamples - 1 );
+                    const float r = std::sqrt( std::max( 0.0f, 1.0f - y * y ) );
+                    const float phi = k * 2.39996323f;
+                    d[k] = XMFLOAT3( r * std::cos( phi ), y, r * std::sin( phi ) );
+                }
+                return d;
+            }();
+            XMFLOAT3 lightPts[kLightSamples];
+            int lightPtCount = 0;
+            lightPts[lightPtCount++] = L.Pos;
+            for ( const XMFLOAT3& d : s_sphere )
+                if ( !bvh.Occluded( L.Pos, d, kLightRadius, kSkipNone ) )
+                    lightPts[lightPtCount++] = XMFLOAT3( L.Pos.x + d.x * kLightRadius, L.Pos.y + d.y * kLightRadius, L.Pos.z + d.z * kLightRadius );
+
+            // Traced from the light outward, so the clearance skips the lamp's own geometry
+            auto visibleFrom = [&]( const XMFLOAT3& from, const XMFLOAT3& p, uint32_t owner ) {
+                XMFLOAT3 dir( p.x - from.x, p.y - from.y, p.z - from.z );
+                const float dist = std::sqrt( dir.x * dir.x + dir.y * dir.y + dir.z * dir.z );
+                if ( dist < 1.0f ) return true;
+                dir = XMFLOAT3( dir.x / dist, dir.y / dist, dir.z / dist );
                 const float start = std::min( kLightClearance, dist * 0.5f );
-                const XMFLOAT3 o( L.Pos.x + dir.x * start, L.Pos.y + dir.y * start, L.Pos.z + dir.z * start );
+                const XMFLOAT3 o( from.x + dir.x * start, from.y + dir.y * start, from.z + dir.z * start );
                 return !bvh.Occluded( o, dir, dist - start, owner );
+            };
+            // Fraction of the flame p sees: 4 spread samples, all of them only in a penumbra
+            auto visible = [&]( const XMFLOAT3& p, uint32_t owner ) -> float {
+                static constexpr int kFirst[4] = { 0, 1, 6, 11 };
+                int hits = 0, tested = 0;
+                for ( int k : kFirst ) {
+                    if ( k >= lightPtCount ) continue;
+                    hits += visibleFrom( lightPts[k], p, owner ) ? 1 : 0;
+                    ++tested;
+                }
+                if ( hits == 0 || hits == tested ) return hits ? 1.0f : 0.0f;
+                for ( int k = 0; k < lightPtCount; ++k ) {
+                    if ( k == 0 || k == 1 || k == 6 || k == 11 ) continue;
+                    hits += visibleFrom( lightPts[k], p, owner ) ? 1 : 0;
+                    ++tested;
+                }
+                return static_cast<float>( hits ) / static_cast<float>( tested );
             };
 
             std::vector<std::pair<uint32_t, XMFLOAT3>> vertOut;
@@ -564,17 +689,16 @@ void StaticLightFarField::Bake( const std::vector<VobInfo*>& vobs ) {
                 if ( dist < 1.0f || dist >= L.Range ) continue;
                 const float ndl = ( n.x * lp.x + n.y * lp.y + n.z * lp.z ) / dist;
                 if ( ndl <= 0.0f ) continue;
-                bool lit = true;
-                for ( size_t c = first; c < end && lit; ++c ) {
+                // The darkest corner wins, so a seam vertex never carries light past its wall
+                float vis = 1.0f;
+                for ( size_t c = first; c < end && vis > 0.0f; ++c ) {
                     const XMFLOAT3& in = targets[c].Inward;
                     const XMFLOAT3 p( t.Pos.x + in.x + n.x * kSurfaceBias, t.Pos.y + in.y + n.y * kSurfaceBias,
                         t.Pos.z + in.z + n.z * kSurfaceBias );
-                    const XMFLOAT3 lb( L.Pos.x - p.x, L.Pos.y - p.y, L.Pos.z - p.z );
-                    const float distB = std::sqrt( lb.x * lb.x + lb.y * lb.y + lb.z * lb.z );
-                    lit = distB >= 1.0f && visible( p, distB, kSkipNone );
+                    vis = std::min( vis, visible( p, kSkipNone ) );
                 }
-                if ( !lit ) continue;
-                const float w = Falloff( dist, L.Range ) * ndl;
+                if ( vis <= 0.0f ) continue;
+                const float w = Falloff( dist, L.Range ) * ndl * vis;
                 vertOut.emplace_back( t.Id, XMFLOAT3( L.Color.x * w, L.Color.y * w, L.Color.z * w ) );
             }
             std::vector<std::pair<uint32_t, XMFLOAT3>> vobOut;
@@ -593,16 +717,16 @@ void StaticLightFarField::Bake( const std::vector<VobInfo*>& vobs ) {
                         const XMFLOAT3 p( r.Center.x + d[0] * half.x, r.Center.y + d[1] * half.y, r.Center.z + d[2] * half.z );
                         const XMFLOAT3 lp( L.Pos.x - p.x, L.Pos.y - p.y, L.Pos.z - p.z );
                         const float dist = std::sqrt( lp.x * lp.x + lp.y * lp.y + lp.z * lp.z );
-                        if ( dist >= L.Range || ( dist > 1.0f && !visible( p, dist, kSkipNone ) ) ) continue;
-                        w += Falloff( dist, L.Range );
+                        if ( dist >= L.Range ) continue;
+                        w += Falloff( dist, L.Range ) * visible( p, kSkipNone );
                     }
                     w *= kVobOmniFactor / 14.0f;
                 } else {
                     const XMFLOAT3& p = r.Center;
                     const XMFLOAT3 lp( L.Pos.x - p.x, L.Pos.y - p.y, L.Pos.z - p.z );
                     const float dist = std::sqrt( lp.x * lp.x + lp.y * lp.y + lp.z * lp.z );
-                    if ( dist >= L.Range || ( dist > 1.0f && !visible( p, dist, vi ) ) ) continue;
-                    w = Falloff( dist, L.Range ) * kVobOmniFactor;
+                    if ( dist >= L.Range ) continue;
+                    w = Falloff( dist, L.Range ) * kVobOmniFactor * visible( p, vi );
                 }
                 if ( w > 0.0f ) vobOut.emplace_back( vi, XMFLOAT3( L.Color.x * w, L.Color.y * w, L.Color.z * w ) );
             }
@@ -637,15 +761,25 @@ void StaticLightFarField::Bake( const std::vector<VobInfo*>& vobs ) {
             m_VertexIrradiance[i] = PackRGB9E5( vertexAccum[i].x, vertexAccum[i].y, vertexAccum[i].z );
         for ( uint32_t i = 0; i < vobCount; ++i ) vobPacked[i] = PackVob( vobAccum[i] );
 
+        // Sorted content-keyed tables, written aside and renamed so a crash can't leave half a file
+        std::vector<CacheEntry> vertexTable = vertexKeys, vobTable = vobKeys;
+        for ( uint32_t i = 0; i < vertexCount; ++i ) vertexTable[i].Value = m_VertexIrradiance[i];
+        for ( uint32_t i = 0; i < vobCount; ++i ) vobTable[i].Value = vobPacked[i];
+        std::sort( vertexTable.begin(), vertexTable.end(), EntryLess );
+        std::sort( vobTable.begin(), vobTable.end(), EntryLess );
         CreateDirectoryA( cacheDir.c_str(), nullptr );
-        if ( FILE* f = fopen( cachePath.c_str(), "wb" ) ) {
-            const uint32_t hdr[4] = { kCacheMagic, kCacheVersion, vertexCount, vobCount };
-            fwrite( hdr, sizeof( hdr ), 1, f );
-            fwrite( &hash, sizeof( hash ), 1, f );
-            fwrite( m_VertexIrradiance.data(), sizeof( uint32_t ), vertexCount, f );
-            if ( vobCount ) fwrite( vobPacked.data(), sizeof( uint32_t ), vobCount, f );
-            fclose( f );
+        const std::string tmpPath = cachePath + ".tmp";
+        bool written = false;
+        if ( FILE* f = fopen( tmpPath.c_str(), "wb" ) ) {
+            const uint32_t hdr[4] = { kCacheMagic, kCacheVersion, static_cast<uint32_t>( vertexTable.size() ), static_cast<uint32_t>( vobTable.size() ) };
+            written = fwrite( hdr, sizeof( hdr ), 1, f ) == 1 && fwrite( &hash, sizeof( hash ), 1, f ) == 1
+                && fwrite( vertexTable.data(), sizeof( CacheEntry ), vertexTable.size(), f ) == vertexTable.size()
+                && fwrite( vobTable.data(), sizeof( CacheEntry ), vobTable.size(), f ) == vobTable.size();
+            written = fclose( f ) == 0 && written;
+            written = written && MoveFileExA( tmpPath.c_str(), cachePath.c_str(), MOVEFILE_REPLACE_EXISTING );
+            if ( !written ) DeleteFileA( tmpPath.c_str() );
         }
+        if ( !written ) Logging::Wrn( "StaticLightFarField: could not write {}", cachePath );
     }
 
     for ( uint32_t i = 0; i < vobCount; ++i ) vobRefs[i].Info->FarFieldColor = vobPacked[i];
@@ -654,8 +788,12 @@ void StaticLightFarField::Bake( const std::vector<VobInfo*>& vobs ) {
     ++m_Version;
 
     const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count();
-    Logging::Inf( "StaticLightFarField: {} lights, {} vertices, {} vobs {} in {:.0f} ms",
-        m->Lights.size(), vertexCount, vobCount, fromCache ? "loaded from cache" : "baked", ms );
+    Logging::Inf( "StaticLightFarField: {} lights, {} vertices, {} vobs {} in {:.0f} ms ({})",
+        m->Lights.size(), vertexCount, vobCount, fromCache ? "loaded from cache" : "baked", ms, cacheResult );
+}
+
+void StaticLightFarField::RequestRebake() {
+    m->ForceRebake = true;
 }
 
 bool StaticLightFarField::NeedsRebake() {
@@ -672,6 +810,7 @@ bool StaticLightFarField::NeedsRebake() {
         return false;
     }
     if ( m->Normals.empty() || !m->Attempted ) return false;   // no world, or still loading it
+    if ( m->ForceRebake ) return true;
     const double now = NowSeconds();
     if ( !m->Baked ) return now - m->LastBakeTime >= kMinRebakeSeconds;
 

@@ -6177,6 +6177,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "StaticLightFarField", to_string_locale_independent( s.StaticLightFarField ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "StaticLightNearRadius", to_string_locale_independent( s.StaticLightNearRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "StaticLightFadeWidth", to_string_locale_independent( s.StaticLightFadeWidth ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "StaticLightBakedOnly", to_string_locale_independent( s.StaticLightBakedOnly ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SpecularHighlightsFlags", to_string_locale_independent( s.SpecularHighlightsFlags ).c_str(), ini.c_str() );
 
     // WritePrivateProfileStringA( "SMAA", "Enabled", to_string_locale_independent( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6379,6 +6380,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.StaticLightFarField = GetPrivateProfileBoolA( "Shadows", "StaticLightFarField", ds.StaticLightFarField, ini );
         s.StaticLightNearRadius = std::clamp( GetPrivateProfileFloatA( "Shadows", "StaticLightNearRadius", ds.StaticLightNearRadius, ini ), 500.0f, 20000.0f );
         s.StaticLightFadeWidth = std::clamp( GetPrivateProfileFloatA( "Shadows", "StaticLightFadeWidth", ds.StaticLightFadeWidth, ini ), 100.0f, 10000.0f );
+        s.StaticLightBakedOnly = GetPrivateProfileBoolA( "Shadows", "StaticLightBakedOnly", ds.StaticLightBakedOnly, ini );
         s.SpecularHighlightsFlags = GetPrivateProfileSignedIntA( "Shadows", "SpecularHighlightsFlags", ds.SpecularHighlightsFlags, ini );
 
         INT2 res = {};

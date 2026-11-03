@@ -355,6 +355,7 @@ void PointLightSlotSelector::BuildCandidates( std::vector<Candidate>& out ) {
         if ( st.shadowRange <= 0.0f ) continue;   // a zero-range light has no cube to render
         // A baked light only needs its cube where it is shaded for real: inside the far field's near band
         float lightActivateSq = activateSq;
+        if ( info->FarFieldBaked && settings.StaticLightBakedOnly ) continue;   // the bake shades it: no cube at all
         if ( info->FarFieldBaked ) {
             const float reach = std::min( activate, settings.StaticLightNearRadius + settings.StaticLightFadeWidth + st.shadowRange );
             if ( distSq > ( reach + m_Cfg.DomeMargin ) * ( reach + m_Cfg.DomeMargin ) ) continue;

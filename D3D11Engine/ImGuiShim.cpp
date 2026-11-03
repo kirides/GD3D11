@@ -1,4 +1,5 @@
 #include "ImGuiShim.h"
+#include "StaticLightFarField.h"
 #include "GSky.h"
 #include "D3D11PipelineStateCache.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
@@ -1936,9 +1937,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SetItemTooltip( "Static lights beyond the near radius come from the load-time bake (StaticLightFarField)." );
         ImGui::DragFloat( "Far field near radius", &settings.StaticLightNearRadius, 10.0f, 500.0f, 20000.0f, "%.0f" );
         ImGui::DragFloat( "Far field fade width", &settings.StaticLightFadeWidth, 10.0f, 100.0f, 10000.0f, "%.0f" );
-        ImGui::Checkbox( "Far field: bake only", &settings.StaticLightFarFieldBakeOnly );
-        ImGui::SetItemTooltip( "Debug: baked lights shade from the bake at every distance. Light that remains on world\n"
-            "geometry without matching the bake comes from real lights on pixels without bake data." );
+        ImGui::Checkbox( "Far field: baked only", &settings.StaticLightBakedOnly );
+        ImGui::SetItemTooltip( "Baked lights shade world and static VOBs from the bake at every distance and get no shadow\n"
+            "cubes. NPCs, grass and decals keep them as unshadowed lights." );
+        if ( ImGui::Button( "Rebake far field (ignore cache)" ) ) GetStaticLightFarField().RequestRebake();
 
         ImGui::Checkbox( "Disable static Pointlights", &settings.DisableStaticPointlights );
         ImGui::SetItemTooltip("Drops every static light from the scene.\n"

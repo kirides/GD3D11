@@ -1063,10 +1063,10 @@ struct GothicRendererSettings {
         PointlightShadowCasterFlags = PLSC_DYNAMIC_LIGHTS;
         DisableStaticPointlights = false;
         UnshadowedPointlightsBleed = false;
-        StaticLightFarField = false;
+        StaticLightFarField = true; // default to baked static lights
         StaticLightNearRadius = 2500.0f;
         StaticLightFadeWidth = 1000.0f;
-        StaticLightFarFieldBakeOnly = false;
+        StaticLightBakedOnly = false;
         SpecularHighlightsFlags = SH_SUN | SH_POINTLIGHTS;
 
         ApplyGraphicsPreset();
@@ -1568,7 +1568,7 @@ struct GothicRendererSettings {
     bool StaticLightFarField;
     float StaticLightNearRadius;
     float StaticLightFadeWidth;
-    bool StaticLightFarFieldBakeOnly;   // debug, not saved: the bake at every distance, real baked lights off
+    bool StaticLightBakedOnly;   // low-end: the bake at every distance, baked lights get no shadow cubes
     // Which lights are allowed to produce a specular highlight, as an OR of flags. Some players find specular
     // highlights visually distracting (torches/spell-light glints on every surface) and want them gone without
     // losing diffuse lighting entirely. Reuses the existing "isStatic -> Color.w=0" suppression D3D11/D3D12
