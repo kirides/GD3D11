@@ -69,9 +69,11 @@ float4 DecodeTangent( float4 packed )
 // the additive wet sheen. Needs the ShadowCB wetness tail above plus `smp`/`shadowCmp`.
 #include "include/Wetness.hlsl"
 
-struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float4 tan : TANGENT; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
+// vid indexes the static-light far field: the world mesh is one vertex buffer drawn with BaseVertexLocation 0
+struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float4 tan : TANGENT; float2 uv : TEXCOORD0; float4 col : DIFFUSE; uint vid : SV_VertexID; };
 // `precise` (here and in DepthPrepass.hlsl) keeps clip bit-identical to the prepass, which PSMainOpaque's EQUAL test needs.
-struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float4 wtan : TEXCOORD5; };
+struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float4 wtan : TEXCOORD5;
+                float4 farField : TEXCOORD7; };   // baked static-light irradiance, w = 1 when present
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -85,6 +87,7 @@ VS_OUT VSMain( VS_IN i )
     o.wnrm = DecodeOctNormal( i.nrm );       // already world-space
     o.wtan = DecodeTangent( i.tan );         // already world-space, same basis as wnrm
     o.fogDist = distance(wpos, CamPosWS);
+    o.farField = LoadWorldFarField( i.vid );
     return o;
 }
 
@@ -129,6 +132,7 @@ VS_OUT_QUADMARK VSQuadMark( VS_IN_QUADMARK i )
     o.wtan = float4( 0, 0, 0, 0 );   // no packed tangent on this CPU-side vertex — PerturbNormal falls back
                                       // to the derivative frame here, same as D3D11's untangented quad marks.
     o.fogDist = distance(wpos, CamPosWS);
+    o.farField = 0.0;   // marks keep the real lights
     VS_OUT_QUADMARK r;
     r.v = o;
     r.fade = i.col.a;
@@ -171,7 +175,9 @@ float4 ShadeWorld( VS_OUT i, uniform bool alphaTest )
         rgb *= mad(wet.wetness, 0.8 - 1.0, 1.0);   // D3D11 dims the SUN light color 20% where the surface is wet
         rgb = ApplyWetCoat( rgb, wet, i.wpos, shadow, vertLighting, orm.r, ssao );
     }
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet, rtMask );
+    const float farFieldWeight = FarFieldWeight( i.wpos, i.farField.w );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet, rtMask, farFieldWeight );
+    rgb += FarFieldDiffuse( albedo, orm.b, i.farField.rgb ) * farFieldWeight;
     // Opaque-surface SSR (temporal, D3D12 only) — additive, physically-weighted reflection sheen; 0
     // confidence on any miss reproduces today's output exactly. The weight MUST be PBR_FresnelSchlick, not
     // an ad hoc curve — see PBRLighting.hlsl's EvaluateOpaqueSSR header comment for why (a stronger weight

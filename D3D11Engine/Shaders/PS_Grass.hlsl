@@ -98,5 +98,6 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	// Calculate velocity from clip positions
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
 	
+	output.vFarField = 0;
 	return output;
 }

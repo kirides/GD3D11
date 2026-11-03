@@ -73,6 +73,7 @@
 #include "D3D11ForwardPlusRenderer.h"
 #include "D3D11SkeletalPoseCache.h"
 #include "MaterialFx.h"
+#include "StaticLightFarField.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -4094,6 +4095,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     RGResourceHandle normalsResource;
     RGResourceHandle specularResource;
     RGResourceHandle reactiveMaskResource;
+    UpdateFarFieldBuffer();
     // Re-evaluate active renderer each frame (allows runtime switching)
     SelectActiveRenderer();
     ActiveSceneRenderer->AddGeometryPasses( graph, *this,
@@ -8112,6 +8114,38 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 /** True when something downstream actually consumes the main velocity buffer this frame. Mirrors the gate the
     geometry passes use when deciding whether to bind its RTV at all (D3D11ForwardPlusRenderer /
     D3D11DeferredRenderer) - if they didn't write it, nothing should be filling holes in it either. */
+bool D3D11GraphicsEngine::UpdateFarFieldBuffer() {
+    const StaticLightFarField& farField = GetStaticLightFarField();
+    if ( farField.GetVersion() != m_FarFieldVersion ) {
+        m_FarFieldVersion = farField.GetVersion();
+        m_FarFieldVertexSRV.Reset();
+        const std::vector<uint32_t>& data = farField.GetVertexIrradiance();
+        if ( farField.IsActive() && data.size() > 1 ) {
+            D3D11_BUFFER_DESC desc = {};
+            desc.ByteWidth = static_cast<UINT>( data.size() * sizeof( uint32_t ) );
+            desc.Usage = D3D11_USAGE_IMMUTABLE;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            desc.StructureByteStride = sizeof( uint32_t );
+            const D3D11_SUBRESOURCE_DATA init = { data.data(), 0, 0 };
+            Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+            D3D11_SHADER_RESOURCE_VIEW_DESC srv = {};
+            srv.Format = DXGI_FORMAT_UNKNOWN;
+            srv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+            srv.Buffer.NumElements = static_cast<UINT>( data.size() );
+            if ( FAILED( GetDevice()->CreateBuffer( &desc, &init, buffer.GetAddressOf() ) )
+                || FAILED( GetDevice()->CreateShaderResourceView( buffer.Get(), &srv, m_FarFieldVertexSRV.GetAddressOf() ) ) ) {
+                m_FarFieldVertexSRV.Reset();
+                Logging::Err( "D3D11: far-field vertex buffer ({} vertices) could not be created; far field off.", data.size() );
+            }
+        }
+    }
+    m_FarFieldActive = farField.IsActive() && m_FarFieldVertexSRV;
+    ID3D11ShaderResourceView* srv = m_FarFieldActive ? m_FarFieldVertexSRV.Get() : nullptr;
+    GetContext()->VSSetShaderResources( kFarFieldSlot, 1, &srv );
+    return m_FarFieldActive;
+}
+
 bool D3D11GraphicsEngine::IsVelocityBufferInUse() const {
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( settings.AntiAliasingMode != GothicRendererSettings::AA_TAA
@@ -8936,6 +8970,7 @@ bool D3D11GraphicsEngine::BindClusteredLightingToPixelShader() {
     tileCB.LimitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
     tileCB.ClusterNearZ = Engine::GAPI->GetNearPlane();
     tileCB.ClusterFarZ = std::max( CLUSTER_MIN_FAR_Z, Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
+    StaticLightFarField::Crossfade( IsFarFieldActive(), tileCB.FarFieldNear, tileCB.FarFieldInvFade );
     BindDynamicCBToPixelShader( 5, AllocateDynamicCB( &tileCB, sizeof( tileCB ) ) );
 
     ShadowMaps->BindToPixelShader( GetContext().Get(), 3 );

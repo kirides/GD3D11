@@ -26,12 +26,17 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
     RGResourceHandle normalsResource;
     RGResourceHandle specularResource;
     RGResourceHandle reactiveMaskResource;
+    RGResourceHandle farFieldResource = RG_INVALID_HANDLE;
 
     graph.AddPass( RG_PASS_NAME("G-Buffer Pass"), [&, colorResource, velocityBufferHandle, backBufferHandle]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
         normalsResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferNormals" } );
         specularResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" } );
         reactiveMaskResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" } );
+        if ( engine.IsFarFieldActive() ) {
+            farFieldResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16B16A16_FLOAT, L"GBufferFarField" } );
+            builder.Write( farFieldResource );
+        }
 
         builder.Write( colorResource );
         builder.Write( normalsResource );
@@ -39,7 +44,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
         builder.Write( velocityBufferHandle );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [&engine, colorResource, normalsResource, specularResource, velocityBufferHandle]( const RenderGraph& graph ) -> void {
+        pass.m_executeCallback = [&engine, colorResource, normalsResource, specularResource, velocityBufferHandle, farFieldResource]( const RenderGraph& graph ) -> void {
             TracyD3D11ZoneCGX( "D3D11DeferredRenderer::G-Buffer Pass" );
             const auto& context = engine.GetContext();
             context->VSSetShaderResources( 0, 8, s_nullSRVs );
@@ -64,6 +69,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
                 normals ? normals->GetRenderTargetView().Get() : nullptr,
                 specular ? specular->GetRenderTargetView().Get() : nullptr,
                 velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
+                farFieldResource != RG_INVALID_HANDLE ? graph.GetPhysicalTexture( farFieldResource )->GetRenderTargetView().Get() : nullptr,
             };
 
             constexpr float black[] { 0.f, 0.f, 0.f, 0.f };
@@ -85,6 +91,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
     outNormalsResource = normalsResource;
     outSpecularResource = specularResource;
     outReactiveMaskResource = reactiveMaskResource;
+    m_FarFieldResource = farFieldResource;
 }
 
 RGResourceHandle D3D11DeferredRenderer::AddAmbientOcclusionPass( RenderGraph& graph,
@@ -103,14 +110,16 @@ void D3D11DeferredRenderer::AddLightingPasses( RenderGraph& graph,
     RGResourceHandle aoMaskResource,
     std::vector<VobLightInfo*>& frameLights ) {
 
-    graph.AddPass( RG_PASS_NAME("Draw Lighting"), [&, colorResource, normalsResource, specularResource, backBufferHandle, aoMaskResource]( RGBuilder& builder, RenderPass& pass ) {
+    const RGResourceHandle farFieldResource = m_FarFieldResource;
+    graph.AddPass( RG_PASS_NAME("Draw Lighting"), [&, colorResource, normalsResource, specularResource, backBufferHandle, aoMaskResource, farFieldResource]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( colorResource );
         builder.Read( normalsResource );
         builder.Read( specularResource );
         if ( aoMaskResource != RG_INVALID_HANDLE ) builder.Read( aoMaskResource );
+        if ( farFieldResource != RG_INVALID_HANDLE ) builder.Read( farFieldResource );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [&engine, &frameLights, colorResource, normalsResource, specularResource, aoMaskResource]( const RenderGraph& graph ) -> void {
+        pass.m_executeCallback = [&engine, &frameLights, colorResource, normalsResource, specularResource, aoMaskResource, farFieldResource]( const RenderGraph& graph ) -> void {
             TracyD3D11ZoneCGX( "D3D11DeferredRenderer::Draw Lighting" );
             auto colorTexture = graph.GetPhysicalTexture( colorResource );
             auto normalsTexture = graph.GetPhysicalTexture( normalsResource );
@@ -119,12 +128,16 @@ void D3D11DeferredRenderer::AddLightingPasses( RenderGraph& graph,
                 ? graph.GetPhysicalTexture( aoMaskResource ) : nullptr;
             ID3D11ShaderResourceView* aoMaskSRV = aoMaskTexture ? aoMaskTexture->GetShaderResView().Get() : nullptr;
 
+            ID3D11ShaderResourceView* farFieldSRV = farFieldResource != RG_INVALID_HANDLE
+                ? graph.GetPhysicalTexture( farFieldResource )->GetShaderResView().Get() : nullptr;
+
             engine.GetShadowMaps()->DrawLighting( frameLights,
                 *colorTexture,
                 *normalsTexture,
                 *specularTexture,
                 engine.AcquireDepthReadSRV(),
-                aoMaskSRV );
+                aoMaskSRV,
+                farFieldSRV );
 
             if ( !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ) {
                 frameLights.clear();

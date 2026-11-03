@@ -1932,6 +1932,14 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "Unshadowed lights bleed", &settings.UnshadowedPointlightsBleed );
         ImGui::SetItemTooltip( "Skip the range clamp on lights without a shadow cube: no pop-in, but wall bleed." );
 
+        ImGui::Checkbox( "Static light far field", &settings.StaticLightFarField );
+        ImGui::SetItemTooltip( "Static lights beyond the near radius come from the load-time bake (StaticLightFarField)." );
+        ImGui::DragFloat( "Far field near radius", &settings.StaticLightNearRadius, 10.0f, 500.0f, 20000.0f, "%.0f" );
+        ImGui::DragFloat( "Far field fade width", &settings.StaticLightFadeWidth, 10.0f, 100.0f, 10000.0f, "%.0f" );
+        ImGui::Checkbox( "Far field: bake only", &settings.StaticLightFarFieldBakeOnly );
+        ImGui::SetItemTooltip( "Debug: baked lights shade from the bake at every distance. Light that remains on world\n"
+            "geometry without matching the bake comes from real lights on pixels without bake data." );
+
         ImGui::Checkbox( "Disable static Pointlights", &settings.DisableStaticPointlights );
         ImGui::SetItemTooltip("Drops every static light from the scene.\n"
             "Gothic fills rooms and caves with 10-30 co-located 'atmospheric' static lights that only raise the\n"

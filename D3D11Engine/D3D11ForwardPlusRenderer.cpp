@@ -10,6 +10,7 @@
 #include "RenderToTextureBuffer.h"
 #include "Engine.h"
 #include "GothicAPI.h"
+#include "StaticLightFarField.h"
 #include "GothicGraphicsState.h"
 #include "ConstantBufferStructs.h"
 #include "D3D11PipelineStateCache.h"
@@ -290,6 +291,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             tileCB.ClusterNearZ = Engine::GAPI->GetNearPlane();
             tileCB.ClusterFarZ = std::max( CLUSTER_MIN_FAR_Z,
                 Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
+            StaticLightFarField::Crossfade( engine.IsFarFieldActive(), tileCB.FarFieldNear, tileCB.FarFieldInvFade );
             engine.BindDynamicCBToPixelShader( 5, engine.AllocateDynamicCB( &tileCB, sizeof( tileCB ) ) );
              
             // --- Bind CSM shadow map at t3 ---

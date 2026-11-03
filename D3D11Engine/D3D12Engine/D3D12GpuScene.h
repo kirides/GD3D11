@@ -80,6 +80,8 @@ public:
     bool OnVobLeft( const zCVob* vob, DirectX::XMFLOAT4* bakedSphere = nullptr );
     /** A bindless slot was freed; templates naming it stop drawing until the visual is re-resolved. */
     void OnSrvSlotFreed( UINT slot );
+    /** Re-uploads every static VOB instance (their colors carry the static-light far field). */
+    void RewriteVobInstances();
 
     /** Main thread, open frame, before the main view collects: builds the table after a world load, applies flag
         changes and MOB hand-overs (UpdateMobs) and records their uploads. Returns whether the scene draws this frame. */

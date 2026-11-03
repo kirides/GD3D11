@@ -34,6 +34,7 @@ TextureCube	TX_ReflectionCube : register( t4 );
 Texture2D	TX_DetailTexture : register( t20 );
 
 #include <MaterialFx.h>
+#include <include/FarField.h>
 
 // ZenGin's MUL2 detail stage, folded into the gamma-space albedo (exact for diffuse light).
 float3 ApplyDetailTexture( float3 albedo, float2 uv )
@@ -84,6 +85,7 @@ struct PS_INPUT
 	// then falls back to screen-space derivatives).
 	float4 vTangent			: TEXCOORD3;
 	float4 vPosition		: SV_POSITION;
+	float4 vFarField		: TEXCOORD8;   // static-light far field (VS_ExPacked / VS_ExInstancedObj): rgb irradiance, w valid
 };
 
 // Calculate screen-space velocity from clip positions
@@ -196,12 +198,14 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	// Atmospheric scattering
 	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
 
-	// Point lights, only when close enough
+	// Point lights, only when close enough; baked static ones hand over to the far field with distance
+	const float farFieldWeight = FF_Weight(length(vsPosition), FP_FarFieldNear, FP_FarFieldInvFade, Input.vFarField.w);
 	[branch]
 	if (pixelDistZ < 6000.0f) 
 	{
-		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
+		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy, farFieldWeight);
 	}
+	litPixel += color.rgb * Input.vFarField.rgb * farFieldWeight;
 	litPixel = ApplyEnvMap(litPixel, nrm, vsPosition, vertLighting);
 
 	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w);
@@ -269,6 +273,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	// The G-buffer has no room for an unlit term, so the env stage joins the albedo and gets lit with it.
 	color.rgb = ApplyEnvMap(color.rgb, nrm, Input.vViewPosition, Input.vDiffuse.y);
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
+	output.vFarField = Input.vFarField;
 	//output.vDiffuse = float4(Input.vTexcoord2, 0, 1);
 	//output.vDiffuse = float4(Input.vNormalVS, 1);
 

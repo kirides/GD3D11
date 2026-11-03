@@ -28,6 +28,10 @@ struct GPULight {
     int    RtShadowMask;    // 68  TLAS instance mask the ray-traced shadow traces with; 0 = not ray traced
     float  RtFallbackRange; // 72  Range scale while ray traced but without a visibility (no mask, past the cap)
     int    RtGroup;         // 76  index of the first light of this light's run at one position with one RtShadowMask
+    int    FarFieldFade;    // 80  1 = in the static-light bake: fades out where the far field fades in
+    int    _ffPad0;         // 84
+    int    _ffPad1;         // 88
+    int    _ffPad2;         // 92
 };
 
 // ShadowCubeIndex encoding, HI-LO with 0 meaning invalid in each half:

@@ -488,6 +488,12 @@ public:
 
     RenderToTextureBuffer* GetVelocityBuffer() const { return VelocityBuffer.get(); }
 
+    /** Static-light far field (StaticLightFarField.h): uploads the per-vertex bake on change, binds it to VS
+        t21 and reports whether the lit passes should apply it this frame. */
+    bool UpdateFarFieldBuffer();
+    bool IsFarFieldActive() const { return m_FarFieldActive; }
+    static constexpr UINT kFarFieldSlot = 21;   // VS: per-vertex buffer; PS/CS: the far-field G-buffer
+
     const XMFLOAT4X4& GetPrevViewProjMatrix() const { return m_PrevViewProjMatrix; }
     void StorePrevViewProjMatrix();
 
@@ -869,6 +875,9 @@ private:
     bool m_FrameNeedsJitter;
 
     std::unique_ptr<RenderToTextureBuffer> VelocityBuffer;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_FarFieldVertexSRV;
+    uint32_t m_FarFieldVersion = UINT32_MAX;
+    bool m_FarFieldActive = false;
     XMFLOAT4X4 m_PrevViewProjMatrix;
 
     void CreateAndBindDefaultSampler();

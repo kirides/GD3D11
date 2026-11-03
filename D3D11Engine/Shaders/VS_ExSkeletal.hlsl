@@ -70,6 +70,7 @@ struct VS_OUTPUT
 	float4 vPrevClipPos     : TEXCOORD7;
 	float4 vTangent			: TEXCOORD3;  // no precomputed tangent -> zero (PS falls back to ddx/ddy)
 	float4 vPosition		: SV_POSITION;
+	float4 vFarField		: TEXCOORD8;   // static-light far field, after SV_POSITION so other PSs keep their registers
 };
 
 void ApplySkinningCurrent(
@@ -152,5 +153,6 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
 	//Output.vWorldPosition = positionWorld;
 
+	Output.vFarField = 0;
 	return Output;
 }

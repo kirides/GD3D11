@@ -353,6 +353,13 @@ void PointLightSlotSelector::BuildCandidates( std::vector<Candidate>& out ) {
         const float snapped = std::ceil( info->Vob->GetLightRange() / kShadowRangeQuantum ) * kShadowRangeQuantum;
         if ( snapped > st.shadowRange ) st.shadowRange = snapped;
         if ( st.shadowRange <= 0.0f ) continue;   // a zero-range light has no cube to render
+        // A baked light only needs its cube where it is shaded for real: inside the far field's near band
+        float lightActivateSq = activateSq;
+        if ( info->FarFieldBaked ) {
+            const float reach = std::min( activate, settings.StaticLightNearRadius + settings.StaticLightFadeWidth + st.shadowRange );
+            if ( distSq > ( reach + m_Cfg.DomeMargin ) * ( reach + m_Cfg.DomeMargin ) ) continue;
+            lightActivateSq = reach * reach;
+        }
 
         const bool allowsCasters = AllowsDynamicCasters( info );
         // Gothic's IsStatic() bit: a pre-placed level fill light, which never moves and so bakes once and
@@ -366,7 +373,7 @@ void PointLightSlotSelector::BuildCandidates( std::vector<Candidate>& out ) {
         c.distSq = distSq;
         // A disabled light stays a candidate so a flicker cannot cost it its slot, but `active` stops it
         // acquiring one or spending budget.
-        c.active = distSq <= activateSq && info->Vob->IsEnabled();
+        c.active = distSq <= lightActivateSq && info->Vob->IsEnabled();
         c.wantsDynamic = overlayMode && allowsCasters;
         c.restrictToWorld = !allowsCasters;
         // Standing inside this light's sphere: this is the shadow the player is actually looking at, so it

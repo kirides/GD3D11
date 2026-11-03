@@ -50,4 +50,8 @@ public:
         PShaderID resolvedDiffuseNormalmappedFxMap,
         PShaderID resolvedDiffuseNormalmappedAlphatest,
         PShaderID resolvedDiffuseNormalmappedAlphatestFxMap ) override;
+
+private:
+    // Static-light far field G-buffer (rgb irradiance, w = covered), this frame's graph only
+    RGResourceHandle m_FarFieldResource = RG_INVALID_HANDLE;
 };

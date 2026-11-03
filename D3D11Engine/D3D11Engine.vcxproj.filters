@@ -894,6 +894,9 @@
     <ClInclude Include="WaterSwim.h">
       <Filter>Engine\Water</Filter>
     </ClInclude>
+    <ClInclude Include="StaticLightFarField.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1265,6 +1268,9 @@
     </ClCompile>
     <ClCompile Include="WaterSwim.cpp">
       <Filter>Engine\Water</Filter>
+    </ClCompile>
+    <ClCompile Include="StaticLightFarField.cpp">
+      <Filter>Engine\GAPI</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>

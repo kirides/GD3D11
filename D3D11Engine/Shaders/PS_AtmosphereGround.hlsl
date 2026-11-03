@@ -88,6 +88,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	output.vSI_SP.x = MI_SpecularIntensity;
 	output.vSI_SP.y = MI_SpecularPower;
+	output.vFarField = 0;
 	return output;
 }
 

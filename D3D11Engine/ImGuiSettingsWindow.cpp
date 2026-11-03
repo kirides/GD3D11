@@ -496,6 +496,14 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
             "Lights without a shadow yet shine at full range right away instead of starting\n"
             "dimmed. Avoids lights popping in late, but they may bleed through walls until\n"
             "their shadows arrive (or always, with point light shadows off)." );
+        CheckRow( "Baked Distant Lights", &settings.StaticLightFarField,
+            "Torches and fires further away than the radius below come from lighting baked at\n"
+            "world load (shadowed by walls and objects) instead of real lights, so they never pop\n"
+            "in or shine out of buildings. Cached per world; the first load of a world takes longer." );
+        ImGui::BeginDisabled( !settings.StaticLightFarField );
+        SliderFloatRow( "Baked Lights From", "##StaticLightNearRadius", &settings.StaticLightNearRadius, 1000.0f, 8000.0f, "%.0f",
+            "Distance from the camera (Gothic units, 100 = 1 m) where real lights hand over to the baked ones." );
+        ImGui::EndDisabled();
         CheckRow( "Limit Light Intensity", &settings.LimitLightIntesity, nullptr, "LimitLightIntensity" );
     }
     ImGui::EndDisabled();
