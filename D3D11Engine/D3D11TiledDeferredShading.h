@@ -50,7 +50,8 @@ struct TiledPointLight {
     // those against a cube baked at neither is what makes the shadow detach from its caster.
     float ShadowRange;
     float WetCoatScale;   // wet-ground reflection gate (PointLightWetReflectionScale); Color.w only gates material highlights
-    float Pad[2];
+    float FarFieldFade;   // 1 = in the static-light bake: fades out where the far field fades in
+    float Pad;
 };
 // StructuredBuffer stride - a mismatch with the HLSL copies (CS_LightCulling.hlsl, CS_TiledShading.hlsl,
 // ForwardPlusLighting.hlsl) silently misindexes every light.

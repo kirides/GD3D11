@@ -99,5 +99,6 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	// Calculate velocity for motion vectors
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
 #endif
+	output.vFarField = 0;
 	return output;
 }

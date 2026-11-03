@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "StaticLightFarField.h"
 #include "D3D11TiledDeferredShading.h"
 
 #include "D3D11GraphicsEngine.h"
@@ -436,6 +437,12 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         shadeCB.ClusterNearZ = Engine::GAPI->GetNearPlane();
         shadeCB.ClusterFarZ = std::max( CLUSTER_MIN_FAR_Z, settings.VisualFXDrawRadius );
         XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, viewRaw ) );
+        {
+            const bool farFieldActive = graphicsEngine->IsFarFieldActive();
+            float nearRadius, invFade;
+            StaticLightFarField::Crossfade( farFieldActive, nearRadius, invFade );
+            shadeCB.FarField = float4( nearRadius, invFade, farFieldActive ? 1.0f : 0.0f, 0.0f );
+        }
 
         // Rain wetness (same source data PS_DS_AtmosphericScattering.hlsl's SQ_RainViewProj is filled
         // from — see D3D11ShadowMap.cpp) so this, the PRIMARY point-light path, darkens/dampens wet
@@ -581,6 +588,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
     constexpr float kClampEaseSeconds = 0.3f;
     const float clampDt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
     const float clampEase = 1.0f - std::exp( -clampDt / kClampEaseSeconds );
+    const bool farFieldActive = static_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine )->IsFarFieldActive();
 
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
@@ -602,7 +610,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         float lightRange = vob->GetLightRange();
         if ( vob->IsStatic() || light->IsIndoorVob ) {
             const bool leakingOutdoors = light->IsIndoorVob && !cameraIndoors;
-            const float target = hasShadow ? 1.0f
+            const float target = ( hasShadow || settings.UnshadowedPointlightsBleed ) ? 1.0f
                 : ( leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale );
             if ( light->UnshadowedRangeScale < 0.0f ) light->UnshadowedRangeScale = target;   // first sight
             else light->UnshadowedRangeScale += ( target - light->UnshadowedRangeScale ) * clampEase;
@@ -640,6 +648,8 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         tl.Color = XMFLOAT4( lightColor.x, lightColor.y, lightColor.z,
             settings.PointLightSpecularScale( vob->IsStatic() ) );
         tl.WetCoatScale = settings.PointLightWetReflectionScale( vob->IsStatic() );
+        tl.FarFieldFade = farFieldActive && light->FarFieldBaked ? 1.0f : 0.0f;
+        tl.Pad = 0.0f;
         tl.PositionWorld = XMFLOAT3( posWorld.x, posWorld.y, posWorld.z );
         // The range the cube was actually baked with, so the depth compare normalizes by the same far plane
         // the bake used - neither the animated range read above nor its unshadowed clamp.

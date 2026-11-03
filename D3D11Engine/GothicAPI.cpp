@@ -12,6 +12,7 @@
 #include "zCPolygon.h"
 #include "WorldConverter.h"
 #include "MeshOptimizeCache.h"
+#include "StaticLightFarField.h"
 #include "HookedFunctions.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
@@ -632,6 +633,8 @@ void GothicAPI::OnWorldUpdate() {
     WorldConverter::PruneFinishedNodeVisuals();
     s_AsyncVisualExtractor->FlushReleases();
 
+    if ( GetStaticLightFarField().NeedsRebake() ) BakeStaticLightFarField();
+
     RendererState.RendererInfo.Reset();
     RendererState.RendererInfo.FPS = GetFramesPerSecond();
     RendererState.GraphicsState.FF_Time = GetTimeSeconds();
@@ -970,6 +973,7 @@ State->WorldSections.clear();
     State->ShoreFieldBaked = false;
 
     SAFE_DELETE( WrappedWorldMesh );
+    GetStaticLightFarField().Reset();
 
     // Clear inventory too?
 }
@@ -1218,9 +1222,18 @@ void GothicAPI::OnWorldLoaded() {
 
     _canClearVobsByVisual = false;
 
+    BakeStaticLightFarField();
+
     // World load is done - drop the mesh-optimize in-memory cache back to disk-only so it doesn't
     // keep growing across the rest of the session (see MeshOptimizeCache.h).
     MeshOptimizeCache::SetMemoryCache( false );
+}
+
+void GothicAPI::BakeStaticLightFarField() {
+    std::vector<VobInfo*> vobs;
+    vobs.reserve( State->VobMap.size() );
+    for ( const auto& [vob, vi] : State->VobMap ) if ( vi ) vobs.push_back( vi );
+    GetStaticLightFarField().Bake( vobs );
 }
 
 void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s )
@@ -2033,6 +2046,7 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
 
         if ( !vi->IsMoving( FrameNumber ) ) vi->MoveStartFrame = FrameNumber;
         vi->LastMovedFrame = FrameNumber;
+        vi->FarFieldColor = 0;   // baked at the old position: real lights only from now on
         vi->UpdateState();
         Engine::GraphicsEngine->OnVobMoved( vob );
         Engine::GAPI->GetRendererState().RendererInfo.FrameVobUpdates++;
@@ -4505,6 +4519,7 @@ void GothicAPI::CollectVisibleVobs(
         ZoneScopedN( "CVV: instances + lights" )
         const int interactiveFocusEnabled = oCGame::GetHighlightInteractFocus();
         const zCVob* playerFocusVob = interactiveFocusEnabled && oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
+        const bool farFieldActive = GetStaticLightFarField().IsActive();
 
         for ( auto it : renderQueue.vobs ) {
             // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
@@ -4517,7 +4532,7 @@ void GothicAPI::CollectVisibleVobs(
             PackAffine3x4( vii.world, it->WorldMatrix );
             PackAffine3x4( vii.prevWorld, it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix );
             ApplyWaterBob( vii, *it );
-            vii.color = it->GroundColor;
+            vii.color = StaticLightFarField::ComposeInstanceColor( it->GroundColor, it->FarFieldColor, farFieldActive );
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
             vii.GP_Slot |= playerFocusVob == it->Vob ? 1 << 31 : 0;
@@ -6158,6 +6173,11 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "AllowSelfShadowingPointlights", to_string_locale_independent( s.AllowSelfShadowingPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "PointlightShadowCasterFlags", to_string_locale_independent( s.PointlightShadowCasterFlags ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "DisableStaticPointlights", to_string_locale_independent( s.DisableStaticPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "UnshadowedPointlightsBleed", to_string_locale_independent( s.UnshadowedPointlightsBleed ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "StaticLightFarField", to_string_locale_independent( s.StaticLightFarField ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "StaticLightNearRadius", to_string_locale_independent( s.StaticLightNearRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "StaticLightFadeWidth", to_string_locale_independent( s.StaticLightFadeWidth ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "StaticLightBakedOnly", to_string_locale_independent( s.StaticLightBakedOnly ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SpecularHighlightsFlags", to_string_locale_independent( s.SpecularHighlightsFlags ).c_str(), ini.c_str() );
 
     // WritePrivateProfileStringA( "SMAA", "Enabled", to_string_locale_independent( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6356,6 +6376,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.AllowSelfShadowingPointlights = GetPrivateProfileBoolA( "Shadows", "AllowSelfShadowingPointlights", ds.AllowSelfShadowingPointlights, ini );
         s.PointlightShadowCasterFlags = GetPrivateProfileSignedIntA( "Shadows", "PointlightShadowCasterFlags", ds.PointlightShadowCasterFlags, ini );
         s.DisableStaticPointlights = GetPrivateProfileBoolA( "Shadows", "DisableStaticPointlights", ds.DisableStaticPointlights, ini );
+        s.UnshadowedPointlightsBleed = GetPrivateProfileBoolA( "Shadows", "UnshadowedPointlightsBleed", ds.UnshadowedPointlightsBleed, ini );
+        s.StaticLightFarField = GetPrivateProfileBoolA( "Shadows", "StaticLightFarField", ds.StaticLightFarField, ini );
+        s.StaticLightNearRadius = std::clamp( GetPrivateProfileFloatA( "Shadows", "StaticLightNearRadius", ds.StaticLightNearRadius, ini ), 500.0f, 20000.0f );
+        s.StaticLightFadeWidth = std::clamp( GetPrivateProfileFloatA( "Shadows", "StaticLightFadeWidth", ds.StaticLightFadeWidth, ini ), 100.0f, 10000.0f );
+        s.StaticLightBakedOnly = GetPrivateProfileBoolA( "Shadows", "StaticLightBakedOnly", ds.StaticLightBakedOnly, ini );
         s.SpecularHighlightsFlags = GetPrivateProfileSignedIntA( "Shadows", "SpecularHighlightsFlags", ds.SpecularHighlightsFlags, ini );
 
         INT2 res = {};

@@ -253,7 +253,11 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
                                         BacklitClassOf( MatOrmIndex ) );
     rgb *= mad(wet.wetness, 0.8 - 1.0, 1.0);
     rgb = ApplyWetCoat( rgb, wet, i.wpos, shadow, vertLighting, orm.r, ssao );
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet, rtMask );
+    // Static VOB instances carry the static-light far field in their color's spare bytes
+    const float4 farField = DecodeVobFarField( i.col );
+    const float farFieldWeight = FarFieldWeight( i.wpos, farField.w );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet, rtMask, farFieldWeight );
+    rgb += FarFieldDiffuse( albedo, orm.b, farField.rgb ) * farFieldWeight;
     // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
     // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
     {

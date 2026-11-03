@@ -396,6 +396,8 @@ public:
 
     /** Sets the per mod & per world renderersettings which can be persisted */
     void LoadRendererWorldSettings( GothicRendererSettings& s );
+    /** (Re-)bakes the static point lights' far field over every registered VOB. See StaticLightFarField.h. */
+    void BakeStaticLightFarField();
     void LoadRendererWorldSettings( GothicRendererSettings& s, const char* iniFile );
 
     /** Persists the per mod & per world renderersettings */

@@ -21,6 +21,7 @@
 #include "GMesh.h"
 #include "zCVobLight.h"
 #include "zCBspTree.h"
+#include "StaticLightFarField.h"
 // ^---------------------------------
 
 using namespace DirectX;
@@ -1196,7 +1197,8 @@ XRESULT D3D11ShadowMap::DrawLighting(
     RenderToTextureBuffer& normals,
     RenderToTextureBuffer& specular,
     ID3D11ShaderResourceView* depthSRV,
-    ID3D11ShaderResourceView* aoMaskSRV) {
+    ID3D11ShaderResourceView* aoMaskSRV,
+    ID3D11ShaderResourceView* farFieldSRV ) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
@@ -1214,6 +1216,10 @@ XRESULT D3D11ShadowMap::DrawLighting(
     DrawRainShadowmap();
 
     Engine::GAPI->SetFarPlane(static_cast<float>(settings.SectionDrawRadius) * WORLD_SECTION_SIZE );
+
+    // Static-light far field G-buffer: the light passes fade baked lights out, the sun pass adds the bake
+    m_context->PSSetShaderResources( D3D11GraphicsEngine::kFarFieldSlot, 1, &farFieldSRV );
+    m_context->CSSetShaderResources( D3D11GraphicsEngine::kFarFieldSlot, 1, &farFieldSRV );
 
     DrawPointlightLights(lights, color, normals, specular, depthSRV);
 
@@ -1235,6 +1241,8 @@ XRESULT D3D11ShadowMap::DrawLighting(
     // depthSRV may be the live depth buffer, so it has to go before the writable DSV comes back.
     ID3D11ShaderResourceView* nullSRVs[3] = {};
     m_context->PSSetShaderResources( 0, 3, nullSRVs );
+    m_context->PSSetShaderResources( D3D11GraphicsEngine::kFarFieldSlot, 1, nullSRVs );
+    m_context->CSSetShaderResources( D3D11GraphicsEngine::kFarFieldSlot, 1, nullSRVs );
 
     m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
         graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
@@ -1353,6 +1361,14 @@ namespace {
         scb.SQ_MoonLight = float4( moon.LightColor.x, moon.LightColor.y, moon.LightColor.z, moon.IsMainLight ? 1.0f : 0.0f );
         scb.SQ_NightFill = float4( moon.NightFill.x, moon.NightFill.y, moon.NightFill.z, 0.0f );
     }
+
+    /** Static-light far field crossfade for the sun pass, which adds the bake. */
+    void FillFarFieldConstants( DS_ScreenQuadConstantBuffer& scb ) {
+        const bool active = static_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine )->IsFarFieldActive();
+        float nearRadius, invFade;
+        StaticLightFarField::Crossfade( active, nearRadius, invFade );
+        scb.SQ_FarField = float4( nearRadius, invFade, active ? 1.0f : 0.0f, 0.0f );
+    }
 }
 
 DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
@@ -1455,6 +1471,7 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
         }
 
     FillMoonConstants( scb, sky, view );
+    FillFarFieldConstants( scb );
     return scb;
 }
 
@@ -1624,6 +1641,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
 
         FillMoonConstants( scb, sky, view );
     }
+    FillFarFieldConstants( scb );
 
     psAtmo->UpdateBuffer("DS_ScreenQuadConstantBuffer", &scb, sizeof(scb));
 

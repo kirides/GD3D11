@@ -82,7 +82,8 @@ cbuffer FP_TileConstantBuffer : register( b5 )
     // cluster than the one culled for it.
     float FP_ClusterNearZ;
     float FP_ClusterFarZ;
-    float2 FP_TilePad;
+    float FP_FarFieldNear;      // static-light far field crossfade; FP_FarFieldInvFade 0 = no bake
+    float FP_FarFieldInvFade;
 };
 
 // ============================================
@@ -127,7 +128,9 @@ struct TiledPointLight
     float3 PositionWorld;
     int ShadowCubeIndex; // 0 = no shadow, else HI-LO slot pair (see PLS_SHADOW_SLOT_SHIFT)
     float ShadowRange;   // cube far-plane basis (far = ShadowRange*2); NOT Range - see TiledPointLight
-    float3 _pad;
+    float WetCoatScale;
+    float FarFieldFade;  // 1 = in the static-light bake: fades out where the far field fades in
+    float _pad;
 };
 
 // Clustered Forward+ grid — layout-identical to CS_LightCulling.hlsl's and the C++ LightGrid.
@@ -154,7 +157,7 @@ TextureCubeArray FP_ShadowStaticCubeArray : register( t15 ); // core tier, LO ha
 float3 FP_ComputePointLighting(
     float3 wsPosition, float3 vsPosition, float3 normal,
     float3 diffuseColor, float specIntensity, float specPower,
-    float2 screenPos )
+    float2 screenPos, float farFieldWeight = 0.0f )
 {
     uint tileX = (uint)screenPos.x / FP_TILE_SIZE;
     uint tileY = (uint)screenPos.y / FP_TILE_SIZE;
@@ -191,11 +194,12 @@ float3 FP_ComputePointLighting(
             m &= m - 1;   // clear the lowest set bit
             uint lightIdx = w * 32u + bit;
             TiledPointLight light = FP_Lights[lightIdx];
+            const float realShare = light.FarFieldFade > 0.5f ? 1.0f - farFieldWeight : 1.0f;
 
             float3 lightDir = light.PositionView - vsPosition;
             float distance = length( lightDir );
 
-            if ( distance >= light.Range )
+            if ( distance >= light.Range || realShare <= 0.0f )
                 continue;
 
             lightDir /= distance;
@@ -222,7 +226,7 @@ float3 FP_ComputePointLighting(
                 lighting *= shadow;
             }
 
-            lighting = saturate( lighting );
+            lighting = saturate( lighting ) * realShare;
             totalLighting += lighting;
             maxLighting = max( maxLighting, lighting );
         }

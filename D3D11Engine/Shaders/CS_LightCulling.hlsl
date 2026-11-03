@@ -30,7 +30,9 @@ struct TiledPointLight {
     float3 PositionWorld;
     int ShadowCubeIndex;
     float ShadowRange;   // cube far-plane basis (far = ShadowRange*2); NOT Range - see TiledPointLight
-    float3 _pad;
+    float WetCoatScale;
+    float FarFieldFade;
+    float _pad;
 };
 
 // A MAX_ACTIVE_LIGHTS-bit membership mask per cluster. WordOccupancy: bit w set iff Mask[w] != 0, so a consumer

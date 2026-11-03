@@ -8,6 +8,7 @@ struct DEFERRED_PS_OUTPUT
 	float2 vNrm : SV_TARGET1; 
 	float2 vSI_SP : SV_TARGET2;
 	float2 vVelocity : SV_TARGET3;  // Screen-space velocity for motion vectors
+	float4 vFarField : SV_TARGET4;  // static-light far field: rgb irradiance, w = 1 where the bake covers the pixel
 };
 
 struct DEFERRED_PS_OUTPUT_ALPHA_TO_COVERAGE

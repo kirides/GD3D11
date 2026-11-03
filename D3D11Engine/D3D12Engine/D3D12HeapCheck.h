@@ -12,6 +12,7 @@ public:
     static constexpr UINT kHeapSize = 65536;
     static constexpr UINT kReportSlot = 65533;   // RWByteAddressBuffer
     static constexpr UINT kLiveSlot = 65534;     // ByteAddressBuffer, one bit per slot
+    static constexpr UINT kFirstReservedSlot = 65532;   // the far-field vertex buffer, then the slots above
     static constexpr UINT kReportMax = 256;
     static constexpr UINT kReportBytes = 4096;   // 16-byte header (count) + kReportMax * { shader id, line, index }
     static constexpr UINT kLiveBytes = kHeapSize / 8;

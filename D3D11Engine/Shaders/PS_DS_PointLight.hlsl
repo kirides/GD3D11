@@ -5,6 +5,7 @@
 #include "DepthReconstruction.h"
 #include "include/PointLightShadows.h"
 #include "include/RainWetnessSample.h"
+#include "include/FarField.h"
 
 cbuffer DS_PointLightConstantBuffer : register( b0 )
 {
@@ -33,7 +34,7 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	float PL_RainFxWeight;
 
 	float PL_WetCoatScale;   // wet-ground reflection gate; PL_Color.w only gates material highlights
-	float3 PL_Pad5;
+	float3 PL_FarField;      // static-light far field: x = 1 for a baked light, y = near radius, z = 1 / fade width
 };
 
 //--------------------------------------------------------------------------------------
@@ -46,6 +47,7 @@ Texture2D	TX_Diffuse : register( t0 );
 Texture2D	TX_Nrm : register( t1 );
 Texture2D	TX_Depth : register( t2 );
 Texture2D	TX_SI_SP : register( t7 );
+Texture2D	TX_FarField : register( t21 );   // static-light far field G-buffer, w = covered
 Texture2D	TX_RainShadowmap : register( t4 );
 Texture2D	TX_Distortion : register( t6 );
 
@@ -166,6 +168,10 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 			* falloff * wet.wetness * PL_WetCoatScale * PL_WetLightReflections);
 	}
 
+	// A baked light hands over to the far field (added by the sun pass) with distance
+	[branch]
+	if (PL_FarField.x > 0.5f)
+		lighting *= 1.0f - FF_Weight(length(vsPosition), PL_FarField.y, PL_FarField.z, TX_FarField.Load(int3(Input.vPosition.xy, 0)).w);
 	return float4(lighting, 1);
 }
 

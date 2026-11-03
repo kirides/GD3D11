@@ -2,6 +2,7 @@
 // See GPU_SCENE_PLAN.md and VobCull.hlsl (CSCull with VOB_SCENE, CSBuildArgs).
 #include "../pch.h"
 #include "D3D12GpuScene.h"
+#include "../StaticLightFarField.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12VobArena.h"
 #include "../Engine.h"
@@ -223,6 +224,12 @@ void D3D12GpuScene::SetSlotState( uint32_t slot, uint8_t state ) {
 }
 
 
+void D3D12GpuScene::RewriteVobInstances() {
+    for ( uint32_t slot = 0; slot < m_FirstMobSlot && slot < m_SlotVob.size(); ++slot )
+        if ( m_SlotVob[slot] ) m_DirtySlots.push_back( slot );
+}
+
+
 void D3D12GpuScene::WriteInstance( uint32_t slot, uint8_t* dst ) const {
     VobInstanceInfo vii = {};
     uint32_t gp = kGpSlotHidden;
@@ -234,7 +241,7 @@ void D3D12GpuScene::WriteInstance( uint32_t slot, uint8_t* dst ) const {
         gp = m_SlotState[slot] == kSlotLive ? 0u : kGpSlotHidden;
     } else if ( VobInfo* vi = m_SlotVob[slot] ) {
         PackAffine3x4( vii.world, vi->WorldMatrix );
-        vii.color = vi->GroundColor;
+        vii.color = StaticLightFarField::ComposeInstanceColor( vi->GroundColor, vi->FarFieldColor, GetStaticLightFarField().IsActive() );
         const zTAnimationMode aniMode = vi->Vob->GetVisualAniMode();
         if ( aniMode != zVISUAL_ANIMODE_NONE ) {
             vii.canBeAffectedByPlayer = !vi->Vob->GetDynColl() ? 1.0f : 0.0f;

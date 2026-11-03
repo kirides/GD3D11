@@ -39,6 +39,7 @@ struct VS_OUTPUT
 	float4 vPrevClipPos     : TEXCOORD7;
 	float4 vTangent			: TEXCOORD3;   // no precomputed tangent here -> zero (PS falls back to ddx/ddy)
 	float4 vPosition		: SV_POSITION;
+	float4 vFarField		: TEXCOORD8;   // static-light far field, after SV_POSITION so other PSs keep their registers
 };
 
 //--------------------------------------------------------------------------------------
@@ -67,6 +68,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	// For static geometry, prev world pos == curr world pos
     Output.vPrevClipPos = mul(float4(positionWorld, 1.0), frame.M_PrevViewProj);
 	
+	Output.vFarField = 0;
 	return Output;
 }
 

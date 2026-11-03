@@ -58,6 +58,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12GpuWorld.h"
 #include "D3D12MeshArena.h"
 #include "../TransparencyQueue.h"
+#include "../StaticLightFarField.h"
 
 
 // ---- The two per-frame record sets the shadow modules share with this TU (declared in D3D12EngineCommon.h) ----
@@ -1086,6 +1087,7 @@ namespace {
 		XMFLOAT3    shadowOrigin;   // the CUBE's centre — the light's own, or its cluster's
 		float       shadowRange;    // the CUBE's far-plane basis — likewise
 		uint64_t    key;            // slot-ownership identity: the vob pointer, or a tagged cluster cell
+		bool        farField;       // in the static-light bake: fades out where the far field fades in
 	};
 
 	constexpr float    kStaticClusterCell = 400.0f;   // Gothic world units; ~one room
@@ -1203,6 +1205,61 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
 }
 
 
+void D3D12GraphicsEngine::UpdateFarField() {
+	const StaticLightFarField& farField = GetStaticLightFarField();
+	const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
+	const bool active = farField.IsActive();
+	if ( uint8_t* mapped = m_ShadowCBMapped[m_FrameIndex] ) {
+		FarFieldCBData cb = {};
+		StaticLightFarField::Crossfade( active, cb.Near, cb.InvFade );
+		cb.Enabled = active ? 1u : 0u;
+		memcpy( mapped + kFarFieldCbOffset, &cb, sizeof( cb ) );
+	}
+	if ( farField.GetVersion() == m_FarFieldVersion ) return;
+	m_FarFieldVersion = farField.GetVersion();
+
+	// The instances carry the VOB half in their color bytes
+	if ( m_GpuScene ) m_GpuScene->RewriteVobInstances();
+
+	const std::vector<uint32_t>& data = farField.GetVertexIrradiance();
+	const UINT count = active && data.size() > 1 ? static_cast<UINT>( data.size() ) : 1u;
+	if ( count == 1 && !m_FarFieldUploaded ) return;   // still the placeholder
+
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = static_cast<UINT64>( count ) * sizeof( uint32_t );
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	Microsoft::WRL::ComPtr<Rhi::Resource> buffer;
+	// COMMON: a buffer promotes to COPY_DEST on the copy queue and to a shader resource on the direct queue
+	if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, buffer.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Err( "D3D12: far-field vertex buffer ({} vertices) could not be created; far field off.", count );
+		return;
+	}
+	buffer->SetName( L"FarFieldVertexIrradiance" );
+	if ( count > 1 ) {
+		if ( !UploadBufferData( buffer.Get(), data.data(), desc.Width ) ) {
+			Logging::Err( "D3D12: far-field vertex upload failed; far field off." );
+			return;
+		}
+		FlushTextureUploads();
+	}
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Buffer.NumElements = count;
+	srv.Buffer.StructureByteStride = sizeof( uint32_t );
+	m_Rhi->CreateShaderResourceView( buffer.Get(), &srv, GetSrvCpuHandle( kFarFieldVertexSlot ) );
+	// Frames still in flight read the old one: keep it alive until they retire
+	if ( m_FarFieldVertexBuffer ) QueueResourceForRelease( std::move( m_FarFieldVertexBuffer ) );
+	m_FarFieldVertexBuffer = std::move( buffer );
+	m_FarFieldUploaded = count > 1;
+}
+
+
 void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// Rebuild this frame's point-light buffer from the visible-light set collected in OnStartWorldRendering.
 	// Mirrors D3D11 D3D11TiledDeferredShading::CullLights' CPU fill: skip disabled lights, unpack the color
@@ -1210,6 +1267,8 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// position / shadow index are left defaulted (world-space shading in the MVP; tiling fills them later).
 	m_FrameLightCount = 0;
 	const UINT frame = m_FrameIndex;
+	UpdateFarField();
+	const bool farFieldActive = GetStaticLightFarField().IsActive();
 	if ( !m_LightBuffer[frame] || !m_LightBufferPtr[frame] ) return;
 
 	// Built in CPU memory: selection and the range clamp below read it back, which the mapped ring must never see.
@@ -1291,7 +1350,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 			: ( rtStaticOnly || ( sc && sc->restrictToWorld ) ) ? rtStaticMask : D3D12RayTracing::kMaskAll;
 		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob, rtMask,
 			sc ? sc->shadowOrigin : pw, sc ? sc->shadowRange : range,
-			( pointShadowsOn && sc ) ? sc->key : 0ull } );
+			( pointShadowsOn && sc ) ? sc->key : 0ull, farFieldActive && li->FarFieldBaked } );
 	}
 	// Total order, not just "by distance": the overflow cull keeps the first m_LightBufferCapacity candidates in
 	// BUFFER order, so the buffer order has to be a pure function of the visible light SET. std::sort is
@@ -1345,6 +1404,8 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		L.WetCoatScale = lightSettings.PointLightWetReflectionScale( cand.isStatic );
 		L.RtShadowMask = static_cast<int>( cand.rtMask );
 		L.RtFallbackRange = 1.0f;   // the clamp below shrinks it for static and indoor lights
+		L.FarFieldFade = cand.farField ? 1 : 0;
+		L._ffPad0 = L._ffPad1 = L._ffPad2 = 0;
 		// A carried light (torch in hand) must not be shadowed by its carrier; carriers get their own instance mask
 		if ( cand.rtMask && vob->GetVobParent() ) {
 			static std::vector<const zCVob*> s_exclude;
@@ -1398,7 +1459,9 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	const float dt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
 	const float ease = 1.0f - std::exp( -dt / kClampEaseSeconds );   // framerate-independent exponential approach
 
-	for ( UINT i = 0; i < count; ++i ) {
+	// UnshadowedPointlightsBleed: no clamp at all, so a light shines at full range before its cube bakes
+	const UINT clampCount = lightSettings.UnshadowedPointlightsBleed ? 0u : count;
+	for ( UINT i = 0; i < clampCount; ++i ) {
 		if ( !s_cands[i].isStatic && !s_cands[i].isIndoor ) continue;
 		// An INDOOR light with no cube, seen from outdoors, looks worst: it washes over the outside of the
 		// building it is sealed inside, and nothing can occlude it. Cut it to almost nothing.

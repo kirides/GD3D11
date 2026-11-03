@@ -35,6 +35,7 @@
 #include "vendor/mikktspace.h"
 #include "VertexPacking.h"
 #include "WorldMeshSection.h"
+#include "StaticLightFarField.h"
 
 extern MeshManager* s_MeshManager;
 
@@ -1275,6 +1276,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     size_t totalWorldVertices = 0;
     size_t totalWorldIndices = 0;
     for ( WorldMeshInfo* mesh : allMeshes ) {
+        mesh->BaseVertexLocation = static_cast<unsigned int>( totalWorldVertices );   // WrapVertexBuffers concatenates in this order
         vertexBuffers.emplace_back( &mesh->Vertices );
         indexBuffers.emplace_back( &mesh->Indices );
         shadowIndexBuffers.emplace_back( mesh->ShadowIndices.empty()
@@ -1333,6 +1335,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     BuildWrappedPositionBuffer( wmi, wrappedVertices );
 
     *outWrappedMesh = wmi;
+    GetStaticLightFarField().CaptureWorldVertices( wrappedVertices );
 
     // Everything that needed the full 60-byte vertices has run (section buffers uploaded, both
     // WrapVertexBuffers passes done); trade them for the 28-byte slim copy. See WorldVertexCPU.

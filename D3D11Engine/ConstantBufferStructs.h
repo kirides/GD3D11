@@ -264,7 +264,7 @@ struct DS_PointLightConstantBuffer {
     float PL_RainFxWeight;
 
     float PL_WetCoatScale;   // wet-ground reflection gate; PL_Color.w only gates material highlights
-    float3 PL_Pad5;
+    float3 PL_FarField;      // static-light far field: x = 1 for a baked light, y = near radius, z = 1 / fade width
 };
 static_assert( sizeof( DS_PointLightConstantBuffer ) == 256,
     "DS_PointLightConstantBuffer (b0) layout must match PS_DS_PointLight.hlsl / PS_DS_PointLightDynShadow.hlsl" );
@@ -318,6 +318,8 @@ struct DS_ScreenQuadConstantBuffer {
     float4 SQ_MoonLight;
     // rgb = indirect night fill, 0 by day and indoors.
     float4 SQ_NightFill;
+    // Static-light far field: x = near radius, y = 1 / fade width, z = 1 while a bake is active.
+    float4 SQ_FarField;
 };
 
 struct CloudConstantBuffer {
@@ -615,8 +617,9 @@ struct TiledShadingConstantBuffer {
     float WetLightReflections;
     float RainTime;       // AC_Time: rain ripples and puddle drop rings
     float RainFxWeight;
+    float4 FarField;      // static-light far field: x = near radius, y = 1 / fade width, z = 1 while active
 };
-static_assert( sizeof( TiledShadingConstantBuffer ) == 192,
+static_assert( sizeof( TiledShadingConstantBuffer ) == 208,
     "TiledShadingConstantBuffer (b0) layout must match CS_TiledShading.hlsl" );
 
 struct ForwardPlusTileConstantBuffer {
@@ -626,7 +629,8 @@ struct ForwardPlusTileConstantBuffer {
 
     float ClusterNearZ;   // cluster Z range; must match the CS_LightCulling dispatch
     float ClusterFarZ;
-    float TilePad[2];
+    float FarFieldNear;     // static-light far field crossfade; FarFieldInvFade 0 = no bake
+    float FarFieldInvFade;
 };
 
 struct PsSimpleFFdata {

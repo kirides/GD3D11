@@ -184,6 +184,8 @@ struct WorldMeshInfo : public MeshInfo {
 
     // Offset in wrapped world mesh
     unsigned int BaseShadowIndexLocation;
+    // First vertex in the wrapped world vertex buffer (its indices are already offset by it)
+    unsigned int BaseVertexLocation = 0;
 
     /** Spatial partition of this mesh's triangles (see WorldConverter::ClusterWorldMeshTriangles).
         Empty means "draw the whole mesh", not "draw nothing". */
@@ -487,6 +489,8 @@ struct VobInfo : public BaseVobInfo {
 
     /** Color the underlaying polygon has */
     DWORD GroundColor;
+    /** Baked static-light far field in the instance color's spare bytes (StaticLightFarField::PackVob); 0 = none */
+    DWORD FarFieldColor = 0;
 
     void StorePreviousTransform() {
         PrevWorldMatrix = WorldMatrix;
@@ -539,6 +543,8 @@ struct VobLightInfo {
     std::atomic<size_t> VisibleInRenderPass;
     bool IsPFXVobLight;
     bool IsStaticVobLight;
+    /** In the StaticLightFarField bake: shaded only near the camera, the bake takes over beyond. */
+    bool FarFieldBaked = false;
     /** Eased 0..1 multiplier the tiled light fill applies to this light's range while it has no shadow
         cube. Gaining or losing a cube changes the radius by 3-7x, and snapping that in one frame reads as
         the light switching off, so the clamp is approached over ~0.3 s instead. 1 = unclamped. */

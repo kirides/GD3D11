@@ -61,6 +61,7 @@ struct VS_OUTPUT
 	float4 vPrevClipPos     : TEXCOORD7;
 	float4 vTangent			: TEXCOORD3;
 	float4 vPosition		: SV_POSITION;
+	float4 vFarField		: TEXCOORD8;   // static-light far field, after SV_POSITION so other PSs keep their registers
 	float4 vClip			: SV_ClipDistance0;
 };
 
@@ -86,5 +87,6 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	Output.vCurrClipPos = projection.Position;
 	Output.vPrevClipPos = projection.Position;
 	Output.vTangent = float4( 0, 0, 0, 0 );
+	Output.vFarField = 0;
 	return Output;
 }

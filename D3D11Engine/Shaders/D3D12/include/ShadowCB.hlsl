@@ -10,6 +10,7 @@
 //   [432, 448) UploadSkyIblConstants         — SkyIblCBData   (kSkyIblCbOffset  = 432)
 //   [448, 500) UploadWetnessConstants        — WetSkyCBData   (kWetSkyCbOffset  = 448)
 //   [500, 512) UploadRtSunConstants          — RtSunCBData    (kRtSunCbOffset   = 500)
+//   [512, 528) UploadFarFieldConstants       — FarFieldCBData (kFarFieldCbOffset = 512)
 // Vegetation.hlsl applies no wetness/SSR and reads no ShadowMap.hlsl helpers for those fields, but must
 // still declare them so its copy of this same 512-byte resource keeps the sky-IBL tail at the right
 // offset — three (four, with Decal) disjoint writers into one layout.
@@ -61,6 +62,8 @@ cbuffer ShadowCB : register(SHADOWCB_REGISTER)
     float    BacklitStrength;                          // 0 when backlit vegetation is off
     // --- Inline sun ray of the blended surfaces (RtSunInline.hlsl): RtScene heap base + 1 (0 = CSM only)
     uint     RtSunSceneIndex;    float RtSunDistance;   float RtSunFadeBand;
+    // --- Static-light far field (kFarFieldCbOffset = 512), UploadFarFieldConstants. Enabled 0 = no bake.
+    float    FarFieldNear;       float FarFieldInvFade; uint FarFieldEnabled;   float _ffpad;
 };
 
 #endif // D3D12_SHADOWCB_HLSL

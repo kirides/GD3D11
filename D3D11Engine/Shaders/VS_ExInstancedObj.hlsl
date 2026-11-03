@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
+#include "include/FarField.h"
 #include "MaterialFx.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
@@ -74,6 +75,7 @@ struct VS_OUTPUT
     float4 vTangent         : TEXCOORD3;  // no precomputed tangent -> zero (PS falls back to ddx/ddy)
 
     float4 vPosition        : SV_POSITION;
+    float4 vFarField		: TEXCOORD8;   // static-light far field, after SV_POSITION so other PSs keep their registers
 };
 
 #if SHD_WIND
@@ -254,6 +256,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     Output.vTexcoord = Input.vTex1 + TexAniOffset;
     Output.vTexcoord2 = Input.vTex2;
     Output.vDiffuse = Input.InstanceColor;
+    Output.vFarField = FF_DecodeVob( Input.InstanceColor );   // static VOBs: the far field rides in the spare bytes
     // 2.0 = focused (PS tests > 1.5), else 1.0 — PS_Simple multiplies by it as alpha for blended VOBs.
     Output.vDiffuse.w = (Input.InstanceWindMetaIndex >> 31u) ? 2.0f : 1.0f;
     Output.vNormalVS = mul(mul((float3x3)InstWorld(Input), Input.vNormal), (float3x3)frame.M_View);

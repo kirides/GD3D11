@@ -964,7 +964,8 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 	m_SrvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	static_assert( kMaterialFxTableSlot == kSrvHeapCapacity - 1, "the MaterialFx table owns the heap's last slot" );
 	static_assert( kSrvHeapCapacity - 1 <= MaterialFx::kDiffuseSlotMask, "packed diffuse indices hold 16-bit slots" );
-	static_assert( D3D12HeapCheck::kReportSlot == kSrvHeapCapacity - kReservedTopSlots && D3D12HeapCheck::kLiveSlot == kSrvHeapCapacity - 2
+	static_assert( D3D12HeapCheck::kReportSlot == kSrvHeapCapacity - 3 && D3D12HeapCheck::kLiveSlot == kSrvHeapCapacity - 2
+		&& kFarFieldVertexSlot == kSrvHeapCapacity - kReservedTopSlots && D3D12HeapCheck::kFirstReservedSlot == kFarFieldVertexSlot
 		&& D3D12HeapCheck::kHeapSize == kSrvHeapCapacity, "heap-check slots sit just below the MaterialFx table" );
 	m_SrvHeapCapacity = kSrvHeapCapacity - kReservedTopSlots;
 	m_SrvAllocated = 0;
@@ -1008,6 +1009,21 @@ bool D3D12GraphicsEngine::CreateMaterialFxTable() {
 	srv.Buffer.NumElements = MaterialFx::kMaxSlots;
 	srv.Buffer.StructureByteStride = sizeof( MaterialFx::Entry );
 	m_Rhi->CreateShaderResourceView( m_MaterialFxTable.Get(), &srv, GetSrvCpuHandle( kMaterialFxTableSlot ) );
+
+	// The world VS reads kFarFieldVertexSlot unconditionally: a one-element placeholder until a bake lands
+	const D3D12_RESOURCE_DESC farDesc = bufferDesc( sizeof( uint32_t ) );
+	if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &farDesc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+			m_FarFieldVertexBuffer.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Err( "D3D12: failed to create the far-field placeholder buffer." );
+		return false;
+	}
+	m_FarFieldVertexBuffer->SetName( L"FarFieldVertexIrradiance" );
+	D3D12_SHADER_RESOURCE_VIEW_DESC farSrv = {};
+	farSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	farSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	farSrv.Buffer.NumElements = 1;
+	farSrv.Buffer.StructureByteStride = sizeof( uint32_t );
+	m_Rhi->CreateShaderResourceView( m_FarFieldVertexBuffer.Get(), &farSrv, GetSrvCpuHandle( kFarFieldVertexSlot ) );
 	return true;
 }
 
@@ -1151,13 +1167,14 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // The per-frame-in-flight shadow CB every lit pass binds (b3 on the world/VOB root sig). Small and written
     // once per frame, so a persistently-mapped UPLOAD buffer per frame context — no ring offset needed.
     //
-    // 512, not 256: THREE owners write three DISJOINT byte ranges of the same buffer, so none clobbers another.
+    // kShadowCbSize: several owners write DISJOINT byte ranges of the same buffer, so none clobbers another.
     // [0, kWetnessCbOffset)  D3D12ShadowMap::Prepare       — cascade view-projs + sun dir/color/strength + texels
     // [kWetnessCbOffset, ..) UploadWetnessConstants        — scene wetness (needs the rain-shadow camera first)
     // [kAoReprojCbOffset,..) UNUSED HOLE                   — was the AO-mask reprojection block; see the header
     // [kSkyIblCbOffset,  ..) UploadSkyIblConstants         — sky-IBL cube indices + intensity
     // [kWetSkyCbOffset,  ..) UploadWetnessConstants        — wet-sky tint + moon direction
     // [kRtSunCbOffset,  512) UploadRtSunConstants          — the transparents' inline sun ray
+    // [kFarFieldCbOffset, ..) UpdateFarField               — the static-light far-field crossfade
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};
@@ -1165,7 +1182,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
 
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    cbDesc.Width = 512;
+    cbDesc.Width = kShadowCbSize;
     cbDesc.Height = 1;
     cbDesc.DepthOrArraySize = 1;
     cbDesc.MipLevels = 1;
@@ -1180,7 +1197,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
         void* mapped = nullptr;
         if ( FAILED( m_ShadowCB[i]->Map( 0, &noRead, &mapped ) ) ) return false;
         m_ShadowCBMapped[i] = static_cast<uint8_t*>( mapped );
-        memset( mapped, 0, 512 );   // blocks a frame skips must read as off, not as stale heap indices
+        memset( mapped, 0, kShadowCbSize );   // blocks a frame skips must read as off, not as stale heap indices
         m_ShadowCBGpu[i] = m_ShadowCB[i]->GetGPUVirtualAddress();
     }
     return true;

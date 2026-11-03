@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "StaticLightFarField.h"
 #include "D3D11LegacyDeferredShading.h"
 
 #include "D3D11GraphicsEngine.h"
@@ -101,6 +102,9 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     constexpr float kIndoorSeenFromOutsideScale = 0.15f; // worst bleed case - clamp it much harder
     const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
     const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
+    const bool farFieldActive = graphicsEngine->IsFarFieldActive();
+    float farFieldNear, farFieldInvFade;
+    StaticLightFarField::Crossfade( farFieldActive, farFieldNear, farFieldInvFade );
 
     auto cbPool = graphicsEngine->GetConstantBufferPool();
     // The active technique answers both "does this light have depth" and "bind it" - see PointShadow/.
@@ -130,11 +134,12 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         plcb.PL_Color.w = settings.PointLightSpecularScale( vob->IsStatic() );
         plcb.PL_WetCoatScale = settings.PointLightWetReflectionScale( vob->IsStatic() );
         plcb.PL_Range = vob->GetLightRange();
-        if ( !hasShadow && ( vob->IsStatic() || light->IsIndoorVob ) ) {
+        if ( !hasShadow && !settings.UnshadowedPointlightsBleed && ( vob->IsStatic() || light->IsIndoorVob ) ) {
             const bool leakingOutdoors = light->IsIndoorVob && !cameraIndoors;
             plcb.PL_Range *= leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
         }
         plcb.Pl_PositionWorld = vob->GetPositionWorld();
+        plcb.PL_FarField = float3( farFieldActive && light->FarFieldBaked ? 1.0f : 0.0f, farFieldNear, farFieldInvFade );
         plcb.PL_Outdoor = light->IsIndoorVob ? 0.0f : 1.0f;
         // The range the cube was baked with, so the depth compare uses the same far plane - the animated
         // range and the unshadowed clamp above both belong to PL_Range alone.

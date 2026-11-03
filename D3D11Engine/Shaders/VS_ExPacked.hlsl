@@ -7,6 +7,10 @@
 #include "Globals_VS_ExConstants.h"
 #include "VertexPacking.h"
 #include "MaterialFx.h"
+#include "include/FarField.h"
+
+// Static-light far field per wrapped world vertex (bound by D3D11GraphicsEngine::UpdateFarFieldBuffer)
+StructuredBuffer<uint> FF_VertexIrradiance : register( t21 );
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -30,6 +34,7 @@ struct VS_INPUT
 	float2 vTex1		: TEXCOORD0;
 	float2 vTex2		: TEXCOORD1;
 	float4 vDiffuse		: DIFFUSE;
+	uint vertexId		: SV_VertexID;   // the world mesh is one buffer drawn at base vertex 0
 };
 
 // vTangent is appended LAST (before SV_POSITION) so it maps to the trailing interpolator register
@@ -46,6 +51,7 @@ struct VS_OUTPUT
 	float4 vPrevClipPos     : TEXCOORD7;
 	float4 vTangent			: TEXCOORD3;   // view-space tangent (xyz) + handedness (w)
 	float4 vPosition		: SV_POSITION;
+	float4 vFarField		: TEXCOORD8;   // static-light far field, after SV_POSITION so other PSs keep their registers
 };
 
 //--------------------------------------------------------------------------------------
@@ -78,5 +84,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	// Static geometry: only the material waves move it
 	Output.vPrevClipPos = mul(float4(positionRest + MaterialWaveOffset(positionRest, true), 1.0), frame.M_PrevViewProj);
 
+	uint ffCount, ffStride;
+	FF_VertexIrradiance.GetDimensions( ffCount, ffStride );
+	Output.vFarField = ( ffCount > 1 && Input.vertexId < ffCount ) ? float4( FF_DecodeRGB9E5( FF_VertexIrradiance[Input.vertexId] ), 1.0f ) : 0.0f;
 	return Output;
 }

@@ -156,7 +156,8 @@ public:
     XRESULT DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV = nullptr );
     DS_ScreenQuadConstantBuffer FillSunCSMConstantBuffer() const;
     XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                         & specular, ID3D11ShaderResourceView* depthSRV, ID3D11ShaderResourceView* aoMaskSRV = nullptr);
+                         & specular, ID3D11ShaderResourceView* depthSRV, ID3D11ShaderResourceView* aoMaskSRV = nullptr,
+                         ID3D11ShaderResourceView* farFieldSRV = nullptr);
 
     D3D11TiledDeferredShading* GetTiledDeferred() const { return m_TiledDeferred.get(); }
 

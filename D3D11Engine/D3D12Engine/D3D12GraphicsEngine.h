@@ -720,7 +720,9 @@ private:
     // The heap's last slot, kept out of the allocator: Shaders/D3D12/include/MaterialFx.hlsl reads it directly.
     static constexpr UINT kMaterialFxTableSlot = 65535;
     // The two below it belong to D3D12HeapCheck (Shaders/D3D12/include/HeapCheck.hlsl), reserved whether it runs or not.
-    static constexpr UINT kReservedTopSlots = 3;
+    // Below those, the static-light far field's per-vertex buffer (Shaders/D3D12/include/FarField.hlsl).
+    static constexpr UINT kFarFieldVertexSlot = 65532;
+    static constexpr UINT kReservedTopSlots = 4;
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxTable;    // DEFAULT, MaterialFx::Entry[kMaxSlots]
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxUpload;   // UPLOAD, one table per frame in flight
     uint8_t* m_MaterialFxUploadPtr = nullptr;
@@ -2139,9 +2141,24 @@ private:
         float Distance;    // RayTracedSunShadowDistance
         float FadeBand;    // D3D12RayTracing::SunFadeBand
     };
-    static_assert( kRtSunCbOffset + sizeof( RtSunCBData ) == 512, "RtSunCBData ends the shadow CB" );
+    static_assert( kRtSunCbOffset + sizeof( RtSunCBData ) == 512, "RtSunCBData is followed by the far-field block" );
     /** Every frame before the transparency queue: the scene the blended surfaces trace their sun against. */
     void UploadRtSunConstants();
+    // Static-light far field (StaticLightFarField.h): the crossfade band the lit shaders blend over
+    static constexpr UINT kFarFieldCbOffset = 512;
+    struct FarFieldCBData {
+        float Near;
+        float InvFade;
+        UINT  Enabled;
+        float _pad;
+    };
+    static constexpr UINT kShadowCbSize = 768;
+    static_assert( kFarFieldCbOffset + sizeof( FarFieldCBData ) <= kShadowCbSize, "FarFieldCBData ends the shadow CB" );
+    /** Every frame with the light buffer: the bake's vertex buffer (heap slot kFarFieldVertexSlot) and CB block. */
+    void UpdateFarField();
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_FarFieldVertexBuffer;
+    uint32_t m_FarFieldVersion = UINT32_MAX;
+    bool m_FarFieldUploaded = false;
 
     // Dynamic exposure / auto-exposure: a two-pass GPU luminance reduction of the finished HDR scene color,
     // temporally adapted (Pattanaik's technique) toward last frame's value, feeding Tonemap's exposure divisor

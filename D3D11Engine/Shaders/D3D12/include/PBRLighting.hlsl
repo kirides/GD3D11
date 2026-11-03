@@ -691,13 +691,18 @@ float WetBaseSpecularScale( WetSurface wet )
     return 1.0 - wet.wetness * saturate( WetLightReflections );
 }
 
+#include "FarField.hlsl"
+
 // Applies one light's contribution (direct BRDF + its shadow, if any) and folds it into `total`/`maxLit`.
 // rtVisibility >= 0 is the light's ray-traced visibility and replaces the cube lookup; rangeScale shrinks a
-// ray-traced light that has none, as the CPU clamps an unshadowed one.
+// ray-traced light that has none, as the CPU clamps an unshadowed one. farFieldWeight fades a baked light out.
 void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 albedo, float roughness,
-                       float metallic, WetSurface wet, float rtVisibility, float rangeScale, inout float3 total, inout float3 maxLit )
+                       float metallic, WetSurface wet, float rtVisibility, float rangeScale, float farFieldWeight,
+                       inout float3 total, inout float3 maxLit )
 {
     GPULight L = Lights[lightIndex];
+    const float realShare = L.FarFieldFade != 0 ? 1.0 - farFieldWeight : 1.0;
+    if ( realShare <= 0.0 ) return;
     float3 dir = L.PositionWorld - wpos;
     float dist = length( dir );
     float range = L.Range * rangeScale;
@@ -729,6 +734,7 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
         float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
         lit *= lerp( sh, 1.0, fade );
     }
+    lit *= realShare;
     total += lit;
     maxLit = max( maxLit, lit );
 }
@@ -743,7 +749,7 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
 // {Offset,Count} index slice) can never spin away on a garbage grid entry — the loop bound is the popcount of
 // the mask, not an unclamped Count. Most words are 0 for a typical cluster, so the per-word while() is cheap.
 float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic, WetSurface wet,
-                              uint2 rtMask )
+                              uint2 rtMask, float farFieldWeight = 0.0 )
 {
     uint2 tile = uint2( svpos.xy ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
@@ -787,7 +793,7 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
                 if ( rtPoints && rtGroup < (int)kRtMaxPointLights ) rtVisibility = RtMaskPointVisibility( rtMask, (uint)rtGroup );
                 else rangeScale = Lights[lightIndex].RtFallbackRange;   // no mask or past the cap: keep it out of the next room
             }
-            ApplyTiledLight( lightIndex, wpos, N, V, albedo, roughness, metallic, wet, rtVisibility, rangeScale, total, maxLit );
+            ApplyTiledLight( lightIndex, wpos, N, V, albedo, roughness, metallic, wet, rtVisibility, rangeScale, farFieldWeight, total, maxLit );
         }
     }
     // LimitLightIntensity: swap "sum of every light" for "brightest single light" (mirrors D3D11's

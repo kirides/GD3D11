@@ -2,6 +2,7 @@
 #include "DepthReconstruction.h"
 #include "include/PointLightShadows.h"
 #include "include/RainWetnessSample.h"
+#include "include/FarField.h"
 
 #define TILE_SIZE 16
 
@@ -13,7 +14,8 @@ struct TiledPointLight {
     int ShadowCubeIndex; // 0 = no shadow, else HI-LO slot pair (see PLS_SHADOW_SLOT_SHIFT)
     float ShadowRange;   // cube far-plane basis (far = ShadowRange*2); NOT Range - see TiledPointLight
     float WetCoatScale;  // wet-ground reflection gate; Color.w only gates material highlights
-    float2 _pad;
+    float FarFieldFade;  // 1 = in the static-light bake: fades out where the far field fades in
+    float _pad;
 };
 
 // Clustered grid - layout-identical to CS_LightCulling.hlsl's and the C++ LightGrid.
@@ -41,6 +43,7 @@ cbuffer TiledShadingConstantBuffer : register( b0 ) {
     float WetLightReflections;
     float RainTime;
     float RainFxWeight;
+    float4 FarField;      // static-light far field: x = near radius, y = 1 / fade width, z = 1 while active
 };
 
 SamplerState SS_Linear : register( s0 );
@@ -58,6 +61,8 @@ StructuredBuffer<LightGrid> SB_LightGrid : register( t9 );
 // Overlay tier: only this frame's movers, min'd with the static core cube. HI half of ShadowCubeIndex.
 TextureCubeArray TX_ShadowDynCubeArray : register( t12 );
 TextureCubeArray TX_ShadowStaticCubeArray : register( t13 ); // core tier, LO half of ShadowCubeIndex
+
+Texture2D TX_FarField : register( t21 );   // static-light far field G-buffer, w = covered
 
 RWTexture2D<float4> RW_HDR : register( u0 );
 
@@ -134,6 +139,9 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
     float3 totalLighting = float3( 0, 0, 0 );
     float3 maxLighting = float3( 0, 0, 0 );
+    // Baked lights hand over to the far field (added by the sun pass) with distance
+    const float farFieldWeight = FarField.z > 0.5f
+        ? FF_Weight( length( vsPosition ), FarField.x, FarField.y, TX_FarField.Load( int3( pixelCoord, 0 ) ).w ) : 0.0f;
 
     // Walk only the mask words WordOccupancy flags as non-empty.
     uint wm = SB_LightGrid[cluster].WordOccupancy;
@@ -150,7 +158,8 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
             float3 lightDir = light.PositionView - vsPosition;
             float distance = length( lightDir );
 
-            if ( distance >= light.Range )
+            const float realShare = light.FarFieldFade > 0.5f ? 1.0f - farFieldWeight : 1.0f;
+            if ( distance >= light.Range || realShare <= 0.0f )
                 continue;
 
             lightDir /= distance;
@@ -177,6 +186,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
                 lighting *= shadow;
             }
 
+            lighting *= realShare;
             totalLighting += lighting;
             maxLighting = max( maxLighting, lighting );
         }

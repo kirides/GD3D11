@@ -51,6 +51,8 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     float4 SQ_MoonLight;
     // rgb = indirect night fill, 0 by day and indoors.
     float4 SQ_NightFill;
+    // Static-light far field: x = near radius, y = 1 / fade width, z = 1 while active, w unused.
+    float4 SQ_FarField;
 };
 
 //--------------------------------------------------------------------------------------
@@ -73,9 +75,12 @@ Texture2D TX_SI_SP : register(t7);
 Texture2D TX_ShadowBlueNoise : register(t8);
 // Screen-space AO mask (R8). Applied to indirect/ambient light only. White = no occlusion.
 Texture2D TX_AO : register(t9);
+// Static-light far field G-buffer (rgb irradiance, w = covered); unbound reads 0
+Texture2D TX_FarField : register(t21);
 
 #include "ShadowSampling.h"
 #include "include/RainWetnessSample.h"
+#include "include/FarField.h"
 
 
 //--------------------------------------------------------------------------------------
@@ -305,6 +310,14 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	//return float4(sun.rgb, 1);
 	//return float4(vertLighting.rrr, 1);
+    // The static point lights' bake, where the light passes faded the real ones out
+    [branch]
+    if (SQ_FarField.z > 0.5f)
+    {
+        float4 farField = TX_FarField.Load(int3(Input.vPosition.xy, 0));
+        litPixel += diffuse.rgb * farField.rgb * FF_Weight(length(vsPosition), SQ_FarField.x, SQ_FarField.y, farField.w);
+    }
+
 	float focusBrightness = 1.0f + (focused ? 1.0f : 0.0f);
     return float4(litPixel.rgb * focusBrightness, 1);
 	//return float4(pow(spec, specPower) * specIntensity.xxx * diffuse.rgb * SQ_LightColor.rgb,1);
