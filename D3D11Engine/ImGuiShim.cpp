@@ -1929,6 +1929,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "enabling this may bring back a large self-shadow on whatever an attached light is mounted\n"
             "on (e.g. a belt-worn torch shadowing the player).");
 
+        ImGui::Checkbox( "Unshadowed lights bleed", &settings.UnshadowedPointlightsBleed );
+        ImGui::SetItemTooltip( "Skip the range clamp on lights without a shadow cube: no pop-in, but wall bleed." );
+
         ImGui::Checkbox( "Disable static Pointlights", &settings.DisableStaticPointlights );
         ImGui::SetItemTooltip("Drops every static light from the scene.\n"
             "Gothic fills rooms and caves with 10-30 co-located 'atmospheric' static lights that only raise the\n"

@@ -1062,6 +1062,7 @@ struct GothicRendererSettings {
         AllowSelfShadowingPointlights = true;
         PointlightShadowCasterFlags = PLSC_DYNAMIC_LIGHTS;
         DisableStaticPointlights = false;
+        UnshadowedPointlightsBleed = false;
         SpecularHighlightsFlags = SH_SUN | SH_POINTLIGHTS;
 
         ApplyGraphicsPreset();
@@ -1555,6 +1556,9 @@ struct GothicRendererSettings {
     // with 10-30 co-located "atmospheric" static fill lights that exist only to raise the ambient level; under
     // an HDR pipeline they stack into a badly over-bright interior. D3D12 backend only (see BuildFrameLightBuffer).
     bool DisableStaticPointlights;
+    // Lights without a shadow map yet keep their full range (unshadowed, may bleed through walls) instead of
+    // being range-clamped until their cube bakes. Trades wall bleed for no light pop-in. All backends.
+    bool UnshadowedPointlightsBleed;
     // Which lights are allowed to produce a specular highlight, as an OR of flags. Some players find specular
     // highlights visually distracting (torches/spell-light glints on every surface) and want them gone without
     // losing diffuse lighting entirely. Reuses the existing "isStatic -> Color.w=0" suppression D3D11/D3D12

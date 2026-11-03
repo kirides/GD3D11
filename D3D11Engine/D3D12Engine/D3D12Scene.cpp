@@ -1398,7 +1398,9 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	const float dt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
 	const float ease = 1.0f - std::exp( -dt / kClampEaseSeconds );   // framerate-independent exponential approach
 
-	for ( UINT i = 0; i < count; ++i ) {
+	// UnshadowedPointlightsBleed: no clamp at all, so a light shines at full range before its cube bakes
+	const UINT clampCount = lightSettings.UnshadowedPointlightsBleed ? 0u : count;
+	for ( UINT i = 0; i < clampCount; ++i ) {
 		if ( !s_cands[i].isStatic && !s_cands[i].isIndoor ) continue;
 		// An INDOOR light with no cube, seen from outdoors, looks worst: it washes over the outside of the
 		// building it is sealed inside, and nothing can occlude it. Cut it to almost nothing.

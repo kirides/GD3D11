@@ -6158,6 +6158,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "AllowSelfShadowingPointlights", to_string_locale_independent( s.AllowSelfShadowingPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "PointlightShadowCasterFlags", to_string_locale_independent( s.PointlightShadowCasterFlags ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "DisableStaticPointlights", to_string_locale_independent( s.DisableStaticPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "UnshadowedPointlightsBleed", to_string_locale_independent( s.UnshadowedPointlightsBleed ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SpecularHighlightsFlags", to_string_locale_independent( s.SpecularHighlightsFlags ).c_str(), ini.c_str() );
 
     // WritePrivateProfileStringA( "SMAA", "Enabled", to_string_locale_independent( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6356,6 +6357,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.AllowSelfShadowingPointlights = GetPrivateProfileBoolA( "Shadows", "AllowSelfShadowingPointlights", ds.AllowSelfShadowingPointlights, ini );
         s.PointlightShadowCasterFlags = GetPrivateProfileSignedIntA( "Shadows", "PointlightShadowCasterFlags", ds.PointlightShadowCasterFlags, ini );
         s.DisableStaticPointlights = GetPrivateProfileBoolA( "Shadows", "DisableStaticPointlights", ds.DisableStaticPointlights, ini );
+        s.UnshadowedPointlightsBleed = GetPrivateProfileBoolA( "Shadows", "UnshadowedPointlightsBleed", ds.UnshadowedPointlightsBleed, ini );
         s.SpecularHighlightsFlags = GetPrivateProfileSignedIntA( "Shadows", "SpecularHighlightsFlags", ds.SpecularHighlightsFlags, ini );
 
         INT2 res = {};

@@ -130,7 +130,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         plcb.PL_Color.w = settings.PointLightSpecularScale( vob->IsStatic() );
         plcb.PL_WetCoatScale = settings.PointLightWetReflectionScale( vob->IsStatic() );
         plcb.PL_Range = vob->GetLightRange();
-        if ( !hasShadow && ( vob->IsStatic() || light->IsIndoorVob ) ) {
+        if ( !hasShadow && !settings.UnshadowedPointlightsBleed && ( vob->IsStatic() || light->IsIndoorVob ) ) {
             const bool leakingOutdoors = light->IsIndoorVob && !cameraIndoors;
             plcb.PL_Range *= leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
         }

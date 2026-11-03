@@ -602,7 +602,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         float lightRange = vob->GetLightRange();
         if ( vob->IsStatic() || light->IsIndoorVob ) {
             const bool leakingOutdoors = light->IsIndoorVob && !cameraIndoors;
-            const float target = hasShadow ? 1.0f
+            const float target = ( hasShadow || settings.UnshadowedPointlightsBleed ) ? 1.0f
                 : ( leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale );
             if ( light->UnshadowedRangeScale < 0.0f ) light->UnshadowedRangeScale = target;   // first sight
             else light->UnshadowedRangeScale += ( target - light->UnshadowedRangeScale ) * clampEase;

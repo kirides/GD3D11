@@ -492,6 +492,10 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
             ImGui::EndDisabled();
         }
 
+        CheckRow( "No Light Pop-In", &settings.UnshadowedPointlightsBleed,
+            "Lights without a shadow yet shine at full range right away instead of starting\n"
+            "dimmed. Avoids lights popping in late, but they may bleed through walls until\n"
+            "their shadows arrive (or always, with point light shadows off)." );
         CheckRow( "Limit Light Intensity", &settings.LimitLightIntesity, nullptr, "LimitLightIntensity" );
     }
     ImGui::EndDisabled();
