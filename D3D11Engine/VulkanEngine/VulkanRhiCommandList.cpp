@@ -1247,6 +1247,21 @@ namespace VulkanRhi {
         if ( d.Type != Descriptor::Kind::RenderTarget || !d.Resource ) return;
         VkClearValue clear = {};
         std::memcpy( clear.color.float32, color, sizeof( float ) * 4 );
+        // D3D12 converts the float colour for integer targets; Vulkan reads the union member of the format's type.
+        switch ( d.Key.Format ) {
+        case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R16_UINT:
+        case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+            for ( int i = 0; i < 4; ++i ) clear.color.uint32[i] = static_cast<uint32_t>( std::max( 0.0f, color[i] ) );
+            break;
+        case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R16_SINT:
+        case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R32G32B32A32_SINT:
+            for ( int i = 0; i < 4; ++i ) clear.color.int32[i] = static_cast<int32_t>( color[i] );
+            break;
+        default:
+            break;
+        }
 
         // Inside an open scope that renders to this target: clear in place.
         int attachment = -1;
