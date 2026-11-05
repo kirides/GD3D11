@@ -391,6 +391,9 @@ namespace VulkanRhi {
 
     class CommandListImpl;
 
+    /** Waits on a timeline in 4 s slices: a GPU that makes no progress is logged, a loss gets the fault report. */
+    bool WaitTimeline( DeviceImpl* device, VkSemaphore timeline, uint64_t value, const char* what );
+
     /** One VkQueue. Signals and waits become (possibly empty) submits; pending waits ride on the next one. */
     class QueueImpl final : public Rhi::CommandQueue {
     public:
