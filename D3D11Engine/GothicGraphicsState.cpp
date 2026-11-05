@@ -216,6 +216,34 @@ void GothicRendererSettings::ApplyDeviceCapabilities( const GraphicsDeviceCapabi
     fs.UseTransientAliasing = resolve( fs.UseTransientAliasingOverride, caps.TransientAliasing );
 }
 
+// ResetDebugSettings() zeroes the capability bools and the FL10 cascade Lambda/Bias; restore both.
+static void ApplyLiveDeviceState( GothicRendererSettings& s )
+{
+    if ( Engine::GraphicsEngine ) {
+        s.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
+    }
+    if ( FeatureLevel10Compatibility ) {
+        s.ApplyFeatureLevel10Downgrades();
+    }
+}
+
+void GothicRendererSettings::ResetToDeviceDefaults()
+{
+    const E_GraphicsAPI requestedApi = GraphicsAPI;
+    SetDefault();
+    GraphicsAPI = requestedApi;
+    if ( Engine::IsModernBackend() ) {
+        ApplyDx12Defaults();
+    }
+    ApplyLiveDeviceState( *this );
+}
+
+void GothicRendererSettings::ResetDebugSettingsToDeviceDefaults()
+{
+    ResetDebugSettings();
+    ApplyLiveDeviceState( *this );
+}
+
 void GothicRendererSettings::ApplyGraphicsPreset()
 {
     ::ApplyGraphicsPresets( *this );

@@ -1684,11 +1684,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             }
         }
         if ( ImGui::Button( "Reset Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
-            settings.SetDefault();
-            if ( Engine::IsModernBackend() ) {
-                settings.ApplyDx12Defaults();
-            }
-            settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
+            settings.ResetToDeviceDefaults();
             Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
         }
         ImGui::SetItemTooltip( "Reset all settings to their default values." );
@@ -2168,7 +2164,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SeparatorText("Debugging");
 
         if (ImGui::Button("Reset##ResetDebugValues", ImVec2( 100.0f, 30.f ) )) {
-            settings.ResetDebugSettings();
+            settings.ResetDebugSettingsToDeviceDefaults();
         }
 
         if (ImGui::BeginTabBar("#DebugTabs")) {

@@ -8,6 +8,7 @@
 #include "D3D12Engine/D3D12Device.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
 #include "SqliteBlobStore.h"
+#include "Toolbox.h"
 #include "D3D7/MyDirectDrawSurface7.h"
 #include "D3D7/MyDirect3DVertexBuffer7.h"
 
@@ -19,10 +20,8 @@ namespace Engine {
 
     /** Reads the requested graphics backend before the full settings load runs.
         INI: [Display] GraphicsAPI=D3D11|D3D12|Vulkan (absent -> D3D11). CLI: -GD3D12 / -GD3D11 / -GVULKAN override. */
-    static GothicRendererSettings::E_GraphicsAPI ReadRequestedGraphicsAPI() {
-        auto requested = GothicRendererSettings::GRAPHICS_API_D3D11;
-
-        // INI, resolved from the exe (<game>\System\Gothic2.exe -> <game>\) since the CWD isn't the game root yet
+    /** UserSettings.ini resolved from the exe (<game>\System\Gothic2.exe -> <game>\), since the CWD isn't the game root yet. */
+    static std::string MenuSettingsIniPath() {
         std::string ini( MAX_PATH, '\0' );
         ini.resize( GetModuleFileNameA( nullptr, ini.data(), MAX_PATH ) );
         for ( int i = 0; i < 2; ++i ) { // strip exe name, then the System folder
@@ -31,6 +30,14 @@ namespace Engine {
         }
         if ( !ini.empty() ) {
             ini.append( "\\" ).append( MENU_SETTINGS_FILE );
+        }
+        return ini;
+    }
+
+    static GothicRendererSettings::E_GraphicsAPI ReadRequestedGraphicsAPI() {
+        auto requested = GothicRendererSettings::GRAPHICS_API_D3D11;
+
+        if ( const std::string ini = MenuSettingsIniPath(); !ini.empty() ) {
             char apiBuf[64] = {};
             ::GetPrivateProfileStringA( "Display", "GraphicsAPI", "D3D11", apiBuf, sizeof( apiBuf ), ini.c_str() );
             requested = GothicRendererSettings::ParseGraphicsAPI( apiBuf );
@@ -72,10 +79,22 @@ namespace Engine {
         IsVulkanBackend = false;
         bool initialized = false;   // set when the chosen backend's Init() has already run below
         const auto requestedApi = ReadRequestedGraphicsAPI();
+
+        // First run (no ini yet): the modern renderer starts from the same defaults its reset button gives.
+        auto& settings = GAPI->GetRendererState().RendererSettings;
+        const bool freshSettings = !Toolbox::FileExists( MenuSettingsIniPath() );
+        const GothicRendererSettings loadedSettings = settings;
+        auto initModernBackend = [&] {
+            if ( freshSettings ) settings.ApplyDx12Defaults();
+            if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) return true;
+            settings = loadedSettings; // the D3D11 fallback must not inherit the modern defaults
+            return false;
+        };
+
         if ( requestedApi == GothicRendererSettings::GRAPHICS_API_VULKAN ) {
-            GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_VULKAN;
+            settings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_VULKAN;
             GraphicsEngine = new D3D12GraphicsEngine( Rhi::Backend::Vulkan );
-            if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {
+            if ( initModernBackend() ) {
                 initialized = true;
                 IsVulkanBackend = true;
             } else {
@@ -84,9 +103,9 @@ namespace Engine {
                 Logging::Wrn( "The Vulkan backend failed to initialize. Falling back to Direct3D 11." );
             }
         } else if ( requestedApi == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
-            GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D12;
+            settings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D12;
             GraphicsEngine = new D3D12GraphicsEngine;
-            if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {
+            if ( initModernBackend() ) {
                 initialized = true;
                 IsD3D12Backend = true;
             } else {
@@ -103,7 +122,7 @@ namespace Engine {
         }
 
         if ( !GraphicsEngine ) {
-            GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D11;
+            settings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D11;
             GraphicsEngine = new D3D11GraphicsEngine;
         }
 

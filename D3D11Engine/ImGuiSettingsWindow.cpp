@@ -918,11 +918,7 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
     ImGui::TextDisabled( "Advanced settings: CTRL+F11" );
 
     if ( ImGui::Button( "Reset All Settings", ImVec2( LabelWidth, 0 ) ) ) {
-        settings.SetDefault();
-        if ( IsD3D12() ) {
-            settings.ApplyDx12Defaults();
-        }
-        settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
+        settings.ResetToDeviceDefaults();
         Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
     }
     ImGui::SetItemTooltip( "Reset all settings to their default values." );

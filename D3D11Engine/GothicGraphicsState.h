@@ -945,7 +945,7 @@ struct GothicRendererSettings {
         RayTracedContactShadows = true;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
-        EnableTiledLighting = false;
+        EnableTiledLighting = true;
         RendererMode = RM_Deferred;
         GraphicsAPI = GRAPHICS_API_D3D11;
         MSAASamples = 1;
@@ -1091,6 +1091,12 @@ struct GothicRendererSettings {
         forced override wins. Called by every backend at the end of device init and by the settings
         window's reset button, so a reset lands back on what the hardware actually supports. */
     void ApplyDeviceCapabilities( const GraphicsDeviceCapabilities& caps );
+
+    /** Reset buttons: defaults resolved against the live device and backend, like device init does.
+        Keeps the requested GraphicsAPI so a reset doesn't switch backends on the next start. */
+    void ResetToDeviceDefaults();
+    /** ResetDebugSettings(), then re-resolves the capability-driven FeatureSet entries it cleared. */
+    void ResetDebugSettingsToDeviceDefaults();
 
     void ApplyGraphicsPreset();
     /** Applies just the shadow values of the ShadowQuality preset. */
