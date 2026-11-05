@@ -44,6 +44,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
     static constexpr UINT64 kCopyBatchFlushThresholdBytes = 32ull * 1024 * 1024;
+    // Submitted but unfinished staging above this stalls the uploader (dxvk's 32-bit throttle): mapped staging costs VA.
+    static constexpr UINT64 kCopyBytesInFlightLimit = 3 * kCopyBatchFlushThresholdBytes;
     constexpr UINT kSrvHeapCapacity = 65536;
     // The display chain reads its source from both pixel shaders (SMAA, sharpen) and compute (the underwater
     // blur), so the scratches take one combined read state rather than a per-pass one.
@@ -589,6 +591,7 @@ void D3D12GraphicsEngine::ReleaseCompletedCopyResources( UINT64 fenceValue ) {
             chunk.Offset = 0;
             m_FreeStagingChunks.push_back( std::move( chunk ) );
         }
+        m_CopyBytesInFlight -= std::min( m_CopyBytesInFlight, pending.Bytes );
         m_PendingCopyReleases.pop_front(); // O(1) popped release, zero memory shifts
     }
 }
@@ -933,6 +936,8 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 
 	PendingCopyRelease pending;
 	pending.FenceValue = fenceValue;
+	pending.Bytes = m_CopyBatchBytes;
+	m_CopyBytesInFlight += m_CopyBatchBytes;
 	pending.UploadResources = std::move( m_CopyBatchUploadResources );
 	pending.DestResources = std::move( m_CopyBatchDestResources );
 	pending.StagingChunks = std::move( m_CopyBatchStagingChunks );
@@ -944,6 +949,19 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 	m_CopyBatchDestResources.clear();
 	m_CopyBatchStagingChunks.clear();
 	m_CopyBatchBytes = 0;
+
+	// A load burst can submit faster than the GPU copies; wait for the oldest batches instead of growing staging.
+	ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
+	if ( m_CopyBytesInFlight > kCopyBytesInFlightLimit ) {
+		static std::atomic<bool> s_logged{ false };
+		if ( !s_logged.exchange( true ) )
+			Logging::Inf( "D3D12: {} MiB of uploads in flight; throttling the uploader until the GPU catches up.",
+				m_CopyBytesInFlight >> 20 );
+		while ( m_CopyBytesInFlight > kCopyBytesInFlightLimit && !m_PendingCopyReleases.empty() ) {
+			WaitForCopyFence( m_PendingCopyReleases.front().FenceValue );
+			ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
+		}
+	}
 }
 
 
