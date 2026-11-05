@@ -68,11 +68,20 @@ namespace VulkanRhi {
         uint32_t MipCount = 1;
         uint32_t BaseLayer = 0;
         uint32_t LayerCount = 1;
-        VkComponentMapping Swizzle = {};    // SRVs only; attachment and storage views must be identity
+        // VkComponentSwizzle per channel, packed: every descriptor record carries a key (SRVs only; others identity).
+        uint8_t Swizzle[4] = {};
+        void SetSwizzle( const VkComponentMapping& m ) {
+            Swizzle[0] = static_cast<uint8_t>( m.r ); Swizzle[1] = static_cast<uint8_t>( m.g );
+            Swizzle[2] = static_cast<uint8_t>( m.b ); Swizzle[3] = static_cast<uint8_t>( m.a );
+        }
+        VkComponentMapping Components() const {
+            return { static_cast<VkComponentSwizzle>( Swizzle[0] ), static_cast<VkComponentSwizzle>( Swizzle[1] ),
+                static_cast<VkComponentSwizzle>( Swizzle[2] ), static_cast<VkComponentSwizzle>( Swizzle[3] ) };
+        }
         bool operator==( const ViewKey& o ) const {
             return Type == o.Type && Format == o.Format && Aspect == o.Aspect && Usage == o.Usage && BaseMip == o.BaseMip
                 && MipCount == o.MipCount && BaseLayer == o.BaseLayer && LayerCount == o.LayerCount
-                && Swizzle.r == o.Swizzle.r && Swizzle.g == o.Swizzle.g && Swizzle.b == o.Swizzle.b && Swizzle.a == o.Swizzle.a;
+                && std::memcmp( Swizzle, o.Swizzle, sizeof( Swizzle ) ) == 0;
         }
     };
 
@@ -87,6 +96,8 @@ namespace VulkanRhi {
         VkDeviceSize Offset = 0;
         VkDeviceSize Range = 0;
     };
+    // 65536 records back the shader-visible heap alone: growing this costs 32-bit VA in every heap.
+    static_assert( sizeof( Descriptor ) <= 80, "Descriptor record grew" );
 
     inline int64_t QpcNow() {
         LARGE_INTEGER t = {};
