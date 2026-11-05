@@ -960,10 +960,18 @@ namespace VulkanRhi {
             ii.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         if ( IsTypeless( desc->Format ) && !depthStencil ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         if ( ii.usage & VK_IMAGE_USAGE_STORAGE_BIT ) {
-            VkFormatProperties props = {};
-            vkGetPhysicalDeviceFormatProperties( m_Vk.GetPhysicalDevice(), ii.format, &props );
-            if ( !( props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ) )
+            VkFormatProperties3 props3 = { VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3 };
+            VkFormatProperties2 props = { VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &props3 };
+            vkGetPhysicalDeviceFormatProperties2( m_Vk.GetPhysicalDevice(), ii.format, &props );
+            if ( !( props.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ) )
                 ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+            // The SPIR-V declares storage images formatless, so a UAV load needs per-format support on top of the feature.
+            static std::array<std::atomic<bool>, 256> s_warned{};
+            if ( ( props.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT )
+                && !( props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT )
+                && static_cast<size_t>( ii.format ) < s_warned.size() && !s_warned[ii.format].exchange( true ) )
+                Logging::Wrn( "Vulkan: format {} has no format-less storage reads; UAV loads from it are undefined.",
+                    static_cast<int>( ii.format ) );
         }
         ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
