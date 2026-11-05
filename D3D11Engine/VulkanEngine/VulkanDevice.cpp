@@ -604,10 +604,21 @@ namespace {
             return s;
         };
 
-        std::unique_ptr<DeviceInfo>* best = nullptr;
-        for ( auto& info : infos ) {
-            if ( !info->Missing.empty() ) continue;
-            if ( !best || score( *info ) > score( **best ) ) best = &info;
+        // Software rasterizers (SwiftShader, llvmpipe) are never picked: falling back to D3D11 is faster.
+        auto pick = [&]( bool allowCpu ) {
+            std::unique_ptr<DeviceInfo>* chosen = nullptr;
+            for ( auto& info : infos ) {
+                if ( !info->Missing.empty() ) continue;
+                if ( !allowCpu && info->Props.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU ) continue;
+                if ( !chosen || score( *info ) > score( **chosen ) ) chosen = &info;
+            }
+            return chosen;
+        };
+        std::unique_ptr<DeviceInfo>* best = pick( false );
+        if ( !best && ( best = pick( true ) ) != nullptr ) {
+            Logging::Wrn( "Vulkan: only a software rasterizer (\"{}\") qualifies; not using it.", ( *best )->Name() );
+            if ( reason ) *reason = "only a software Vulkan rasterizer is available";
+            return nullptr;
         }
         if ( !best ) {
             if ( reason ) {
