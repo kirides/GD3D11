@@ -350,8 +350,12 @@ namespace VulkanRhi {
             VmaAllocationInfo info = {};
             if ( m_Device->CheckResult( vmaCreateBuffer( m_Device->Allocator(), &bi, &ai, &c.Buffer, &c.Allocation, &info ), "vmaCreateBuffer (upload ring)" ) )
                 return false;
+            // The extra map keeps the refcount symmetric with the unmap on destroy; a 32-bit process can fail either.
             void* cpu = nullptr;
-            vmaMapMemory( m_Device->Allocator(), c.Allocation, &cpu );   // keeps the mapping refcount symmetric with the unmap on destroy
+            if ( !info.pMappedData || m_Device->CheckResult( vmaMapMemory( m_Device->Allocator(), c.Allocation, &cpu ), "vmaMapMemory (upload ring)" ) ) {
+                vmaDestroyBuffer( m_Device->Allocator(), c.Buffer, c.Allocation );
+                return false;
+            }
             c.Cpu = static_cast<uint8_t*>( cpu );
             m_Chunks.push_back( c );
         }
