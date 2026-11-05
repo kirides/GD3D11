@@ -41,27 +41,48 @@ bool VulkanSwapchain::Create( VulkanDevice& device, HWND window, INT2 size, uint
     m_VSync = vsync;
     m_HdrRequested = hdr;
 
-    VkWin32SurfaceCreateInfoKHR sci = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
-    sci.hinstance = GetModuleHandleA( nullptr );
-    sci.hwnd = window;
-    if ( VkUtil::Failed( vkCreateWin32SurfaceKHR( device.GetInstance(), &sci, nullptr, &m_Surface ), "vkCreateWin32SurfaceKHR" ) ) {
-        m_Surface = VK_NULL_HANDLE;
-        return false;
-    }
-    VkBool32 supported = VK_FALSE;
-    vkGetPhysicalDeviceSurfaceSupportKHR( device.GetPhysicalDevice(), device.GetGraphicsQueueFamily(), m_Surface, &supported );
-    if ( !supported ) {
-        Logging::Wrn( "Vulkan: the graphics queue cannot present to Gothic's window." );
-        return false;
-    }
+    if ( !CreateSurface() ) return false;
     m_PresentWait = QueryPresentWaitMode();
     return BuildSwapchain( size );
 }
 
+bool VulkanSwapchain::CreateSurface() {
+    VkWin32SurfaceCreateInfoKHR sci = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
+    sci.hinstance = GetModuleHandleA( nullptr );
+    sci.hwnd = m_Window;
+    if ( VkUtil::Failed( vkCreateWin32SurfaceKHR( m_Device->GetInstance(), &sci, nullptr, &m_Surface ), "vkCreateWin32SurfaceKHR" ) ) {
+        m_Surface = VK_NULL_HANDLE;
+        return false;
+    }
+    VkBool32 supported = VK_FALSE;
+    vkGetPhysicalDeviceSurfaceSupportKHR( m_Device->GetPhysicalDevice(), m_Device->GetGraphicsQueueFamily(), m_Surface, &supported );
+    if ( !supported ) {
+        Logging::Wrn( "Vulkan: the graphics queue cannot present to Gothic's window." );
+        return false;
+    }
+    return true;
+}
+
+void VulkanSwapchain::NoteResult( VkResult r ) {
+    if ( r != VK_ERROR_SURFACE_LOST_KHR || m_SurfaceLost ) return;
+    m_SurfaceLost = true;
+    Logging::Wrn( "Vulkan: the window surface was lost; it is recreated with the swapchain." );
+}
+
 bool VulkanSwapchain::Recreate( INT2 size, bool vsync ) {
-    if ( !m_Device || !m_Surface ) return false;
+    if ( !m_Device || ( !m_Surface && !m_SurfaceLost ) ) return false;
     m_Device->WaitIdle();
     m_VSync = vsync;
+    if ( m_SurfaceLost ) {
+        // Every swapchain made from the dead surface must go before it; the new chain starts without an oldSwapchain.
+        DestroyImageResources();
+        Retire();
+        CollectRetired( true );
+        if ( m_Surface ) vkDestroySurfaceKHR( m_Device->GetInstance(), m_Surface, nullptr );
+        m_Surface = VK_NULL_HANDLE;
+        if ( !CreateSurface() ) return false;   // retried on the next rebuild
+        m_SurfaceLost = false;
+    }
     return BuildSwapchain( size );
 }
 
@@ -306,7 +327,9 @@ bool VulkanSwapchain::BuildSwapchain( INT2 size ) {
 
 VkResult VulkanSwapchain::Acquire( VkSemaphore signal, uint32_t& outImageIndex ) {
     if ( !IsUsable() ) return VK_ERROR_OUT_OF_DATE_KHR;
-    return vkAcquireNextImageKHR( m_Device->GetDevice(), m_Swapchain, UINT64_MAX, signal, VK_NULL_HANDLE, &outImageIndex );
+    const VkResult r = vkAcquireNextImageKHR( m_Device->GetDevice(), m_Swapchain, UINT64_MAX, signal, VK_NULL_HANDLE, &outImageIndex );
+    NoteResult( r );
+    return r;
 }
 
 VkResult VulkanSwapchain::Present( VkQueue queue, std::mutex& queueMutex, uint32_t imageIndex ) {
@@ -334,6 +357,7 @@ VkResult VulkanSwapchain::Present( VkQueue queue, std::mutex& queueMutex, uint32
         std::lock_guard<std::mutex> lock( queueMutex );
         r = vkQueuePresentKHR( queue, &pi );
     }
+    NoteResult( r );
     // Tracked even on failure: OUT_OF_DATE / SURFACE_LOST presents still signal; Destroy bounds the rest.
     if ( fence ) m_PresentFences.push_back( { fence, m_Swapchain } );
     ++m_PresentCount;
