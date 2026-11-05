@@ -42,6 +42,8 @@ namespace VulkanRhi {
     bool HasStencil( VkFormat format );
     VkImageAspectFlags AspectOf( VkFormat format );
     bool IsTypeless( DXGI_FORMAT format );
+    /** SRV swizzle: D3D12's component mapping composed with what X8/A8 formats return in D3D. */
+    VkComponentMapping SrvSwizzle( DXGI_FORMAT format, UINT mapping );
 
     // ---- Barrier mapping (VulkanRhiCommandList.cpp) -----------------------------------------------
 
@@ -64,9 +66,11 @@ namespace VulkanRhi {
         uint32_t MipCount = 1;
         uint32_t BaseLayer = 0;
         uint32_t LayerCount = 1;
+        VkComponentMapping Swizzle = {};    // SRVs only; attachment and storage views must be identity
         bool operator==( const ViewKey& o ) const {
             return Type == o.Type && Format == o.Format && Aspect == o.Aspect && Usage == o.Usage && BaseMip == o.BaseMip
-                && MipCount == o.MipCount && BaseLayer == o.BaseLayer && LayerCount == o.LayerCount;
+                && MipCount == o.MipCount && BaseLayer == o.BaseLayer && LayerCount == o.LayerCount
+                && Swizzle.r == o.Swizzle.r && Swizzle.g == o.Swizzle.g && Swizzle.b == o.Swizzle.b && Swizzle.a == o.Swizzle.a;
         }
     };
 

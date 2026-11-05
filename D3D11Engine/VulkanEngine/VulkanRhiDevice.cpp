@@ -142,6 +142,7 @@ namespace VulkanRhi {
         ci.image = m_Image;
         ci.viewType = key.Type;
         ci.format = key.Format;
+        ci.components = key.Swizzle;
         ci.subresourceRange = { key.Aspect, key.BaseMip, key.MipCount, key.BaseLayer, key.LayerCount };
         VkImageView view = VK_NULL_HANDLE;
         if ( m_Device->CheckResult( vkCreateImageView( m_Device->Vk(), &ci, nullptr, &view ), "vkCreateImageView" ) )
@@ -1328,6 +1329,8 @@ namespace VulkanRhi {
                 break;
             }
         }
+        const DXGI_FORMAT viewFormat = desc && desc->Format != DXGI_FORMAT_UNKNOWN ? desc->Format : r->m_Desc.Format;
+        if ( !IsDepthFormat( r->m_Format ) ) key.Swizzle = SrvSwizzle( viewFormat, desc ? desc->Shader4ComponentMapping : 0 );
         d.Type = Descriptor::Kind::SampledImage;
         d.Key = key;
         d.View = r->GetView( key );
