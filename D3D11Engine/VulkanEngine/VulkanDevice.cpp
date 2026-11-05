@@ -767,7 +767,11 @@ bool VulkanDevice::Init() {
     const bool presentWaitEnabled = CommandLineHas( "-VKPRESENTWAIT", "-vkpresentwait" )
         || GetEnvironmentVariableA( "GD3D11_VULKAN_PRESENT_WAIT", nullptr, 0 ) > 0;
     if ( presentWaitEnabled ) Logging::Inf( "Vulkan: present wait enabled from the command line." );
-    if ( presentWaitEnabled && info->PresentWait2Supported() && m_Caps.SurfaceCapabilities2 ) {
+    // present_id2 is unreliable on NVIDIA drivers before 595 (dxvk disables it there); present_wait v1 still works.
+    const bool brokenPresentId2 = info->Props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY
+        && ( ( info->Props.properties.driverVersion >> 22 ) & 0x3ff ) < 595;
+    if ( presentWaitEnabled && brokenPresentId2 ) Logging::Inf( "Vulkan: present_id2 skipped on this NVIDIA driver (< 595)." );
+    if ( presentWaitEnabled && !brokenPresentId2 && info->PresentWait2Supported() && m_Caps.SurfaceCapabilities2 ) {
         m_Caps.PresentWait2 = true;
         extensions.push_back( VK_KHR_PRESENT_ID_2_EXTENSION_NAME );
         extensions.push_back( VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME );
