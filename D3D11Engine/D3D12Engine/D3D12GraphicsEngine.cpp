@@ -598,10 +598,10 @@ void D3D12GraphicsEngine::ReleaseCompletedCopyResources( UINT64 fenceValue ) {
 
 
 void D3D12GraphicsEngine::WaitForCopyFence( UINT64 fenceValue ) {
-    if ( !m_CopyFence || !m_CopyFenceEvent ) return;
+    if ( !m_CopyFence ) return;
     if ( m_CopyFence->GetCompletedValue() >= fenceValue ) return;
-    m_CopyFence->SetEventOnCompletion( fenceValue, m_CopyFenceEvent );
-    WaitForSingleObject( m_CopyFenceEvent, INFINITE );
+    // A null event blocks in place: m_CopyFenceEvent is auto-reset and WaitForGpuIdle waits on it from another thread.
+    m_CopyFence->SetEventOnCompletion( fenceValue, nullptr );
 }
 
 
