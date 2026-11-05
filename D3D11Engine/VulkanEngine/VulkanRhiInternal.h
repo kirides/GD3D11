@@ -42,6 +42,8 @@ namespace VulkanRhi {
     bool HasStencil( VkFormat format );
     VkImageAspectFlags AspectOf( VkFormat format );
     bool IsTypeless( DXGI_FORMAT format );
+    /** Typed members of a TYPELESS format's family (VkImageFormatListCreateInfo keeps compression on mutable images). */
+    uint32_t ViewFormatFamily( DXGI_FORMAT format, VkFormat* out, uint32_t capacity );
     /** SRV swizzle: D3D12's component mapping composed with what X8/A8 formats return in D3D. */
     VkComponentMapping SrvSwizzle( DXGI_FORMAT format, UINT mapping );
 

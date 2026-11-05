@@ -32,6 +32,21 @@ namespace VulkanRhi {
             return alignment ? ( value + alignment - 1 ) / alignment * alignment : value;
         }
 
+        /** View formats of a TYPELESS image; without the list drivers drop colour compression on MUTABLE_FORMAT images. */
+        struct ViewFormatList {
+            VkFormat Formats[6] = {};
+            VkImageFormatListCreateInfo Info = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO };
+            void Attach( VkImageCreateInfo& ii, DXGI_FORMAT format ) {
+                if ( !( ii.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT ) || ( ii.flags & VK_IMAGE_CREATE_EXTENDED_USAGE_BIT )
+                    || ToVkFormat( format ) != ii.format ) return;
+                Info.viewFormatCount = ViewFormatFamily( format, Formats, 6 );
+                if ( !Info.viewFormatCount ) return;
+                Info.pViewFormats = Formats;
+                Info.pNext = ii.pNext;
+                ii.pNext = &Info;
+            }
+        };
+
         constexpr VkBufferUsageFlags kBufferUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
             | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
             | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
@@ -952,6 +967,8 @@ namespace VulkanRhi {
         }
         ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        ViewFormatList formatList;
+        formatList.Attach( ii, desc->Format );
 
         ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         ai.flags = 0;
@@ -1028,6 +1045,8 @@ namespace VulkanRhi {
         if ( desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS ) ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
         if ( IsTypeless( desc->Format ) ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        ViewFormatList formatList;
+        formatList.Attach( ii, desc->Format );
         if ( CheckResult( vkCreateImage( Vk(), &ii, nullptr, &r->m_Image ), "vkCreateImage (placed)" ) ) return E_OUTOFMEMORY;
         VkMemoryRequirements req = {};
         vkGetImageMemoryRequirements( Vk(), r->m_Image, &req );
@@ -1067,6 +1086,8 @@ namespace VulkanRhi {
         ii.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if ( desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS ) ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
         if ( IsTypeless( desc.Format ) ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // as CreatePlacedRenderTarget
+        ViewFormatList formatList;
+        formatList.Attach( ii, desc.Format );
         VkDeviceImageMemoryRequirements query = { VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS };
         query.pCreateInfo = &ii;
         VkMemoryRequirements2 req = { VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2 };
