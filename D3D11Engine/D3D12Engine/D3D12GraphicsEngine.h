@@ -642,6 +642,7 @@ private:
 
     struct PendingCopyRelease {
         UINT64 FenceValue = 0;
+        UINT64 Bytes = 0;   // staging bytes this batch holds until FenceValue completes
         std::vector<Microsoft::WRL::ComPtr<Rhi::Resource>>      UploadResources;
         // The copy DESTINATIONS (texture/VB/IB being filled). The batch's command list references them,
         // and the batch lives on the copy queue — completely outside the frame-fence deferral that
@@ -654,6 +655,7 @@ private:
         Microsoft::WRL::ComPtr<Rhi::CommandList> CopyCommandList;
     };
     std::deque<PendingCopyRelease> m_PendingCopyReleases;
+    UINT64 m_CopyBytesInFlight = 0;   // sum of m_PendingCopyReleases[].Bytes
 
     // Free-list of (allocator,list) pairs whose copies have completed on the GPU — recycled by
     // BeginCopyBatch instead of re-creating command objects each burst.

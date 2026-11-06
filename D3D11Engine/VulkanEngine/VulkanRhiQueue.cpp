@@ -6,6 +6,26 @@
 
 namespace VulkanRhi {
 
+    bool WaitTimeline( DeviceImpl* device, VkSemaphore timeline, uint64_t value, const char* what ) {
+        VkSemaphoreWaitInfo wi = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+        wi.semaphoreCount = 1;
+        wi.pSemaphores = &timeline;
+        wi.pValues = &value;
+        constexpr uint64_t kSliceNs = 4000000000ull;   // dxvk: 5 s
+        for ( uint32_t slice = 1; !device->IsDeviceLost(); ++slice ) {
+            const VkResult r = vkWaitSemaphores( device->Vk(), &wi, kSliceNs );
+            if ( r == VK_SUCCESS ) return true;
+            if ( r != VK_TIMEOUT ) {
+                device->CheckResult( r, what );
+                return false;
+            }
+            uint64_t reached = 0;
+            vkGetSemaphoreCounterValue( device->Vk(), timeline, &reached );
+            Logging::Wrn( "Vulkan: {}: the GPU has not reached {} after {} s (at {}).", what, value, slice * 4, reached );
+        }
+        return false;
+    }
+
     // ---- Fence ----------------------------------------------------------------------------------
 
     FenceImpl::~FenceImpl() {
@@ -77,11 +97,7 @@ namespace VulkanRhi {
             while ( GetCompletedValue() < value ) {
                 const uint64_t point = InternalPointFor( value );
                 if ( !point ) { Sleep( 1 ); continue; }
-                VkSemaphoreWaitInfo wi = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
-                wi.semaphoreCount = 1;
-                wi.pSemaphores = &m_Timeline;
-                wi.pValues = &point;
-                if ( m_Device->CheckResult( vkWaitSemaphores( m_Device->Vk(), &wi, UINT64_MAX ), "vkWaitSemaphores" ) ) break;
+                if ( !WaitTimeline( m_Device, m_Timeline, point, "fence wait" ) ) break;
             }
             return S_OK;
         }
@@ -334,8 +350,12 @@ namespace VulkanRhi {
             VmaAllocationInfo info = {};
             if ( m_Device->CheckResult( vmaCreateBuffer( m_Device->Allocator(), &bi, &ai, &c.Buffer, &c.Allocation, &info ), "vmaCreateBuffer (upload ring)" ) )
                 return false;
+            // The extra map keeps the refcount symmetric with the unmap on destroy; a 32-bit process can fail either.
             void* cpu = nullptr;
-            vmaMapMemory( m_Device->Allocator(), c.Allocation, &cpu );   // keeps the mapping refcount symmetric with the unmap on destroy
+            if ( !info.pMappedData || m_Device->CheckResult( vmaMapMemory( m_Device->Allocator(), c.Allocation, &cpu ), "vmaMapMemory (upload ring)" ) ) {
+                vmaDestroyBuffer( m_Device->Allocator(), c.Buffer, c.Allocation );
+                return false;
+            }
             c.Cpu = static_cast<uint8_t*>( cpu );
             m_Chunks.push_back( c );
         }
@@ -453,16 +473,16 @@ namespace VulkanRhi {
 
     uint64_t QueueImpl::CompletedSerial() const {
         uint64_t value = 0;
-        if ( vkGetSemaphoreCounterValue( m_Device->Vk(), m_SerialTimeline, &value ) != VK_SUCCESS ) return UINT64_MAX;
+        const VkResult r = vkGetSemaphoreCounterValue( m_Device->Vk(), m_SerialTimeline, &value );
+        if ( r != VK_SUCCESS ) {
+            m_Device->CheckResult( r, "vkGetSemaphoreCounterValue (queue serial)" );
+            return UINT64_MAX;
+        }
         return value;
     }
 
     bool QueueImpl::WaitSerial( uint64_t value ) const {
-        VkSemaphoreWaitInfo wi = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
-        wi.semaphoreCount = 1;
-        wi.pSemaphores = &m_SerialTimeline;
-        wi.pValues = &value;
-        return vkWaitSemaphores( m_Device->Vk(), &wi, UINT64_MAX ) == VK_SUCCESS;
+        return WaitTimeline( m_Device, m_SerialTimeline, value, "queue serial wait" );
     }
 
     VkResult QueueImpl::Submit( const VkCommandBuffer* cmds, uint32_t cmdCount, const VkSemaphoreSubmitInfo* waits, uint32_t waitCount,

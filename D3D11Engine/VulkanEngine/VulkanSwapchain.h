@@ -72,6 +72,9 @@ private:
     /** Per-mode surface caps; `compatible` gets the modes a swapchain created with `mode` may switch to. */
     bool QueryPresentModeCaps( VkPresentModeKHR mode, VkSurfaceCapabilitiesKHR& caps, std::vector<VkPresentModeKHR>* compatible ) const;
     bool BuildSwapchain( INT2 size );
+    bool CreateSurface();
+    /** Flags VK_ERROR_SURFACE_LOST_KHR so the next Recreate builds a new surface first. */
+    void NoteResult( VkResult r );
     void DestroyImageResources();
     /** Moves the current swapchain and its present semaphores to m_Retired. */
     void Retire();
@@ -101,6 +104,7 @@ private:
     uint32_t         m_MinImageCount = 2;
     bool             m_VSync = true;
     bool             m_HdrRequested = false;
+    bool             m_SurfaceLost = false;
     PresentWaitMode  m_PresentWait = PresentWaitMode::None;
     uint64_t         m_PresentId = 0;       // last id handed to vkQueuePresentKHR
     uint64_t         m_LastPresentId = 0;   // last id whose present was accepted

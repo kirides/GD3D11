@@ -604,10 +604,21 @@ namespace {
             return s;
         };
 
-        std::unique_ptr<DeviceInfo>* best = nullptr;
-        for ( auto& info : infos ) {
-            if ( !info->Missing.empty() ) continue;
-            if ( !best || score( *info ) > score( **best ) ) best = &info;
+        // Software rasterizers (SwiftShader, llvmpipe) are never picked: falling back to D3D11 is faster.
+        auto pick = [&]( bool allowCpu ) {
+            std::unique_ptr<DeviceInfo>* chosen = nullptr;
+            for ( auto& info : infos ) {
+                if ( !info->Missing.empty() ) continue;
+                if ( !allowCpu && info->Props.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU ) continue;
+                if ( !chosen || score( *info ) > score( **chosen ) ) chosen = &info;
+            }
+            return chosen;
+        };
+        std::unique_ptr<DeviceInfo>* best = pick( false );
+        if ( !best && ( best = pick( true ) ) != nullptr ) {
+            Logging::Wrn( "Vulkan: only a software rasterizer (\"{}\") qualifies; not using it.", ( *best )->Name() );
+            if ( reason ) *reason = "only a software Vulkan rasterizer is available";
+            return nullptr;
         }
         if ( !best ) {
             if ( reason ) {
@@ -708,282 +719,303 @@ bool VulkanDevice::Init() {
     m_GraphicsQueueFamily = info->GraphicsFamily;
     m_TransferQueueFamily = info->TransferFamily;
 
-    // --- Extensions ---
-    std::vector<const char*> extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, info->MutableExtension };
-    auto enableIf = [&]( bool condition, const char* ext ) {
-        if ( condition ) extensions.push_back( ext );
-        return condition;
-    };
-    // 1.4 core features are enabled through VkPhysicalDeviceVulkan14Features instead of their extensions.
-    const bool core14 = info->Core14();
-    const bool pushDescriptorCore = info->PushDescriptorCore();
-    const bool maintenance5Core = info->Maintenance5Core();
-    const bool divisorCore = info->DivisorCore();
-    enableIf( !pushDescriptorCore, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME );
-    m_Caps.NullDescriptor = enableIf( info->Robustness2Extension && info->Robustness2.nullDescriptor, info->Robustness2Extension );
-    m_Caps.MemoryBudget = enableIf( info->Has( VK_EXT_MEMORY_BUDGET_EXTENSION_NAME ), VK_EXT_MEMORY_BUDGET_EXTENSION_NAME );
-    m_Caps.MemoryPriority = enableIf( info->Has( VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME ) && info->MemoryPriority.memoryPriority,
-        VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME );
-    m_Caps.PageableMemory = enableIf( m_Caps.MemoryPriority && info->Has( VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME )
-        && info->Pageable.pageableDeviceLocalMemory, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME );
-    if ( info->Has( VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME ) ) {
-        const VkPhysicalDeviceExtendedDynamicState3FeaturesEXT& e = info->Eds3;
-        m_Caps.DynamicBlend = e.extendedDynamicState3ColorBlendEnable && e.extendedDynamicState3ColorBlendEquation
-            && e.extendedDynamicState3ColorWriteMask;
-        m_Caps.DynamicDepthClamp = e.extendedDynamicState3DepthClampEnable;
-        m_Caps.DynamicPolygonMode = e.extendedDynamicState3PolygonMode;
-        m_Caps.DynamicAlphaToCoverage = e.extendedDynamicState3AlphaToCoverageEnable;
-        enableIf( m_Caps.DynamicBlend || m_Caps.DynamicDepthClamp || m_Caps.DynamicPolygonMode || m_Caps.DynamicAlphaToCoverage,
-            VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME );
-    }
-    m_Caps.DeviceFault = enableIf( info->Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) && info->Fault.deviceFault, VK_EXT_DEVICE_FAULT_EXTENSION_NAME );
-    m_Caps.AddressBindingReport = enableIf( m_Messenger && info->Has( VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME )
-        && info->AddressBinding.reportAddressBinding, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME );
-    if ( m_Caps.AddressBindingReport ) {
-        VkDebugUtilsMessengerCreateInfoEXT mci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
-        mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
-        mci.pfnUserCallback = &AddressBindingCallback;
-        if ( VkUtil::Failed( vkCreateDebugUtilsMessengerEXT( m_Instance, &mci, nullptr, &m_BindingMessenger ), "vkCreateDebugUtilsMessengerEXT (address binding)" ) ) {
+    // Like dxvk: if the device refuses the optional extensions (driver or layer quirks), retry with only what
+    // CheckRequirements demands before giving Vulkan up for D3D11.
+    auto createDevice = [&]( bool safe ) -> bool {
+        // Caps a first attempt may have set only conditionally; a messenger it created goes too.
+        m_Caps.DynamicBlend = m_Caps.DynamicDepthClamp = m_Caps.DynamicPolygonMode = m_Caps.DynamicAlphaToCoverage = false;
+        m_Caps.PresentWait = m_Caps.PresentWait2 = false;
+        if ( m_BindingMessenger ) {
+            vkDestroyDebugUtilsMessengerEXT( m_Instance, m_BindingMessenger, nullptr );
             m_BindingMessenger = VK_NULL_HANDLE;
-            m_Caps.AddressBindingReport = false;
-            extensions.pop_back();
         }
-    }
-    m_Caps.BufferMarkerAMD = enableIf( info->Has( VK_AMD_BUFFER_MARKER_EXTENSION_NAME ), VK_AMD_BUFFER_MARKER_EXTENSION_NAME );
-    // Checkpoints and timestamps are GPU writes into driver memory; -VKNOCHECKPOINTS / -VKNOTIMESTAMPS rule them out.
-    m_Caps.DiagnosticCheckpointsNV = enableIf( !CommandLineHas( "-VKNOCHECKPOINTS", "-vknocheckpoints" )
-        && info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ), VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
-    m_Caps.DiagnosticsConfigNV = enableIf( GpuDebug::VkAftermath() && info->Has( VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME )
-        && info->DiagnosticsConfig.diagnosticsConfig, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME );
-    if ( GpuDebug::VkAftermath() ) {
-        if ( m_Caps.DiagnosticsConfigNV ) Logging::Inf( "Vulkan: -VKAFTERMATH: device diagnostics config on; capture crashes with Nsight's GPU crash dump monitor." );
-        else Logging::Wrn( "Vulkan: -VKAFTERMATH: VK_NV_device_diagnostics_config is unavailable (NVIDIA only)." );
-    }
-    m_Caps.HdrMetadata = enableIf( m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
-        VK_EXT_HDR_METADATA_EXTENSION_NAME );
-    // Frame pacing waits on GPU completion. Present wait is opt-in (-VKPRESENTWAIT / GD3D11_VULKAN_PRESENT_WAIT=1):
-    // under FIFO on AMD it paced frames in back-to-back pairs, which puts ZENGIN into slow motion.
-    const bool presentWaitEnabled = CommandLineHas( "-VKPRESENTWAIT", "-vkpresentwait" )
-        || GetEnvironmentVariableA( "GD3D11_VULKAN_PRESENT_WAIT", nullptr, 0 ) > 0;
-    if ( presentWaitEnabled ) Logging::Inf( "Vulkan: present wait enabled from the command line." );
-    if ( presentWaitEnabled && info->PresentWait2Supported() && m_Caps.SurfaceCapabilities2 ) {
-        m_Caps.PresentWait2 = true;
-        extensions.push_back( VK_KHR_PRESENT_ID_2_EXTENSION_NAME );
-        extensions.push_back( VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME );
-    }
-    if ( presentWaitEnabled && info->PresentWaitSupported() ) {
-        m_Caps.PresentWait = true;
-        extensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
-        extensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
-    }
-    // Present fences let a retired swapchain be destroyed once the presentation engine is done with it.
-    // -VKNOSWAPCHAINM1 falls back to destroying it a few presents later.
-    const char* swapchainM1 = setup.SurfaceMaintenance1Khr && info->Has( VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME )
-        ? VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
-        : setup.SurfaceMaintenance1Ext && info->Has( VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) ? VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME : nullptr;
-    m_Caps.SwapchainMaintenance1 = enableIf( swapchainM1 && info->SwapchainMaintenance1.swapchainMaintenance1
-        && !CommandLineHas( "-VKNOSWAPCHAINM1", "-vknoswapchainm1" ), swapchainM1 );
-    if ( m_Caps.SwapchainMaintenance1 ) Logging::Inf( "Vulkan: {} enabled (present fences).", swapchainM1 );
-    m_Caps.Maintenance5 = maintenance5Core || enableIf( info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME )
-        && info->Maintenance5.maintenance5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
-    // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
-    constexpr VkShaderStageFlags kDgcStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    // -VKNODGC / GD3D11_VULKAN_NO_DGC=1 fall back to CPU replay, for A/B tests and driver trouble.
-    const bool dgcDisabled = CommandLineHas( "-VKNODGC", "-vknodgc" )
-        || GetEnvironmentVariableA( "GD3D11_VULKAN_NO_DGC", nullptr, 0 ) > 0;
-    m_Caps.DeviceGeneratedCommands = !dgcDisabled && info->Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) && info->Dgc.deviceGeneratedCommands
-        && m_Caps.Maintenance5 && info->Features12.bufferDeviceAddress
-        && ( info->DgcProps.supportedIndirectCommandsShaderStages & kDgcStages ) == kDgcStages;
-    if ( m_Caps.DeviceGeneratedCommands ) {
-        extensions.push_back( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME );
-        m_Caps.DgcMaxIndirectStride = info->DgcProps.maxIndirectCommandsIndirectStride;
-        m_Caps.DgcMaxSequenceCount = info->DgcProps.maxIndirectSequenceCount;
-        m_Caps.DgcShaderStages = kDgcStages;
-    }
+        // --- Extensions ---
+        std::vector<const char*> extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, info->MutableExtension };
+        auto enableIf = [&]( bool condition, const char* ext ) {
+            if ( condition ) extensions.push_back( ext );
+            return condition;
+        };
+        // 1.4 core features are enabled through VkPhysicalDeviceVulkan14Features instead of their extensions.
+        const bool core14 = info->Core14();
+        const bool pushDescriptorCore = info->PushDescriptorCore();
+        const bool maintenance5Core = info->Maintenance5Core();
+        const bool divisorCore = info->DivisorCore();
+        enableIf( !pushDescriptorCore, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME );
+        m_Caps.NullDescriptor = enableIf( !safe && info->Robustness2Extension && info->Robustness2.nullDescriptor, info->Robustness2Extension );
+        m_Caps.MemoryBudget = enableIf( !safe && info->Has( VK_EXT_MEMORY_BUDGET_EXTENSION_NAME ), VK_EXT_MEMORY_BUDGET_EXTENSION_NAME );
+        m_Caps.MemoryPriority = enableIf( !safe && info->Has( VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME ) && info->MemoryPriority.memoryPriority,
+            VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME );
+        m_Caps.PageableMemory = enableIf( m_Caps.MemoryPriority && info->Has( VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME )
+            && info->Pageable.pageableDeviceLocalMemory, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME );
+        if ( !safe && info->Has( VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME ) ) {
+            const VkPhysicalDeviceExtendedDynamicState3FeaturesEXT& e = info->Eds3;
+            m_Caps.DynamicBlend = e.extendedDynamicState3ColorBlendEnable && e.extendedDynamicState3ColorBlendEquation
+                && e.extendedDynamicState3ColorWriteMask;
+            m_Caps.DynamicDepthClamp = e.extendedDynamicState3DepthClampEnable;
+            m_Caps.DynamicPolygonMode = e.extendedDynamicState3PolygonMode;
+            m_Caps.DynamicAlphaToCoverage = e.extendedDynamicState3AlphaToCoverageEnable;
+            enableIf( m_Caps.DynamicBlend || m_Caps.DynamicDepthClamp || m_Caps.DynamicPolygonMode || m_Caps.DynamicAlphaToCoverage,
+                VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME );
+        }
+        m_Caps.DeviceFault = enableIf( !safe && info->Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) && info->Fault.deviceFault, VK_EXT_DEVICE_FAULT_EXTENSION_NAME );
+        m_Caps.AddressBindingReport = enableIf( !safe && m_Messenger && info->Has( VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME )
+            && info->AddressBinding.reportAddressBinding, VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME );
+        if ( m_Caps.AddressBindingReport ) {
+            VkDebugUtilsMessengerCreateInfoEXT mci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+            mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+            mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+            mci.pfnUserCallback = &AddressBindingCallback;
+            if ( VkUtil::Failed( vkCreateDebugUtilsMessengerEXT( m_Instance, &mci, nullptr, &m_BindingMessenger ), "vkCreateDebugUtilsMessengerEXT (address binding)" ) ) {
+                m_BindingMessenger = VK_NULL_HANDLE;
+                m_Caps.AddressBindingReport = false;
+                extensions.pop_back();
+            }
+        }
+        m_Caps.BufferMarkerAMD = enableIf( !safe && info->Has( VK_AMD_BUFFER_MARKER_EXTENSION_NAME ), VK_AMD_BUFFER_MARKER_EXTENSION_NAME );
+        // Checkpoints and timestamps are GPU writes into driver memory; -VKNOCHECKPOINTS / -VKNOTIMESTAMPS rule them out.
+        m_Caps.DiagnosticCheckpointsNV = enableIf( !safe && !CommandLineHas( "-VKNOCHECKPOINTS", "-vknocheckpoints" )
+            && info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ), VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
+        m_Caps.DiagnosticsConfigNV = enableIf( !safe && GpuDebug::VkAftermath() && info->Has( VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME )
+            && info->DiagnosticsConfig.diagnosticsConfig, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME );
+        if ( GpuDebug::VkAftermath() ) {
+            if ( m_Caps.DiagnosticsConfigNV ) Logging::Inf( "Vulkan: -VKAFTERMATH: device diagnostics config on; capture crashes with Nsight's GPU crash dump monitor." );
+            else Logging::Wrn( "Vulkan: -VKAFTERMATH: VK_NV_device_diagnostics_config is unavailable (NVIDIA only)." );
+        }
+        m_Caps.HdrMetadata = enableIf( !safe && m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
+            VK_EXT_HDR_METADATA_EXTENSION_NAME );
+        // Frame pacing waits on GPU completion. Present wait is opt-in (-VKPRESENTWAIT / GD3D11_VULKAN_PRESENT_WAIT=1):
+        // under FIFO on AMD it paced frames in back-to-back pairs, which puts ZENGIN into slow motion.
+        const bool presentWaitEnabled = !safe && ( CommandLineHas( "-VKPRESENTWAIT", "-vkpresentwait" )
+            || GetEnvironmentVariableA( "GD3D11_VULKAN_PRESENT_WAIT", nullptr, 0 ) > 0 );
+        if ( presentWaitEnabled ) Logging::Inf( "Vulkan: present wait enabled from the command line." );
+        // present_id2 is unreliable on NVIDIA drivers before 595 (dxvk disables it there); present_wait v1 still works.
+        const bool brokenPresentId2 = info->Props12.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY
+            && ( ( info->Props.properties.driverVersion >> 22 ) & 0x3ff ) < 595;
+        if ( presentWaitEnabled && brokenPresentId2 ) Logging::Inf( "Vulkan: present_id2 skipped on this NVIDIA driver (< 595)." );
+        if ( presentWaitEnabled && !brokenPresentId2 && info->PresentWait2Supported() && m_Caps.SurfaceCapabilities2 ) {
+            m_Caps.PresentWait2 = true;
+            extensions.push_back( VK_KHR_PRESENT_ID_2_EXTENSION_NAME );
+            extensions.push_back( VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME );
+        }
+        if ( presentWaitEnabled && info->PresentWaitSupported() ) {
+            m_Caps.PresentWait = true;
+            extensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
+            extensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
+        }
+        // Present fences let a retired swapchain be destroyed once the presentation engine is done with it.
+        // -VKNOSWAPCHAINM1 falls back to destroying it a few presents later.
+        const char* swapchainM1 = setup.SurfaceMaintenance1Khr && info->Has( VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME )
+            ? VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+            : setup.SurfaceMaintenance1Ext && info->Has( VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME ) ? VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME : nullptr;
+        m_Caps.SwapchainMaintenance1 = enableIf( !safe && swapchainM1 && info->SwapchainMaintenance1.swapchainMaintenance1
+            && !CommandLineHas( "-VKNOSWAPCHAINM1", "-vknoswapchainm1" ), swapchainM1 );
+        if ( m_Caps.SwapchainMaintenance1 ) Logging::Inf( "Vulkan: {} enabled (present fences).", swapchainM1 );
+        m_Caps.Maintenance5 = ( !safe && maintenance5Core ) || enableIf( !safe && info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME )
+            && info->Maintenance5.maintenance5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
+        // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
+        constexpr VkShaderStageFlags kDgcStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        // -VKNODGC / GD3D11_VULKAN_NO_DGC=1 fall back to CPU replay, for A/B tests and driver trouble.
+        const bool dgcDisabled = safe || CommandLineHas( "-VKNODGC", "-vknodgc" )
+            || GetEnvironmentVariableA( "GD3D11_VULKAN_NO_DGC", nullptr, 0 ) > 0;
+        m_Caps.DeviceGeneratedCommands = !dgcDisabled && info->Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) && info->Dgc.deviceGeneratedCommands
+            && m_Caps.Maintenance5 && info->Features12.bufferDeviceAddress
+            && ( info->DgcProps.supportedIndirectCommandsShaderStages & kDgcStages ) == kDgcStages;
+        if ( m_Caps.DeviceGeneratedCommands ) {
+            extensions.push_back( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME );
+            m_Caps.DgcMaxIndirectStride = info->DgcProps.maxIndirectCommandsIndirectStride;
+            m_Caps.DgcMaxSequenceCount = info->DgcProps.maxIndirectSequenceCount;
+            m_Caps.DgcShaderStages = kDgcStages;
+        }
 
-    // --- Features: every requirement from CheckRequirements, plus the supported optional ones ---
-    const VkPhysicalDeviceFeatures& sup = info->Features.features;
-    VkPhysicalDeviceFeatures2 features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
-    VkPhysicalDeviceFeatures& f = features.features;
-    f.multiDrawIndirect = VK_TRUE;
-    f.drawIndirectFirstInstance = VK_TRUE;
-    f.samplerAnisotropy = VK_TRUE;
-    f.textureCompressionBC = VK_TRUE;
-    f.imageCubeArray = VK_TRUE;
-    f.independentBlend = VK_TRUE;
-    f.depthClamp = VK_TRUE;
-    f.shaderClipDistance = VK_TRUE;
-    f.shaderStorageImageReadWithoutFormat = VK_TRUE;
-    f.shaderStorageImageWriteWithoutFormat = VK_TRUE;
-    f.fragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
-    f.vertexPipelineStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
-    f.depthBiasClamp = sup.depthBiasClamp;
-    f.fillModeNonSolid = sup.fillModeNonSolid;
-    f.tessellationShader = sup.tessellationShader;
-    f.shaderInt16 = sup.shaderInt16;
-    m_Caps.FragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
-    m_Caps.VertexStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
-    m_Caps.DepthBiasClamp = sup.depthBiasClamp;
-    m_Caps.FillModeNonSolid = sup.fillModeNonSolid;
-    m_Caps.TessellationShader = sup.tessellationShader;
+        // --- Features: every requirement from CheckRequirements, plus the supported optional ones ---
+        const VkPhysicalDeviceFeatures& sup = info->Features.features;
+        VkPhysicalDeviceFeatures2 features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+        VkPhysicalDeviceFeatures& f = features.features;
+        f.multiDrawIndirect = VK_TRUE;
+        f.drawIndirectFirstInstance = VK_TRUE;
+        f.samplerAnisotropy = VK_TRUE;
+        f.textureCompressionBC = VK_TRUE;
+        f.imageCubeArray = VK_TRUE;
+        f.independentBlend = VK_TRUE;
+        f.depthClamp = VK_TRUE;
+        f.shaderClipDistance = VK_TRUE;
+        f.shaderStorageImageReadWithoutFormat = VK_TRUE;
+        f.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+        f.fragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
+        f.vertexPipelineStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
+        f.depthBiasClamp = sup.depthBiasClamp;
+        f.fillModeNonSolid = sup.fillModeNonSolid;
+        f.tessellationShader = sup.tessellationShader;
+        f.shaderInt16 = sup.shaderInt16;
+        m_Caps.FragmentStoresAndAtomics = sup.fragmentStoresAndAtomics;
+        m_Caps.VertexStoresAndAtomics = sup.vertexPipelineStoresAndAtomics;
+        m_Caps.DepthBiasClamp = sup.depthBiasClamp;
+        m_Caps.FillModeNonSolid = sup.fillModeNonSolid;
+        m_Caps.TessellationShader = sup.tessellationShader;
 
-    VkPhysicalDeviceVulkan11Features f11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
-    f11.shaderDrawParameters = VK_TRUE;
-    f11.storageBuffer16BitAccess = info->Features11.storageBuffer16BitAccess;
-    f11.uniformAndStorageBuffer16BitAccess = info->Features11.uniformAndStorageBuffer16BitAccess;
+        VkPhysicalDeviceVulkan11Features f11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
+        f11.shaderDrawParameters = VK_TRUE;
+        f11.storageBuffer16BitAccess = info->Features11.storageBuffer16BitAccess;
+        f11.uniformAndStorageBuffer16BitAccess = info->Features11.uniformAndStorageBuffer16BitAccess;
 
-    const VkPhysicalDeviceVulkan12Features& sup12 = info->Features12;
-    VkPhysicalDeviceVulkan12Features f12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
-    f12.timelineSemaphore = VK_TRUE;
-    f12.descriptorIndexing = VK_TRUE;
-    f12.runtimeDescriptorArray = VK_TRUE;
-    f12.descriptorBindingPartiallyBound = VK_TRUE;
-    f12.descriptorBindingVariableDescriptorCount = VK_TRUE;
-    f12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
-    f12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-    f12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
-    f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-    f12.scalarBlockLayout = VK_TRUE;
-    f12.shaderFloat16 = VK_TRUE;
-    f12.drawIndirectCount = VK_TRUE;
-    f12.shaderOutputLayer = VK_TRUE;
-    f12.separateDepthStencilLayouts = VK_TRUE;
-    f12.descriptorBindingUniformBufferUpdateAfterBind = sup12.descriptorBindingUniformBufferUpdateAfterBind;
-    f12.descriptorBindingStorageBufferUpdateAfterBind = sup12.descriptorBindingStorageBufferUpdateAfterBind;
-    f12.shaderStorageImageArrayNonUniformIndexing = sup12.shaderStorageImageArrayNonUniformIndexing;
-    f12.shaderUniformBufferArrayNonUniformIndexing = sup12.shaderUniformBufferArrayNonUniformIndexing;
-    f12.shaderStorageBufferArrayNonUniformIndexing = sup12.shaderStorageBufferArrayNonUniformIndexing;
-    f12.hostQueryReset = sup12.hostQueryReset;
-    f12.samplerMirrorClampToEdge = sup12.samplerMirrorClampToEdge;
-    f12.bufferDeviceAddress = m_Caps.DeviceGeneratedCommands;
-    m_Caps.HeapUniformBuffers = HeapUniformBuffersSupported( *info );
-    m_Caps.TimestampQueries = info->TimestampQueries && !CommandLineHas( "-VKNOTIMESTAMPS", "-vknotimestamps" );
+        const VkPhysicalDeviceVulkan12Features& sup12 = info->Features12;
+        VkPhysicalDeviceVulkan12Features f12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+        f12.timelineSemaphore = VK_TRUE;
+        f12.descriptorIndexing = VK_TRUE;
+        f12.runtimeDescriptorArray = VK_TRUE;
+        f12.descriptorBindingPartiallyBound = VK_TRUE;
+        f12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        f12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+        f12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        f12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+        f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        f12.scalarBlockLayout = VK_TRUE;
+        f12.shaderFloat16 = VK_TRUE;
+        f12.drawIndirectCount = VK_TRUE;
+        f12.shaderOutputLayer = VK_TRUE;
+        f12.separateDepthStencilLayouts = VK_TRUE;
+        f12.descriptorBindingUniformBufferUpdateAfterBind = sup12.descriptorBindingUniformBufferUpdateAfterBind;
+        f12.descriptorBindingStorageBufferUpdateAfterBind = sup12.descriptorBindingStorageBufferUpdateAfterBind;
+        f12.shaderStorageImageArrayNonUniformIndexing = sup12.shaderStorageImageArrayNonUniformIndexing;
+        f12.shaderUniformBufferArrayNonUniformIndexing = sup12.shaderUniformBufferArrayNonUniformIndexing;
+        f12.shaderStorageBufferArrayNonUniformIndexing = sup12.shaderStorageBufferArrayNonUniformIndexing;
+        f12.hostQueryReset = sup12.hostQueryReset;
+        f12.samplerMirrorClampToEdge = sup12.samplerMirrorClampToEdge;
+        f12.bufferDeviceAddress = m_Caps.DeviceGeneratedCommands;
+        m_Caps.HeapUniformBuffers = HeapUniformBuffersSupported( *info );
+        m_Caps.TimestampQueries = info->TimestampQueries && !CommandLineHas( "-VKNOTIMESTAMPS", "-vknotimestamps" );
 
-    VkPhysicalDeviceVulkan13Features f13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
-    f13.dynamicRendering = VK_TRUE;
-    f13.synchronization2 = VK_TRUE;
-    f13.maintenance4 = VK_TRUE;
-    f13.shaderDemoteToHelperInvocation = VK_TRUE;
+        VkPhysicalDeviceVulkan13Features f13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+        f13.dynamicRendering = VK_TRUE;
+        f13.synchronization2 = VK_TRUE;
+        f13.maintenance4 = VK_TRUE;
+        f13.shaderDemoteToHelperInvocation = VK_TRUE;
 
-    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutableFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
-    mutableFeatures.mutableDescriptorType = VK_TRUE;
-    VkPhysicalDeviceRobustness2FeaturesKHR robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR };
-    robustness2.nullDescriptor = VK_TRUE;
-    // D3D12 bounds-checks every descriptor access (stray writes dropped, reads 0) and the shaders rely on it;
-    // NVIDIA does neither without these. -VKNOROBUST turns them off for A/B tests.
-    const bool robust = !CommandLineHas( "-VKNOROBUST", "-vknorobust" );
-    f.robustBufferAccess = robust && sup.robustBufferAccess;
-    f13.robustImageAccess = robust && info->Features13.robustImageAccess;
-    robustness2.robustBufferAccess2 = f.robustBufferAccess && info->Robustness2.robustBufferAccess2;
-    robustness2.robustImageAccess2 = f13.robustImageAccess && info->Robustness2.robustImageAccess2;
-    Logging::Inf( "Vulkan: robust buffer access {}{}, robust image access {}{}.", f.robustBufferAccess ? "on" : "off",
-        m_Caps.NullDescriptor && robustness2.robustBufferAccess2 ? " (2)" : "", f13.robustImageAccess ? "on" : "off",
-        m_Caps.NullDescriptor && robustness2.robustImageAccess2 ? " (2)" : "" );
-    VkPhysicalDeviceFaultFeaturesEXT fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
-    fault.deviceFault = VK_TRUE;
-    VkPhysicalDeviceAddressBindingReportFeaturesEXT addressBinding = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };
-    addressBinding.reportAddressBinding = VK_TRUE;
-    VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
-    maintenance5.maintenance5 = VK_TRUE;
-    VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
-    dgc.deviceGeneratedCommands = VK_TRUE;
-    VkPhysicalDeviceMemoryPriorityFeaturesEXT memoryPriority = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT };
-    memoryPriority.memoryPriority = VK_TRUE;
-    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
-    pageable.pageableDeviceLocalMemory = VK_TRUE;
-    VkPhysicalDevicePresentIdFeaturesKHR presentId = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR };
-    presentId.presentId = VK_TRUE;
-    VkPhysicalDevicePresentWaitFeaturesKHR presentWait = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR };
-    presentWait.presentWait = VK_TRUE;
-    VkPhysicalDevicePresentId2FeaturesKHR presentId2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR };
-    presentId2.presentId2 = VK_TRUE;
-    VkPhysicalDevicePresentWait2FeaturesKHR presentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
-    presentWait2.presentWait2 = VK_TRUE;
-    VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainM1Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
-    swapchainM1Features.swapchainMaintenance1 = VK_TRUE;
-    VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
-    diagnosticsFeatures.diagnosticsConfig = VK_TRUE;
-    m_Caps.InstanceDivisor = divisorCore
-        || enableIf( info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
-    m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && ( divisorCore ? info->Features14.vertexAttributeInstanceRateZeroDivisor
-        : info->Divisor.vertexAttributeInstanceRateZeroDivisor );
-    VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR divisor = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_KHR };
-    divisor.vertexAttributeInstanceRateDivisor = m_Caps.InstanceDivisor;
-    divisor.vertexAttributeInstanceRateZeroDivisor = m_Caps.InstanceDivisorZero;
-    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT };
-    eds3.extendedDynamicState3ColorBlendEnable = m_Caps.DynamicBlend;
-    eds3.extendedDynamicState3ColorBlendEquation = m_Caps.DynamicBlend;
-    eds3.extendedDynamicState3ColorWriteMask = m_Caps.DynamicBlend;
-    eds3.extendedDynamicState3DepthClampEnable = m_Caps.DynamicDepthClamp;
-    eds3.extendedDynamicState3PolygonMode = m_Caps.DynamicPolygonMode;
-    eds3.extendedDynamicState3AlphaToCoverageEnable = m_Caps.DynamicAlphaToCoverage;
+        VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutableFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
+        mutableFeatures.mutableDescriptorType = VK_TRUE;
+        VkPhysicalDeviceRobustness2FeaturesKHR robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR };
+        robustness2.nullDescriptor = VK_TRUE;
+        // D3D12 bounds-checks every descriptor access (stray writes dropped, reads 0) and the shaders rely on it;
+        // NVIDIA does neither without these. -VKNOROBUST turns them off for A/B tests.
+        const bool robust = !CommandLineHas( "-VKNOROBUST", "-vknorobust" );
+        f.robustBufferAccess = robust && sup.robustBufferAccess;
+        f13.robustImageAccess = robust && info->Features13.robustImageAccess;
+        robustness2.robustBufferAccess2 = f.robustBufferAccess && info->Robustness2.robustBufferAccess2;
+        robustness2.robustImageAccess2 = f13.robustImageAccess && info->Robustness2.robustImageAccess2;
+        Logging::Inf( "Vulkan: robust buffer access {}{}, robust image access {}{}.", f.robustBufferAccess ? "on" : "off",
+            m_Caps.NullDescriptor && robustness2.robustBufferAccess2 ? " (2)" : "", f13.robustImageAccess ? "on" : "off",
+            m_Caps.NullDescriptor && robustness2.robustImageAccess2 ? " (2)" : "" );
+        VkPhysicalDeviceFaultFeaturesEXT fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
+        fault.deviceFault = VK_TRUE;
+        VkPhysicalDeviceAddressBindingReportFeaturesEXT addressBinding = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT };
+        addressBinding.reportAddressBinding = VK_TRUE;
+        VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
+        maintenance5.maintenance5 = VK_TRUE;
+        VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
+        dgc.deviceGeneratedCommands = VK_TRUE;
+        VkPhysicalDeviceMemoryPriorityFeaturesEXT memoryPriority = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT };
+        memoryPriority.memoryPriority = VK_TRUE;
+        VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
+        pageable.pageableDeviceLocalMemory = VK_TRUE;
+        VkPhysicalDevicePresentIdFeaturesKHR presentId = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR };
+        presentId.presentId = VK_TRUE;
+        VkPhysicalDevicePresentWaitFeaturesKHR presentWait = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR };
+        presentWait.presentWait = VK_TRUE;
+        VkPhysicalDevicePresentId2FeaturesKHR presentId2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR };
+        presentId2.presentId2 = VK_TRUE;
+        VkPhysicalDevicePresentWait2FeaturesKHR presentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
+        presentWait2.presentWait2 = VK_TRUE;
+        VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchainM1Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR };
+        swapchainM1Features.swapchainMaintenance1 = VK_TRUE;
+        VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV };
+        diagnosticsFeatures.diagnosticsConfig = VK_TRUE;
+        m_Caps.InstanceDivisor = ( !safe && divisorCore )
+            || enableIf( !safe && info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
+        m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && ( ( !safe && divisorCore ) ? info->Features14.vertexAttributeInstanceRateZeroDivisor
+            : info->Divisor.vertexAttributeInstanceRateZeroDivisor );
+        VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR divisor = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_KHR };
+        divisor.vertexAttributeInstanceRateDivisor = m_Caps.InstanceDivisor;
+        divisor.vertexAttributeInstanceRateZeroDivisor = m_Caps.InstanceDivisorZero;
+        VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT };
+        eds3.extendedDynamicState3ColorBlendEnable = m_Caps.DynamicBlend;
+        eds3.extendedDynamicState3ColorBlendEquation = m_Caps.DynamicBlend;
+        eds3.extendedDynamicState3ColorWriteMask = m_Caps.DynamicBlend;
+        eds3.extendedDynamicState3DepthClampEnable = m_Caps.DynamicDepthClamp;
+        eds3.extendedDynamicState3PolygonMode = m_Caps.DynamicPolygonMode;
+        eds3.extendedDynamicState3AlphaToCoverageEnable = m_Caps.DynamicAlphaToCoverage;
 
-    // With the 1.4 struct chained, its promoted features (maintenance5, divisor) must be enabled there, not standalone.
-    VkPhysicalDeviceVulkan14Features f14 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
-    f14.pushDescriptor = pushDescriptorCore;
-    f14.maintenance5 = m_Caps.Maintenance5;
-    f14.vertexAttributeInstanceRateDivisor = m_Caps.InstanceDivisor;
-    f14.vertexAttributeInstanceRateZeroDivisor = m_Caps.InstanceDivisorZero;
+        // With the 1.4 struct chained, its promoted features (maintenance5, divisor) must be enabled there, not standalone.
+        VkPhysicalDeviceVulkan14Features f14 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
+        f14.pushDescriptor = pushDescriptorCore;
+        f14.maintenance5 = m_Caps.Maintenance5;
+        f14.vertexAttributeInstanceRateDivisor = m_Caps.InstanceDivisor;
+        f14.vertexAttributeInstanceRateZeroDivisor = m_Caps.InstanceDivisorZero;
 
-    features.pNext = &f11;
-    f11.pNext = &f12;
-    f12.pNext = &f13;
-    f13.pNext = &mutableFeatures;
-    void** tail = &mutableFeatures.pNext;
-    if ( core14 ) { *tail = &f14; tail = &f14.pNext; }
-    if ( m_Caps.NullDescriptor ) { *tail = &robustness2; tail = &robustness2.pNext; }
-    if ( m_Caps.DeviceFault ) { *tail = &fault; tail = &fault.pNext; }
-    if ( m_Caps.AddressBindingReport ) { *tail = &addressBinding; tail = &addressBinding.pNext; }
-    if ( m_Caps.Maintenance5 && !core14 ) { *tail = &maintenance5; tail = &maintenance5.pNext; }
-    if ( m_Caps.DeviceGeneratedCommands ) { *tail = &dgc; tail = &dgc.pNext; }
-    if ( m_Caps.MemoryPriority ) { *tail = &memoryPriority; tail = &memoryPriority.pNext; }
-    if ( m_Caps.PageableMemory ) { *tail = &pageable; tail = &pageable.pNext; }
-    if ( m_Caps.DynamicBlend || m_Caps.DynamicDepthClamp || m_Caps.DynamicPolygonMode || m_Caps.DynamicAlphaToCoverage ) {
-        *tail = &eds3; tail = &eds3.pNext;
-    }
-    if ( m_Caps.InstanceDivisor && !core14 ) { *tail = &divisor; tail = &divisor.pNext; }
-    if ( m_Caps.PresentWait ) {
-        *tail = &presentId; presentId.pNext = &presentWait; tail = &presentWait.pNext;
-    }
-    if ( m_Caps.PresentWait2 ) {
-        *tail = &presentId2; presentId2.pNext = &presentWait2; tail = &presentWait2.pNext;
-    }
-    if ( m_Caps.SwapchainMaintenance1 ) { *tail = &swapchainM1Features; tail = &swapchainM1Features.pNext; }
-    if ( m_Caps.DiagnosticsConfigNV ) { *tail = &diagnosticsFeatures; tail = &diagnosticsFeatures.pNext; }
+        features.pNext = &f11;
+        f11.pNext = &f12;
+        f12.pNext = &f13;
+        f13.pNext = &mutableFeatures;
+        void** tail = &mutableFeatures.pNext;
+        if ( core14 ) { *tail = &f14; tail = &f14.pNext; }
+        if ( m_Caps.NullDescriptor ) { *tail = &robustness2; tail = &robustness2.pNext; }
+        if ( m_Caps.DeviceFault ) { *tail = &fault; tail = &fault.pNext; }
+        if ( m_Caps.AddressBindingReport ) { *tail = &addressBinding; tail = &addressBinding.pNext; }
+        if ( m_Caps.Maintenance5 && !core14 ) { *tail = &maintenance5; tail = &maintenance5.pNext; }
+        if ( m_Caps.DeviceGeneratedCommands ) { *tail = &dgc; tail = &dgc.pNext; }
+        if ( m_Caps.MemoryPriority ) { *tail = &memoryPriority; tail = &memoryPriority.pNext; }
+        if ( m_Caps.PageableMemory ) { *tail = &pageable; tail = &pageable.pNext; }
+        if ( m_Caps.DynamicBlend || m_Caps.DynamicDepthClamp || m_Caps.DynamicPolygonMode || m_Caps.DynamicAlphaToCoverage ) {
+            *tail = &eds3; tail = &eds3.pNext;
+        }
+        if ( m_Caps.InstanceDivisor && !core14 ) { *tail = &divisor; tail = &divisor.pNext; }
+        if ( m_Caps.PresentWait ) {
+            *tail = &presentId; presentId.pNext = &presentWait; tail = &presentWait.pNext;
+        }
+        if ( m_Caps.PresentWait2 ) {
+            *tail = &presentId2; presentId2.pNext = &presentWait2; tail = &presentWait2.pNext;
+        }
+        if ( m_Caps.SwapchainMaintenance1 ) { *tail = &swapchainM1Features; tail = &swapchainM1Features.pNext; }
+        if ( m_Caps.DiagnosticsConfigNV ) { *tail = &diagnosticsFeatures; tail = &diagnosticsFeatures.pNext; }
 
-    // --- Queues ---
-    const float priority = 1.0f;
-    VkDeviceQueueCreateInfo queues[2] = {};
-    uint32_t queueCount = 0;
-    for ( uint32_t family : { m_GraphicsQueueFamily, m_TransferQueueFamily } ) {
-        if ( queueCount == 1 && family == m_GraphicsQueueFamily ) break;
-        queues[queueCount] = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
-        queues[queueCount].queueFamilyIndex = family;
-        queues[queueCount].queueCount = 1;
-        queues[queueCount].pQueuePriorities = &priority;
-        ++queueCount;
-    }
+        // --- Queues ---
+        const float priority = 1.0f;
+        VkDeviceQueueCreateInfo queues[2] = {};
+        uint32_t queueCount = 0;
+        for ( uint32_t family : { m_GraphicsQueueFamily, m_TransferQueueFamily } ) {
+            if ( queueCount == 1 && family == m_GraphicsQueueFamily ) break;
+            queues[queueCount] = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
+            queues[queueCount].queueFamilyIndex = family;
+            queues[queueCount].queueCount = 1;
+            queues[queueCount].pQueuePriorities = &priority;
+            ++queueCount;
+        }
 
-    VkDeviceDiagnosticsConfigCreateInfoNV diagnostics = { VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV, &features };
-    diagnostics.flags = VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV
-        | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV;
-    VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-    dci.pNext = m_Caps.DiagnosticsConfigNV ? static_cast<const void*>( &diagnostics ) : &features;
-    dci.queueCreateInfoCount = queueCount;
-    dci.pQueueCreateInfos = queues;
-    dci.enabledExtensionCount = static_cast<uint32_t>( extensions.size() );
-    dci.ppEnabledExtensionNames = extensions.data();
-    if ( VkUtil::Failed( vkCreateDevice( m_PhysicalDevice, &dci, nullptr, &m_Device ), "vkCreateDevice" ) ) {
-        m_Device = VK_NULL_HANDLE;
-        return false;
-    }
-    volkLoadDevice( m_Device );
-    // KHR entry points only load with their extension enabled; the core ones have the same signatures.
-    if ( pushDescriptorCore ) vkCmdPushDescriptorSetKHR = vkCmdPushDescriptorSet;
-    if ( maintenance5Core ) vkCmdBindIndexBuffer2KHR = vkCmdBindIndexBuffer2;
-    vkGetDeviceQueue( m_Device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue );
-    vkGetDeviceQueue( m_Device, m_TransferQueueFamily, 0, &m_TransferQueue );
+        VkDeviceDiagnosticsConfigCreateInfoNV diagnostics = { VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV, &features };
+        diagnostics.flags = VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV
+            | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_ERROR_REPORTING_BIT_NV;
+        VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+        dci.pNext = m_Caps.DiagnosticsConfigNV ? static_cast<const void*>( &diagnostics ) : &features;
+        dci.queueCreateInfoCount = queueCount;
+        dci.pQueueCreateInfos = queues;
+        dci.enabledExtensionCount = static_cast<uint32_t>( extensions.size() );
+        dci.ppEnabledExtensionNames = extensions.data();
+        const VkResult created = vkCreateDevice( m_PhysicalDevice, &dci, nullptr, &m_Device );
+        if ( created != VK_SUCCESS ) {
+            Logging::Wrn( "Vulkan: vkCreateDevice failed ({}){}.", VkUtil::ResultToString( created ),
+                safe ? " with only the required extensions" : "; retrying with only the required extensions" );
+            m_Device = VK_NULL_HANDLE;
+            return false;
+        }
+        if ( safe ) Logging::Wrn( "Vulkan: running in safe mode; optional extensions are off." );
+        volkLoadDevice( m_Device );
+        // KHR entry points only load with their extension enabled; the core ones have the same signatures.
+        if ( pushDescriptorCore ) vkCmdPushDescriptorSetKHR = vkCmdPushDescriptorSet;
+        if ( maintenance5Core ) vkCmdBindIndexBuffer2KHR = vkCmdBindIndexBuffer2;
+        vkGetDeviceQueue( m_Device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue );
+        vkGetDeviceQueue( m_Device, m_TransferQueueFamily, 0, &m_TransferQueue );
+        return true;
+    };
+    if ( !createDevice( false ) && !createDevice( true ) ) return false;
 
     const VkPhysicalDeviceProperties& props = info->Props.properties;
     m_DeviceDescription = props.deviceName;

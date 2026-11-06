@@ -216,7 +216,7 @@ namespace VulkanRhi {
                 m_Acquired = true;
                 return true;
             }
-            if ( r != VK_ERROR_OUT_OF_DATE_KHR || !Rebuild() ) {
+            if ( ( r != VK_ERROR_OUT_OF_DATE_KHR && r != VK_ERROR_SURFACE_LOST_KHR ) || !Rebuild() ) {
                 m_Device->CheckResult( r, "vkAcquireNextImageKHR" );
                 return false;
             }
@@ -265,7 +265,7 @@ namespace VulkanRhi {
         const VkResult r = m_Swapchain.Present( queue->m_Queue, queue->m_Mutex, m_ImageIndex );
         m_Device->AddWait( DeviceImpl::Wait::Present, QpcNow() - presentStart );
         m_Acquired = false;
-        if ( r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR ) m_NeedsRebuild = true;
+        if ( r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_SURFACE_LOST_KHR ) m_NeedsRebuild = true;
         else if ( m_Device->CheckResult( r, "vkQueuePresentKHR" ) && m_Device->IsDeviceLost() ) return DXGI_ERROR_DEVICE_REMOVED;
         m_Device->CollectGarbage();
         m_Device->NotePresent();

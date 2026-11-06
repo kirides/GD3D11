@@ -42,6 +42,10 @@ namespace VulkanRhi {
     bool HasStencil( VkFormat format );
     VkImageAspectFlags AspectOf( VkFormat format );
     bool IsTypeless( DXGI_FORMAT format );
+    /** Typed members of a TYPELESS format's family (VkImageFormatListCreateInfo keeps compression on mutable images). */
+    uint32_t ViewFormatFamily( DXGI_FORMAT format, VkFormat* out, uint32_t capacity );
+    /** SRV swizzle: D3D12's component mapping composed with what X8/A8 formats return in D3D. */
+    VkComponentMapping SrvSwizzle( DXGI_FORMAT format, UINT mapping );
 
     // ---- Barrier mapping (VulkanRhiCommandList.cpp) -----------------------------------------------
 
@@ -64,9 +68,20 @@ namespace VulkanRhi {
         uint32_t MipCount = 1;
         uint32_t BaseLayer = 0;
         uint32_t LayerCount = 1;
+        // VkComponentSwizzle per channel, packed: every descriptor record carries a key (SRVs only; others identity).
+        uint8_t Swizzle[4] = {};
+        void SetSwizzle( const VkComponentMapping& m ) {
+            Swizzle[0] = static_cast<uint8_t>( m.r ); Swizzle[1] = static_cast<uint8_t>( m.g );
+            Swizzle[2] = static_cast<uint8_t>( m.b ); Swizzle[3] = static_cast<uint8_t>( m.a );
+        }
+        VkComponentMapping Components() const {
+            return { static_cast<VkComponentSwizzle>( Swizzle[0] ), static_cast<VkComponentSwizzle>( Swizzle[1] ),
+                static_cast<VkComponentSwizzle>( Swizzle[2] ), static_cast<VkComponentSwizzle>( Swizzle[3] ) };
+        }
         bool operator==( const ViewKey& o ) const {
             return Type == o.Type && Format == o.Format && Aspect == o.Aspect && Usage == o.Usage && BaseMip == o.BaseMip
-                && MipCount == o.MipCount && BaseLayer == o.BaseLayer && LayerCount == o.LayerCount;
+                && MipCount == o.MipCount && BaseLayer == o.BaseLayer && LayerCount == o.LayerCount
+                && std::memcmp( Swizzle, o.Swizzle, sizeof( Swizzle ) ) == 0;
         }
     };
 
@@ -81,6 +96,8 @@ namespace VulkanRhi {
         VkDeviceSize Offset = 0;
         VkDeviceSize Range = 0;
     };
+    // 65536 records back the shader-visible heap alone: growing this costs 32-bit VA in every heap.
+    static_assert( sizeof( Descriptor ) <= 80, "Descriptor record grew" );
 
     inline int64_t QpcNow() {
         LARGE_INTEGER t = {};
@@ -384,6 +401,9 @@ namespace VulkanRhi {
     };
 
     class CommandListImpl;
+
+    /** Waits on a timeline in 4 s slices: a GPU that makes no progress is logged, a loss gets the fault report. */
+    bool WaitTimeline( DeviceImpl* device, VkSemaphore timeline, uint64_t value, const char* what );
 
     /** One VkQueue. Signals and waits become (possibly empty) submits; pending waits ride on the next one. */
     class QueueImpl final : public Rhi::CommandQueue {

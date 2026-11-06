@@ -71,7 +71,10 @@ namespace VulkanRhi {
         case DXGI_FORMAT_B8G8R8A8_TYPELESS:
         case DXGI_FORMAT_B8G8R8A8_UNORM:          return { VK_FORMAT_B8G8R8A8_UNORM, 4 };
         case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:     return { VK_FORMAT_B8G8R8A8_SRGB, 4 };
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS:
         case DXGI_FORMAT_B8G8R8X8_UNORM:          return { VK_FORMAT_B8G8R8A8_UNORM, 4 };
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:     return { VK_FORMAT_B8G8R8A8_SRGB, 4 };
+        case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:      return { VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, 4 };
         case DXGI_FORMAT_BC1_TYPELESS:
         case DXGI_FORMAT_BC1_UNORM:               return { VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 8, 4 };
         case DXGI_FORMAT_BC1_UNORM_SRGB:          return { VK_FORMAT_BC1_RGBA_SRGB_BLOCK, 8, 4 };
@@ -87,6 +90,9 @@ namespace VulkanRhi {
         case DXGI_FORMAT_BC5_TYPELESS:
         case DXGI_FORMAT_BC5_UNORM:               return { VK_FORMAT_BC5_UNORM_BLOCK, 16, 4 };
         case DXGI_FORMAT_BC5_SNORM:               return { VK_FORMAT_BC5_SNORM_BLOCK, 16, 4 };
+        case DXGI_FORMAT_BC6H_TYPELESS:
+        case DXGI_FORMAT_BC6H_UF16:               return { VK_FORMAT_BC6H_UFLOAT_BLOCK, 16, 4 };
+        case DXGI_FORMAT_BC6H_SF16:               return { VK_FORMAT_BC6H_SFLOAT_BLOCK, 16, 4 };
         case DXGI_FORMAT_BC7_TYPELESS:
         case DXGI_FORMAT_BC7_UNORM:               return { VK_FORMAT_BC7_UNORM_BLOCK, 16, 4 };
         case DXGI_FORMAT_BC7_UNORM_SRGB:          return { VK_FORMAT_BC7_SRGB_BLOCK, 16, 4 };
@@ -135,9 +141,75 @@ namespace VulkanRhi {
         case DXGI_FORMAT_R8G8_TYPELESS: case DXGI_FORMAT_R16_TYPELESS: case DXGI_FORMAT_R8_TYPELESS:
         case DXGI_FORMAT_B8G8R8A8_TYPELESS: case DXGI_FORMAT_BC1_TYPELESS: case DXGI_FORMAT_BC2_TYPELESS:
         case DXGI_FORMAT_BC3_TYPELESS: case DXGI_FORMAT_BC4_TYPELESS: case DXGI_FORMAT_BC5_TYPELESS: case DXGI_FORMAT_BC7_TYPELESS:
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS: case DXGI_FORMAT_BC6H_TYPELESS:
             return true;
         default:
             return false;
         }
+    }
+
+    uint32_t ViewFormatFamily( DXGI_FORMAT format, VkFormat* out, uint32_t capacity ) {
+        static constexpr DXGI_FORMAT kFamilies[][6] = {
+            { DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_UINT, DXGI_FORMAT_R32G32B32A32_SINT },
+            { DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32_UINT, DXGI_FORMAT_R32G32B32_SINT },
+            { DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_UINT,
+              DXGI_FORMAT_R16G16B16A16_SNORM, DXGI_FORMAT_R16G16B16A16_SINT },
+            { DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32G32_SINT },
+            { DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R10G10B10A2_UINT },
+            { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UINT,
+              DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SINT },
+            { DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16G16_UINT, DXGI_FORMAT_R16G16_SNORM,
+              DXGI_FORMAT_R16G16_SINT },
+            { DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32_SINT },
+            { DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8_UINT, DXGI_FORMAT_R8G8_SNORM },
+            { DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16_SNORM, DXGI_FORMAT_R16_SINT },
+            { DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8_SNORM, DXGI_FORMAT_R8_SINT },
+            { DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB },
+            { DXGI_FORMAT_B8G8R8X8_UNORM, DXGI_FORMAT_B8G8R8X8_UNORM_SRGB },
+            { DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC1_UNORM_SRGB },
+            { DXGI_FORMAT_BC2_UNORM, DXGI_FORMAT_BC2_UNORM_SRGB },
+            { DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC3_UNORM_SRGB },
+            { DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_BC4_SNORM },
+            { DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC5_SNORM },
+            { DXGI_FORMAT_BC6H_UF16, DXGI_FORMAT_BC6H_SF16 },
+            { DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB },
+        };
+        const VkFormat base = ToVkFormat( format );
+        for ( const auto& family : kFamilies ) {
+            if ( ToVkFormat( family[0] ) != base ) continue;
+            uint32_t n = 0;
+            for ( DXGI_FORMAT f : family )
+                if ( f != DXGI_FORMAT_UNKNOWN && n < capacity ) out[n++] = ToVkFormat( f );
+            return n;
+        }
+        return 0;
+    }
+
+    VkComponentMapping SrvSwizzle( DXGI_FORMAT format, UINT mapping ) {
+        // What D3D returns for formats Vulkan stores differently: X8 reads alpha 1, A8 reads (0, 0, 0, a).
+        VkComponentSwizzle fmt[4] = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A };
+        switch ( format ) {
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS: case DXGI_FORMAT_B8G8R8X8_UNORM: case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+            fmt[3] = VK_COMPONENT_SWIZZLE_ONE;
+            break;
+        case DXGI_FORMAT_A8_UNORM:
+            fmt[0] = fmt[1] = fmt[2] = VK_COMPONENT_SWIZZLE_ZERO;
+            fmt[3] = VK_COMPONENT_SWIZZLE_R;
+            break;
+        default:
+            break;
+        }
+        if ( mapping == 0 ) mapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;   // zero-initialised view descs
+        VkComponentSwizzle out[4];
+        for ( UINT i = 0; i < 4; ++i ) {
+            const UINT src = D3D12_DECODE_SHADER_4_COMPONENT_MAPPING( i, mapping );
+            out[i] = src == D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0 ? VK_COMPONENT_SWIZZLE_ZERO
+                : src == D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1 ? VK_COMPONENT_SWIZZLE_ONE : fmt[src & 3];
+        }
+        // Identity components stay IDENTITY so equal views share one cache entry.
+        static constexpr VkComponentSwizzle kSelf[4] = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A };
+        for ( UINT i = 0; i < 4; ++i )
+            if ( out[i] == kSelf[i] ) out[i] = VK_COMPONENT_SWIZZLE_IDENTITY;
+        return { out[0], out[1], out[2], out[3] };
     }
 }

@@ -32,6 +32,21 @@ namespace VulkanRhi {
             return alignment ? ( value + alignment - 1 ) / alignment * alignment : value;
         }
 
+        /** View formats of a TYPELESS image; without the list drivers drop colour compression on MUTABLE_FORMAT images. */
+        struct ViewFormatList {
+            VkFormat Formats[6] = {};
+            VkImageFormatListCreateInfo Info = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO };
+            void Attach( VkImageCreateInfo& ii, DXGI_FORMAT format ) {
+                if ( !( ii.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT ) || ( ii.flags & VK_IMAGE_CREATE_EXTENDED_USAGE_BIT )
+                    || ToVkFormat( format ) != ii.format ) return;
+                Info.viewFormatCount = ViewFormatFamily( format, Formats, 6 );
+                if ( !Info.viewFormatCount ) return;
+                Info.pViewFormats = Formats;
+                Info.pNext = ii.pNext;
+                ii.pNext = &Info;
+            }
+        };
+
         constexpr VkBufferUsageFlags kBufferUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
             | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
             | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
@@ -142,6 +157,7 @@ namespace VulkanRhi {
         ci.image = m_Image;
         ci.viewType = key.Type;
         ci.format = key.Format;
+        ci.components = key.Components();
         ci.subresourceRange = { key.Aspect, key.BaseMip, key.MipCount, key.BaseLayer, key.LayerCount };
         VkImageView view = VK_NULL_HANDLE;
         if ( m_Device->CheckResult( vkCreateImageView( m_Device->Vk(), &ci, nullptr, &view ), "vkCreateImageView" ) )
@@ -944,13 +960,23 @@ namespace VulkanRhi {
             ii.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         if ( IsTypeless( desc->Format ) && !depthStencil ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         if ( ii.usage & VK_IMAGE_USAGE_STORAGE_BIT ) {
-            VkFormatProperties props = {};
-            vkGetPhysicalDeviceFormatProperties( m_Vk.GetPhysicalDevice(), ii.format, &props );
-            if ( !( props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ) )
+            VkFormatProperties3 props3 = { VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3 };
+            VkFormatProperties2 props = { VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &props3 };
+            vkGetPhysicalDeviceFormatProperties2( m_Vk.GetPhysicalDevice(), ii.format, &props );
+            if ( !( props.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ) )
                 ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+            // The SPIR-V declares storage images formatless, so a UAV load needs per-format support on top of the feature.
+            static std::array<std::atomic<bool>, 256> s_warned{};
+            if ( ( props.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT )
+                && !( props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT )
+                && static_cast<size_t>( ii.format ) < s_warned.size() && !s_warned[ii.format].exchange( true ) )
+                Logging::Wrn( "Vulkan: format {} has no format-less storage reads; UAV loads from it are undefined.",
+                    static_cast<int>( ii.format ) );
         }
         ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        ViewFormatList formatList;
+        formatList.Attach( ii, desc->Format );
 
         ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         ai.flags = 0;
@@ -1027,6 +1053,8 @@ namespace VulkanRhi {
         if ( desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS ) ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
         if ( IsTypeless( desc->Format ) ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        ViewFormatList formatList;
+        formatList.Attach( ii, desc->Format );
         if ( CheckResult( vkCreateImage( Vk(), &ii, nullptr, &r->m_Image ), "vkCreateImage (placed)" ) ) return E_OUTOFMEMORY;
         VkMemoryRequirements req = {};
         vkGetImageMemoryRequirements( Vk(), r->m_Image, &req );
@@ -1066,6 +1094,8 @@ namespace VulkanRhi {
         ii.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if ( desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS ) ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
         if ( IsTypeless( desc.Format ) ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // as CreatePlacedRenderTarget
+        ViewFormatList formatList;
+        formatList.Attach( ii, desc.Format );
         VkDeviceImageMemoryRequirements query = { VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS };
         query.pCreateInfo = &ii;
         VkMemoryRequirements2 req = { VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2 };
@@ -1328,6 +1358,8 @@ namespace VulkanRhi {
                 break;
             }
         }
+        const DXGI_FORMAT viewFormat = desc && desc->Format != DXGI_FORMAT_UNKNOWN ? desc->Format : r->m_Desc.Format;
+        if ( !IsDepthFormat( r->m_Format ) ) key.SetSwizzle( SrvSwizzle( viewFormat, desc ? desc->Shader4ComponentMapping : 0 ) );
         d.Type = Descriptor::Kind::SampledImage;
         d.Key = key;
         d.View = r->GetView( key );
