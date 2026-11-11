@@ -386,6 +386,16 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     const bool oceanSimulated = m_Ocean && !g_FrameWaterSurfaces[1].empty() && m_Pipelines.Water.OceanPSO && m_Pipelines.Water.OceanDepthPrepassPSO
         && m_Ocean->Update( Engine::GAPI->GetRendererState().RendererSettings );
 
+    // Tessellated wave water: only the smooth DX11 mode (Original is piecewise constant per cell), same build gate as WaveAnimation
+    bool waveWaterTess = false;
+#ifdef BUILD_GOTHIC_2_6_fix
+    {
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        waveWaterTess = rs.WaterTessellation && rs.WaterWaves == GothicRendererSettings::WATER_WAVES_D3D11
+            && m_Pipelines.Water.TessPSO && m_Pipelines.Water.TessDepthPrepassPSO;
+    }
+#endif
+
     // ViewProj — identical derivation to DrawWorldMesh (water verts are already world-space).
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -532,6 +542,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             cb.OceanParams[0] = static_cast<float>( cascades.size );
             cb.OceanParams[1] = OceanFFT::UnitsPerMetre;
         }
+        cb.OceanParams[3] = static_cast<float>( std::clamp( settings.WaterTessellationMaxFactor, 4, 64 ) );
         cb.SkyAverageIndex = skyAverageReady ? m_WaterSkyAverageSrvSlot : UINT_MAX;
         // Same build gate as D3D11's SHD_WATERANI. The Z-prepass shares the VS, so its depth moves with the waves.
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -590,6 +601,19 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     m_CmdList->SetGraphicsRootDescriptorTable( 1, blackSrv );
     m_CmdList->SetGraphicsRoot32BitConstant( 4, 0u, 0 );   // b3 IsOcean, set per batch in the color loop
 
+    // Per bucket: 0 = triangles, 1 = FFT ocean, 2 = tessellated wave water. Both passes ask here, so they always agree.
+    auto pickWaterPso = [&]( UINT ocean, bool depth ) -> Rhi::PipelineState* {
+        if ( ocean == 1 && oceanSimulated && copiesReady )
+            return depth ? PullPick( m_Pipelines.Water.OceanDepthPrepassPSO.Get(), m_Pipelines.Water.OceanDepthPrepassPSOPull.Get() )
+                         : PullPick( m_Pipelines.Water.OceanPSO.Get(), m_Pipelines.Water.OceanPSOPull.Get() );
+        if ( waveWaterTess && copiesReady )
+            return depth ? PullPick( m_Pipelines.Water.TessDepthPrepassPSO.Get(), m_Pipelines.Water.TessDepthPrepassPSOPull.Get() )
+                         : PullPick( m_Pipelines.Water.TessPSO.Get(), m_Pipelines.Water.TessPSOPull.Get() );
+        return depth ? PullPick( m_Pipelines.Water.DepthPrepassPSO.Get(), m_Pipelines.Water.DepthPrepassPSOPull.Get() )
+                     : PullPick( m_Pipelines.Water.PSO.Get(), m_Pipelines.Water.PSOPull.Get() );
+    };
+    auto isTessellated = [&]( UINT ocean ) { return copiesReady && ( ( ocean == 1 && oceanSimulated ) || waveWaterTess ); };
+
     // === Z-Prepass === (mirrors D3D11's DrawWaterSurfaces::ZPrepass)
     // The color pass below is depth-read-only, so without this the main depth buffer would still hold the
     // geometry BEHIND the water surface (or the reversed-Z far plane over open ocean) at every water pixel.
@@ -600,10 +624,9 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     if ( m_Pipelines.Water.DepthPrepassPSO ) {
         DX_ZONE( m_CmdList.Get(), "Water Z-Prepass" );
         for ( UINT ocean = 0; ocean < 2; ++ocean ) {
-            const bool tessellated = ocean == 1 && oceanSimulated && copiesReady;   // the CB only carries the FFT when the copies exist
-            m_CmdList->SetPipelineState( tessellated ? PullPick( m_Pipelines.Water.OceanDepthPrepassPSO.Get(), m_Pipelines.Water.OceanDepthPrepassPSOPull.Get() )
-                                                     : PullPick( m_Pipelines.Water.DepthPrepassPSO.Get(), m_Pipelines.Water.DepthPrepassPSOPull.Get() ) );
-            m_CmdList->IASetPrimitiveTopology( tessellated ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+            // The CB only carries the FFT and the wave parameters when the copies exist
+            m_CmdList->SetPipelineState( pickWaterPso( ocean, true ) );
+            m_CmdList->IASetPrimitiveTopology( isTessellated( ocean ) ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
             for ( auto const& [tex, meshes] : g_FrameWaterSurfaces[ocean] ) {
                 for ( MeshInfo* mesh : meshes ) {
                     if ( !mesh || mesh->Indices.empty() ) continue;
@@ -669,10 +692,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
     unsigned int drawnIndices = 0;
     for ( UINT ocean = 0; ocean < 2; ++ocean ) {
-    const bool tessellated = ocean == 1 && oceanSimulated;
-    m_CmdList->SetPipelineState( tessellated ? PullPick( m_Pipelines.Water.OceanPSO.Get(), m_Pipelines.Water.OceanPSOPull.Get() )
-                                             : PullPick( m_Pipelines.Water.PSO.Get(), m_Pipelines.Water.PSOPull.Get() ) );
-    m_CmdList->IASetPrimitiveTopology( tessellated ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    m_CmdList->SetPipelineState( pickWaterPso( ocean, false ) );
+    m_CmdList->IASetPrimitiveTopology( isTessellated( ocean ) ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     for ( auto const& [tex, meshes] : g_FrameWaterSurfaces[ocean] ) {
         D3D12_GPU_DESCRIPTOR_HANDLE srv = blackSrv;
         if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {

@@ -182,6 +182,9 @@ public:
         // device has no tessellation, in which case the sea keeps the vertex waves.
         Microsoft::WRL::ComPtr<ID3DBlob>            OceanVsBlob, OceanHsBlob, OceanDsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> OceanPSO, OceanDepthPrepassPSO;
+        // Tessellated wave water (WaterTessellation): VSOcean control points through HSWater/DSWater, plus pull twins. Optional like the ocean.
+        Microsoft::WRL::ComPtr<ID3DBlob>            TessHsBlob, TessDsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> TessPSO, TessDepthPrepassPSO, TessPSOPull, TessDepthPrepassPSOPull;
     };
     // 2D UI / HUD family: one root sig (b0 viewport consts, t0 SRV, b1 FF state) + one VS/PS pair.
     // PSOs are built per (blend,depth) key on demand and cached. Vertex ring buffers stay in the engine.

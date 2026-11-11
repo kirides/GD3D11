@@ -2793,40 +2793,56 @@ bool D3D12PipelineState::CreateWater() {
     Water.OceanDepthPrepassPSO.Reset();
     Water.OceanPSOPull.Reset();
     Water.OceanDepthPrepassPSOPull.Reset();
+    Water.TessPSO.Reset();
+    Water.TessDepthPrepassPSO.Reset();
+    Water.TessPSOPull.Reset();
+    Water.TessDepthPrepassPSOPull.Reset();
     if ( device->GetCaps().Tessellation
-        && m_Shaders->CompileFromFile( "Water.hlsl", "VSOcean", Shadermodel_VS, Water.OceanVsBlob.ReleaseAndGetAddressOf() )
-        && m_Shaders->CompileFromFile( "Water.hlsl", "HSOcean", Shadermodel_HS, Water.OceanHsBlob.ReleaseAndGetAddressOf() )
-        && m_Shaders->CompileFromFile( "Water.hlsl", "DSOcean", Shadermodel_DS, Water.OceanDsBlob.ReleaseAndGetAddressOf() ) ) {
-        rs.ValidateShaders( {
-            { Water.OceanVsBlob.Get(), "Water.hlsl:VSOcean", D3D12_SHADER_VISIBILITY_VERTEX },
-            { Water.OceanHsBlob.Get(), "Water.hlsl:HSOcean", D3D12_SHADER_VISIBILITY_HULL },
-            { Water.OceanDsBlob.Get(), "Water.hlsl:DSOcean", D3D12_SHADER_VISIBILITY_DOMAIN },
-        } );
-        Rhi::GraphicsPipelineStateDesc od = colorDesc;
-        od.VS = { Water.OceanVsBlob->GetBufferPointer(), Water.OceanVsBlob->GetBufferSize() };
-        od.HS = { Water.OceanHsBlob->GetBufferPointer(), Water.OceanHsBlob->GetBufferSize() };
-        od.DS = { Water.OceanDsBlob->GetBufferPointer(), Water.OceanDsBlob->GetBufferSize() };
-        od.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
-        bool ok = SUCCEEDED( device->CreateGraphicsPipelineState( &od, Water.OceanPSO.ReleaseAndGetAddressOf() ) );
-        od.PS = { Water.DepthPrepassPsBlob->GetBufferPointer(), Water.DepthPrepassPsBlob->GetBufferSize() };
-        od.BlendState.RenderTarget[0] = {};
-        od.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
-        od.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-        ok = ok && SUCCEEDED( device->CreateGraphicsPipelineState( &od, Water.OceanDepthPrepassPSO.ReleaseAndGetAddressOf() ) );
-        if ( !ok ) {
-            Logging::Wrn( "D3D12: tessellated ocean pipelines failed; the sea keeps the vertex waves." );
-            Water.OceanPSO.Reset();
-            Water.OceanDepthPrepassPSO.Reset();
-        } else if ( !m_Shaders->CompileFromFile( "Water.hlsl", "VSOcean", Shadermodel_VS, Water.OceanVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) ) {
-            VertexPullFailed = true;
-        } else {
+        && m_Shaders->CompileFromFile( "Water.hlsl", "VSOcean", Shadermodel_VS, Water.OceanVsBlob.ReleaseAndGetAddressOf() ) ) {
+        const bool pullVs = m_Shaders->CompileFromFile( "Water.hlsl", "VSOcean", Shadermodel_VS, Water.OceanVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines );
+        if ( !pullVs ) VertexPullFailed = true;
+        rs.ValidateShaders( { { Water.OceanVsBlob.Get(), "Water.hlsl:VSOcean", D3D12_SHADER_VISIBILITY_VERTEX } } );
+
+        // Colour + depth-prepass PSOs (and pull twins) for one HS/DS pair over the shared VSOcean control points
+        auto buildTess = [&]( Microsoft::WRL::ComPtr<ID3DBlob>& hs, Microsoft::WRL::ComPtr<ID3DBlob>& ds,
+                              Microsoft::WRL::ComPtr<Rhi::PipelineState>& color, Microsoft::WRL::ComPtr<Rhi::PipelineState>& depth,
+                              Microsoft::WRL::ComPtr<Rhi::PipelineState>& colorPull, Microsoft::WRL::ComPtr<Rhi::PipelineState>& depthPull, const char* what ) {
+            rs.ValidateShaders( {
+                { hs.Get(), "Water.hlsl:HS", D3D12_SHADER_VISIBILITY_HULL },
+                { ds.Get(), "Water.hlsl:DS", D3D12_SHADER_VISIBILITY_DOMAIN },
+            } );
+            Rhi::GraphicsPipelineStateDesc od = colorDesc;
+            od.VS = { Water.OceanVsBlob->GetBufferPointer(), Water.OceanVsBlob->GetBufferSize() };
+            od.HS = { hs->GetBufferPointer(), hs->GetBufferSize() };
+            od.DS = { ds->GetBufferPointer(), ds->GetBufferSize() };
+            od.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+            bool ok = SUCCEEDED( device->CreateGraphicsPipelineState( &od, color.ReleaseAndGetAddressOf() ) );
+            od.PS = { Water.DepthPrepassPsBlob->GetBufferPointer(), Water.DepthPrepassPsBlob->GetBufferSize() };
+            od.BlendState.RenderTarget[0] = {};
+            od.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+            od.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+            ok = ok && SUCCEEDED( device->CreateGraphicsPipelineState( &od, depth.ReleaseAndGetAddressOf() ) );
+            if ( !ok ) {
+                Logging::Wrn( "D3D12: tessellated {} pipelines failed; the surface keeps the vertex waves.", what );
+                color.Reset();
+                depth.Reset();
+                return;
+            }
             // od still holds the prepass state; the color twin restores PS/blend/depth from colorDesc.
-            CreatePullTwin( od, Water.OceanVsBlobPull.Get(), Water.OceanDepthPrepassPSOPull.ReleaseAndGetAddressOf(), "ocean prepass" );
+            CreatePullTwin( od, pullVs ? Water.OceanVsBlobPull.Get() : nullptr, depthPull.ReleaseAndGetAddressOf(), what );
             od.PS = colorDesc.PS;
             od.BlendState = colorDesc.BlendState;
             od.DepthStencilState = colorDesc.DepthStencilState;
-            CreatePullTwin( od, Water.OceanVsBlobPull.Get(), Water.OceanPSOPull.ReleaseAndGetAddressOf(), "ocean" );
-        }
+            CreatePullTwin( od, pullVs ? Water.OceanVsBlobPull.Get() : nullptr, colorPull.ReleaseAndGetAddressOf(), what );
+        };
+        if ( m_Shaders->CompileFromFile( "Water.hlsl", "HSOcean", Shadermodel_HS, Water.OceanHsBlob.ReleaseAndGetAddressOf() )
+            && m_Shaders->CompileFromFile( "Water.hlsl", "DSOcean", Shadermodel_DS, Water.OceanDsBlob.ReleaseAndGetAddressOf() ) )
+            buildTess( Water.OceanHsBlob, Water.OceanDsBlob, Water.OceanPSO, Water.OceanDepthPrepassPSO,
+                Water.OceanPSOPull, Water.OceanDepthPrepassPSOPull, "ocean" );
+        if ( m_Shaders->CompileFromFile( "Water.hlsl", "HSWater", Shadermodel_HS, Water.TessHsBlob.ReleaseAndGetAddressOf() )
+            && m_Shaders->CompileFromFile( "Water.hlsl", "DSWater", Shadermodel_DS, Water.TessDsBlob.ReleaseAndGetAddressOf() ) )
+            buildTess( Water.TessHsBlob, Water.TessDsBlob, Water.TessPSO, Water.TessDepthPrepassPSO,
+                Water.TessPSOPull, Water.TessDepthPrepassPSOPull, "wave water" );
     }
     return true;
 }

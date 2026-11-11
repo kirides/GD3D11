@@ -75,7 +75,7 @@ cbuffer WaterCB : register(b2)
     uint   OceanDerivIndex;
 
     float4 OceanTile;            // cascade tile sizes in metres, 0 = unused
-    float4 OceanParams;          // x tile texels N, y world units per metre, z tessellation pixels per edge, w unused
+    float4 OceanParams;          // x tile texels N, y world units per metre, z unused, w max tess factor of the tessellated wave water
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -535,6 +535,74 @@ VS_OUT DSOcean( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatch<
     o.clip = mul( float4( pos, 1.0 ), ViewProj );
     o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
     o.col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;
+    o.wnrm = normalize( p[0].wnrm * bary.x + p[1].wnrm * bary.y + p[2].wnrm * bary.z );
+    o.wpos = pos;
+    o.vz.x = mul( float4( pos, 1.0 ), RI_View ).z;
+    o.vz.y = length( mul( float4( pos, 1.0 ), RI_View ) );
+    return o;
+}
+
+//--------------------------------------------------------------------------------------
+// Tessellated wave water (DX11 Gerstner mode only): the same VSOcean control points, WaterGerstnerOffset per domain point.
+// The depth prepass and the colour pass bind the same HS/DS blobs, and the factors depend only on the patch geometry.
+//--------------------------------------------------------------------------------------
+#define WaterTessMaxFactor OceanParams.w
+
+// Symmetric in its endpoints, so patches sharing the edge agree; an edge between two wave-free vertices stays one segment
+float WaterEdgeFactor( float3 a, float4 ca, float3 b, float4 cb )
+{
+    if ( ca.z <= 0.0f && cb.z <= 0.0f ) return 1.0f;
+    return clamp( OceanEdgeFactor( a, b ), 1.0f, WaterTessMaxFactor );
+}
+
+PatchTess WaterPatchConstants( InputPatch<TessVertex, 3> p )
+{
+    PatchTess t;
+    // Cull with the full wave amplitude as slack: |offset| <= amplitude, so each clip coordinate moves by at most amplitude * its matrix column length
+    const float amp = max( p[0].col.z, max( p[1].col.z, p[2].col.z ) ) * 1275.0f;
+    const float3 slack = amp * float3( length( float3( ViewProj[0][0], ViewProj[1][0], ViewProj[2][0] ) ),
+                                       length( float3( ViewProj[0][1], ViewProj[1][1], ViewProj[2][1] ) ),
+                                       length( float3( ViewProj[0][3], ViewProj[1][3], ViewProj[2][3] ) ) );
+    const float4 c0 = mul( float4( p[0].pos, 1.0f ), ViewProj ), c1 = mul( float4( p[1].pos, 1.0f ), ViewProj ), c2 = mul( float4( p[2].pos, 1.0f ), ViewProj );
+    const float sx = slack.x + slack.z, sy = slack.y + slack.z;
+    const bool outside =
+        ( c0.x + c0.w + sx < 0.0f && c1.x + c1.w + sx < 0.0f && c2.x + c2.w + sx < 0.0f ) || ( c0.w - c0.x + sx < 0.0f && c1.w - c1.x + sx < 0.0f && c2.w - c2.x + sx < 0.0f ) ||
+        ( c0.y + c0.w + sy < 0.0f && c1.y + c1.w + sy < 0.0f && c2.y + c2.w + sy < 0.0f ) || ( c0.w - c0.y + sy < 0.0f && c1.w - c1.y + sy < 0.0f && c2.w - c2.y + sy < 0.0f ) ||
+        ( c0.w + slack.z < 0.0f && c1.w + slack.z < 0.0f && c2.w + slack.z < 0.0f );
+    const float f0 = WaterEdgeFactor( p[1].pos, p[1].col, p[2].pos, p[2].col );   // edge i is opposite corner i
+    const float f1 = WaterEdgeFactor( p[2].pos, p[2].col, p[0].pos, p[0].col );
+    const float f2 = WaterEdgeFactor( p[0].pos, p[0].col, p[1].pos, p[1].col );
+    t.edge[0] = outside ? 0.0f : f0;
+    t.edge[1] = outside ? 0.0f : f1;
+    t.edge[2] = outside ? 0.0f : f2;
+    t.inside = outside ? 0.0f : max( f0, max( f1, f2 ) );
+    return t;
+}
+
+[domain( "tri" )]
+[partitioning( "fractional_odd" )]
+[outputtopology( "triangle_cw" )]
+[outputcontrolpoints( 3 )]
+[patchconstantfunc( "WaterPatchConstants" )]
+TessVertex HSWater( InputPatch<TessVertex, 3> p, uint id : SV_OutputControlPointID )
+{
+    return p[id];
+}
+
+// Wave amplitude (.z) and speed (.w) are per-material bytes and equal at shared vertices (WorldConverter waveByPos), so they are
+// interpolated; the packed grid/wall bits (.xy) only matter in Original mode, which is never tessellated.
+[domain( "tri" )]
+VS_OUT DSWater( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatch<TessVertex, 3> p )
+{
+    precise float3 rest = p[0].pos * bary.x + p[1].pos * bary.y + p[2].pos * bary.z;
+    const float4 col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;
+    precise float3 pos = rest;
+    [branch] if ( col.z > 0.0f ) pos += WaterGerstnerOffset( rest, col, RI_TotalTime );
+    VS_OUT o;
+    o.oxz = rest.xz;
+    o.clip = mul( float4( pos, 1.0 ), ViewProj );
+    o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
+    o.col = col;
     o.wnrm = normalize( p[0].wnrm * bary.x + p[1].wnrm * bary.y + p[2].wnrm * bary.z );
     o.wpos = pos;
     o.vz.x = mul( float4( pos, 1.0 ), RI_View ).z;
