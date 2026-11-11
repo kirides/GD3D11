@@ -860,6 +860,9 @@ bool D3D12PipelineState::CreateGrass() {
     // Vegetation.hlsl's PSMain. The grass shadow CASTER (D3D12ShadowMap::CreateGrassCaster) shares this root sig
     // but reads none of this.
     rs.AddConstants( 5, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b5 AOCB { AoMaskIndex }
+    // 13/14: t7 mesh VB, t8 instance matrices (VERTEX_PULL only; root SRVs at buffer offset 0). 51 DWORDs.
+    Grass.PullRootParam = rs.AddSRV( 7, D3D12_SHADER_VISIBILITY_VERTEX );
+    rs.AddSRV( 8, D3D12_SHADER_VISIBILITY_VERTEX );
 
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );      // s0 diffuse
     // s2 PCF, matches World/Vob/Skeletal.
@@ -881,9 +884,13 @@ bool D3D12PipelineState::CreateGrass() {
         return false;
     }
 
+    if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "VSMain", Shadermodel_VS, Grass.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
         { Grass.VsBlob.Get(), "Vegetation.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
         { Grass.PsBlob.Get(), "Vegetation.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+        { Grass.VsBlobPull.Get(), "Vegetation.hlsl:VSMain[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
     } );
 
     // Slot 0 = SimpleObjectVertexStruct (Position@0, TexCoord@12, stride 20); slot 1 = per-instance world matrix
@@ -925,6 +932,7 @@ bool D3D12PipelineState::CreateGrass() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass)." );
         return false;
     }
+    CreatePullTwin( pso, Grass.VsBlobPull.Get(), Grass.PSOPull.ReleaseAndGetAddressOf(), "grass lit" );
 
     if ( !CreateGrassDepthPrepass( layout, _countof( layout ) ) ) {
         // Non-fatal by design, exactly like the World-family G-buffer prepass PSOs: the lit grass PSO above is
@@ -952,6 +960,14 @@ bool D3D12PipelineState::CreateGrassDepthPrepass( const D3D12_INPUT_ELEMENT_DESC
         return false;
     if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "PSDepthClipGBuf", Shadermodel_PS, Grass.DepthGBufPsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+    if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "VSDepth", Shadermodel_VS, Grass.DepthVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines )
+        || !m_Shaders->CompileFromFile( "Vegetation.hlsl", "VSDepthGBuf", Shadermodel_VS, Grass.DepthGBufVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+    if ( D3D12RootLayout* grassLayout = GetLayout( "Grass" ) )
+        grassLayout->ValidateShaders( {
+            { Grass.DepthVsBlobPull.Get(), "Vegetation.hlsl:VSDepth[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
+            { Grass.DepthGBufVsBlobPull.Get(), "Vegetation.hlsl:VSDepthGBuf[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
+        } );
 
     // Shared state: identical to the LIT grass PSO's (CULL_NONE for the crossed double-sided cards, reversed-Z
     // GREATER_EQUAL with depth-write) so the depth laid down here is bit-identical to what the lit pass would
@@ -982,6 +998,7 @@ bool D3D12PipelineState::CreateGrassDepthPrepass( const D3D12_INPUT_ELEMENT_DESC
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass depth prepass)." );
         return false;
     }
+    CreatePullTwin( pso, Grass.DepthVsBlobPull.Get(), Grass.DepthPrepassPSOPull.ReleaseAndGetAddressOf(), "grass prepass" );
 
     // G-buffer variant: the two real prepass targets instead.
     pso.VS = { Grass.DepthGBufVsBlob->GetBufferPointer(), Grass.DepthGBufVsBlob->GetBufferSize() };
@@ -995,6 +1012,7 @@ bool D3D12PipelineState::CreateGrassDepthPrepass( const D3D12_INPUT_ELEMENT_DESC
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass G-buffer depth prepass)." );
         return false;
     }
+    CreatePullTwin( pso, Grass.DepthGBufVsBlobPull.Get(), Grass.DepthPrepassGBufPSOPull.ReleaseAndGetAddressOf(), "grass G-buffer prepass" );
     return true;
 }
 
@@ -1659,6 +1677,9 @@ bool D3D12PipelineState::CreateParticle() {
     rs.AddConstants( 1, 4, D3D12_SHADER_VISIBILITY_VERTEX );   // 1: b1 camera pos
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 2: t0 diffuse
     rs.AddConstants( 2, 2, D3D12_SHADER_VISIBILITY_PIXEL );    // 3: b2 { opaque scene index, gamma-space add }
+    // 4/5: t1 instance-ring root SRV (offset 0), b3 { first instance } (VERTEX_PULL only). 26 DWORDs.
+    Particle.PullRootParam = rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_VERTEX );
+    rs.AddConstants( 3, 1, D3D12_SHADER_VISIBILITY_VERTEX );
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );  // s0
 
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
@@ -1673,9 +1694,13 @@ bool D3D12PipelineState::CreateParticle() {
         return false;
     }
 
+    if ( !m_Shaders->CompileFromFile( "Particle.hlsl", "VSMain", Shadermodel_VS, Particle.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
         { Particle.VsBlob.Get(), "Particle.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
         { Particle.PsBlob.Get(), "Particle.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+        { Particle.VsBlobPull.Get(), "Particle.hlsl:VSMain[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
     } );
 
     // PSOs are built per blend state on demand (GetOrCreateParticlePipeline). Warm the alpha-blend one so
@@ -1686,11 +1711,13 @@ bool D3D12PipelineState::CreateParticle() {
         Logging::Wrn( "D3D12: failed to create the default particle pipeline." );
         return false;
     }
+    if ( !GetOrCreateParticlePipeline( defaultBlend, true ) )
+        VertexPullFailed = true;
     return true;
 }
 
-Rhi::PipelineState* D3D12PipelineState::GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend ) {
-    const uint32_t key = BlendKey( blend );
+Rhi::PipelineState* D3D12PipelineState::GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend, bool pulled ) {
+    const uint32_t key = BlendKey( blend ) | ( pulled ? 1u << 31 : 0u );
     auto it = Particle.Pipelines.find( key );
     if ( it != Particle.Pipelines.end() ) return it->second.Get();
 
@@ -1706,9 +1733,11 @@ Rhi::PipelineState* D3D12PipelineState::GetOrCreateParticlePipeline( const Gothi
 
     Rhi::GraphicsPipelineStateDesc pso = {};
     pso.pRootSignature = Particle.RootSig.Get();
-    pso.VS = { Particle.VsBlob->GetBufferPointer(), Particle.VsBlob->GetBufferSize() };
+    ID3DBlob* vs = pulled ? Particle.VsBlobPull.Get() : Particle.VsBlob.Get();
+    if ( !vs ) return nullptr;
+    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     pso.PS = { Particle.PsBlob->GetBufferPointer(), Particle.PsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
+    pso.InputLayout = pulled ? D3D12_INPUT_LAYOUT_DESC{ nullptr, 0 } : D3D12_INPUT_LAYOUT_DESC{ layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;   // strips still use the TRIANGLE type
     pso.NumRenderTargets = 1;
     pso.RTVFormats[0] = kSceneColorFormat;
@@ -1770,6 +1799,10 @@ bool D3D12PipelineState::CreateDecal() {
     rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 7: b3 shadow CB
     rs.AddTable( D3D12RootLayout::SRVRange( 4, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 8: t4 CSM array
     rs.AddTable( D3D12RootLayout::SRVRange( 5, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 9: t5 point-shadow cubes
+    // 10..12: t6 quad VB, t7 instance ring (root SRVs at offset 0), b8 { first instance } (VERTEX_PULL only). 41 DWORDs.
+    Decal.PullRootParam = rs.AddSRV( 6, D3D12_SHADER_VISIBILITY_VERTEX );
+    rs.AddSRV( 7, D3D12_SHADER_VISIBILITY_VERTEX );
+    rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_VERTEX );
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );  // s0
     // s2 PCF comparison for the CSM, s1 point-clamp for the SSAO mask — same roles as in the World layout;
     // ComputeSunShadow / SampleScreenSpaceAO hard-code those registers.
@@ -1798,7 +1831,11 @@ bool D3D12PipelineState::CreateDecal() {
         return false;
     }
 
+    if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "VSMain", Shadermodel_VS, Decal.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
+        { Decal.VsBlobPull.Get(),  "Decal.hlsl:VSMain[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
         { Decal.VsBlob.Get(),      "Decal.hlsl:VSMain",      D3D12_SHADER_VISIBILITY_VERTEX },
         { Decal.LitPsBlob.Get(),   "Decal.hlsl:PSMainLit",   D3D12_SHADER_VISIBILITY_PIXEL  },
         { Decal.BlendPsBlob.Get(), "Decal.hlsl:PSMainBlend", D3D12_SHADER_VISIBILITY_PIXEL  },
@@ -1829,6 +1866,7 @@ bool D3D12PipelineState::CreateDecal() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (decal lit)." );
         return false;
     }
+    CreatePullTwin( pso, Decal.VsBlobPull.Get(), Decal.LitPSOPull.ReleaseAndGetAddressOf(), "decal lit" );
 
     // Warm the common transparent (alpha) PSO so the first blended decal never stalls.
     GothicBlendStateInfo defaultBlend;
@@ -1837,19 +1875,23 @@ bool D3D12PipelineState::CreateDecal() {
         Logging::Wrn( "D3D12: failed to create the default decal blend pipeline." );
         return false;
     }
+    if ( !GetOrCreateDecalBlendPipeline( defaultBlend, true ) )
+        VertexPullFailed = true;
     return true;
 }
 
-Rhi::PipelineState* D3D12PipelineState::GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend ) {
-    const uint32_t key = BlendKey( blend );
+Rhi::PipelineState* D3D12PipelineState::GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend, bool pulled ) {
+    const uint32_t key = BlendKey( blend ) | ( pulled ? 1u << 31 : 0u );
     auto it = Decal.BlendPipelines.find( key );
     if ( it != Decal.BlendPipelines.end() ) return it->second.Get();
 
     Rhi::GraphicsPipelineStateDesc pso = {};
     pso.pRootSignature = Decal.RootSig.Get();
-    pso.VS = { Decal.VsBlob->GetBufferPointer(), Decal.VsBlob->GetBufferSize() };
+    ID3DBlob* vs = pulled ? Decal.VsBlobPull.Get() : Decal.VsBlob.Get();
+    if ( !vs ) return nullptr;
+    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     pso.PS = { Decal.BlendPsBlob->GetBufferPointer(), Decal.BlendPsBlob->GetBufferSize() };
-    pso.InputLayout = { kDecalInputLayout, _countof( kDecalInputLayout ) };
+    pso.InputLayout = pulled ? D3D12_INPUT_LAYOUT_DESC{ nullptr, 0 } : D3D12_INPUT_LAYOUT_DESC{ kDecalInputLayout, _countof( kDecalInputLayout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
     pso.RTVFormats[0] = kSceneColorFormat;
@@ -3880,6 +3922,7 @@ bool D3D12PipelineState::CreateSky() {
     rs.AddConstants( 2, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 2: b2 World (dome scale + camera translation)
     // 3: b3 SkyMaterialCB — { cloud/night/moon SRV slots + pad, moon centre px, moon half-size px, moon colour }
     rs.AddConstants( 3, 12, D3D12_SHADER_VISIBILITY_PIXEL );
+    Sky.PullRootParam = rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_VERTEX );   // 4: t0 dome VB (VERTEX_PULL only). 48 DWORDs.
     // s0: linear WRAP — both sky layers are scrolled by world XZ well outside [0,1] and are authored to tile
     // (D3D11 samples them through its SS_Linear wrap sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
@@ -3899,7 +3942,11 @@ bool D3D12PipelineState::CreateSky() {
         || !m_Shaders->CompileFromFile( "Sky.hlsl", "PSMainOuter", Shadermodel_PS, Sky.OuterPsBlob.ReleaseAndGetAddressOf() ) )
         return false;
 
+    if ( !m_Shaders->CompileFromFile( "Sky.hlsl", "VSMain", Shadermodel_VS, Sky.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
+        { Sky.VsBlobPull.Get(),  "Sky.hlsl:VSMain[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
         { Sky.VsBlob.Get(),      "Sky.hlsl:VSMain",      D3D12_SHADER_VISIBILITY_VERTEX },
         { Sky.PsBlob.Get(),      "Sky.hlsl:PSMain",      D3D12_SHADER_VISIBILITY_PIXEL  },
         { Sky.OuterPsBlob.Get(), "Sky.hlsl:PSMainOuter", D3D12_SHADER_VISIBILITY_PIXEL  },
@@ -3940,12 +3987,14 @@ bool D3D12PipelineState::CreateSky() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (sky dome)." );
         return false;
     }
+    CreatePullTwin( pso, Sky.VsBlobPull.Get(), Sky.PSOPull.ReleaseAndGetAddressOf(), "sky dome" );
 
     pso.PS = { Sky.OuterPsBlob->GetBufferPointer(), Sky.OuterPsBlob->GetBufferSize() };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, Sky.OuterPSO.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (sky dome, outer)." );
         return false;
     }
+    CreatePullTwin( pso, Sky.VsBlobPull.Get(), Sky.OuterPSOPull.ReleaseAndGetAddressOf(), "sky dome (outer)" );
     return true;
 }
 

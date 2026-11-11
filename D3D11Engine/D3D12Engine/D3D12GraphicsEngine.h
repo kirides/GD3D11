@@ -1015,6 +1015,8 @@ private:
     void BindWorldPull( D3D12CmdList& cmdList, UINT rootParam ) const;
     /** Sets the stream-table base (b11 of the Skeletal/GhostSkeletal root signatures) at `rootParam`; no-op while the frame is on the IA path. */
     void BindSkelPull( D3D12CmdList& cmdList, UINT rootParam ) const;
+    /** Binds one grass box's mesh VB (slot 0) and 64 B matrix stream (slot 1): as the IA vertex buffers, or (`pulled`) as the t7/t8 root SRVs at `rootParam`/+1 (offset 0). */
+    void BindGrassBuffers( D3D12CmdList& cmdList, bool pulled, UINT rootParam, const D3D12_VERTEX_BUFFER_VIEW& mesh, const D3D12_VERTEX_BUFFER_VIEW& instances ) const;
     /** The pulled VOB draw bind: b9 { stream base, instance stride | VB stream offset << 16 } and `instances` as the t6 root SRV (buffer start). */
     void BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances, UINT instanceStride,
         bool attachArena ) const;

@@ -187,6 +187,7 @@ private:
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterSkeletalPSOPull, m_CasterSkeletalNoAlphaPSOPull;
     // CULL_NONE (not front-cull): grass cards are thin double-sided planes, matching Grass.PSO's own culling.
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterGrassPSO;
+    Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterGrassPSOPull;   // [Debug] VertexPulling A/B twin (Grass.DepthVsBlobPull)
     Microsoft::WRL::ComPtr<ID3DBlob>            m_CasterGrassVsBlob;   // VSDepth (Vegetation.hlsl)
     Microsoft::WRL::ComPtr<ID3DBlob>            m_CasterGrassPsBlob;   // PSShadowClip (Vegetation.hlsl)
 

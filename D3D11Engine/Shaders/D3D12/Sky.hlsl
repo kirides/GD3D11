@@ -57,8 +57,16 @@ struct VS_OUT
 // pixel shader — the scattering march is entirely a function of that position relative to AC_SpherePosition.
 // Only POSITION is read (the input layout declares nothing else); the dome's normals/UVs/colour are unused,
 // since the cloud layers are sampled by world XZ, not by mesh UV.
+// VERTEX_PULL: the dome's 60 B ExVertexStruct VB as a root SRV at offset 0 (position @0); the dome draw has base vertex 0.
+#ifdef VERTEX_PULL
+ByteAddressBuffer SkyDomeVb : register( t0 );
+VS_OUT VSMain( uint vid : SV_VertexID )
+{
+    const float3 pos = asfloat( SkyDomeVb.Load3( vid * 60 ) );
+#else
 VS_OUT VSMain( float3 pos : POSITION )
 {
+#endif
     VS_OUT o;
     float3 positionWorld = mul( float4( pos, 1.0f ), World ).xyz;
     o.clip = mul( float4( positionWorld, 1.0f ), ViewProj );

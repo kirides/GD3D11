@@ -74,6 +74,24 @@ struct VS_IN
     // row k in both DXIL and SPIR-V: DXC's SPIR-V ignores column_major on stage inputs.
     row_major float4x4 iworld : INSTANCE_WORLD_MATRIX;
 };
+// VERTEX_PULL: the entries take SV_VertexID/SV_InstanceID and read the box's mesh VB (20 B {pos, uv}) and its 64 B matrix
+// stream through root SRVs bound at offset 0; every grass draw has base vertex/instance 0.
+#ifdef VERTEX_PULL
+#include "include/VertexFetch.hlsl"
+ByteAddressBuffer GrassMeshVb    : register(t7);
+ByteAddressBuffer GrassInstances : register(t8);
+struct VS_ENTRY_IN { uint vid : SV_VertexID; uint iid : SV_InstanceID; };
+VS_IN FetchGrass( VS_ENTRY_IN e )
+{
+    VS_IN i;
+    LoadPosUv( GrassMeshVb, VF_POSED, e.vid, i.pos, i.uv );
+    i.iworld = LoadFloat4x4Rows( GrassInstances, e.iid * 64 );
+    return i;
+}
+#else
+typedef VS_IN VS_ENTRY_IN;
+VS_IN FetchGrass( VS_ENTRY_IN e ) { return e; }
+#endif
 // `clip` is `precise`: VSMain/VSDepth/VSDepthGBuf independently compute the same `mul(GrassWorldPos(...),
 // ViewProj)`, but nothing guarantees bit-identical FP rounding across separately-compiled entry points -
 // without `precise`, wind-swayed grass could fail the lit pass's GREATER_EQUAL depth test and get clipped.
@@ -102,8 +120,9 @@ float3 GrassWorldPos( VS_IN i, float time )
     return wpos;
 }
 
-VS_OUT VSMain( VS_IN i )
+VS_OUT VSMain( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchGrass( e );
     VS_OUT o;
     float3 wpos = GrassWorldPos( i, G_Time );
 
@@ -170,8 +189,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 // view-proj instead of the camera's, b1 = the same GrassCB).
 struct VS_DEPTH_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
 
-VS_DEPTH_OUT VSDepth( VS_IN i )
+VS_DEPTH_OUT VSDepth( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchGrass( e );
     VS_DEPTH_OUT o;
     o.clip = mul( float4( GrassWorldPos( i, G_Time ), 1.0 ), ViewProj );
     o.uv = i.uv;
@@ -205,8 +225,9 @@ struct VS_DEPTH_GBUF_OUT
     float4 prevClip : TEXCOORD3;
 };
 
-VS_DEPTH_GBUF_OUT VSDepthGBuf( VS_IN i )
+VS_DEPTH_GBUF_OUT VSDepthGBuf( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchGrass( e );
     VS_DEPTH_GBUF_OUT o;
     float3 wpos = GrassWorldPos( i, G_Time );
     o.clip = mul( float4( wpos, 1.0 ), ViewProj );

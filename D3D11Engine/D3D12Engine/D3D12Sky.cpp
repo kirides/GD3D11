@@ -168,7 +168,9 @@ bool D3D12GraphicsEngine::DrawAtmosphereSkyDome() {
     // between PS_Atmosphere and PS_AtmosphereOuter. In normal play this is always the inner one.
     const bool outside = atmo.AC_CameraHeight > atmo.AC_OuterRadius;
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Sky.RootSig.Get() );
-    m_CmdList->SetPipelineState( outside ? m_Pipelines.Sky.OuterPSO.Get() : m_Pipelines.Sky.PSO.Get() );
+    const bool pulled = m_VertexPullWorld && m_Pipelines.Sky.PSOPull && m_Pipelines.Sky.OuterPSOPull;
+    m_CmdList->SetPipelineState( outside ? PullPick( m_Pipelines.Sky.OuterPSO.Get(), pulled ? m_Pipelines.Sky.OuterPSOPull.Get() : nullptr )
+                                         : PullPick( m_Pipelines.Sky.PSO.Get(), pulled ? m_Pipelines.Sky.PSOPull.Get() : nullptr ) );
 
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );                  // b0 ViewProj
     m_CmdList->SetGraphicsRootConstantBufferView( 1, m_SkyCBGpu[m_FrameIndex] );      // b1 Atmosphere
@@ -219,9 +221,13 @@ bool D3D12GraphicsEngine::DrawAtmosphereSkyDome() {
         D3D12VertexBuffer* ib = D3D12VertexBuffer::From( mesh->GetMeshIndexBuffer() );
         if ( !vb->GetResource() || !ib->GetResource() ) continue;
 
-        const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
         const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+        if ( pulled ) {
+            m_CmdList->SetGraphicsRootShaderResourceView( m_Pipelines.Sky.PullRootParam, vb->GetGpuVirtualAddress() );
+        } else {
+            const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+            m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+        }
         m_CmdList->IASetIndexBuffer( &ibv );
 
         const UINT numIndices = static_cast<UINT>( mesh->Indices.size() );

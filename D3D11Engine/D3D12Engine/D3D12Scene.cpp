@@ -1727,6 +1727,11 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 	m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 	m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, camConsts, 0 );
 
+	// Pulled: the whole frame ring is the t1 root SRV; each batch passes its first element in b3.
+	const bool pulled = m_VertexPullWorld && m_Pipelines.Particle.VsBlobPull;
+	const UINT pullParam = m_Pipelines.Particle.PullRootParam;
+	if ( pulled ) m_CmdList->SetGraphicsRootShaderResourceView( pullParam, m_ParticleInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
+
 	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
 	D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
@@ -1745,11 +1750,11 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 		// Blend mode for this texture bucket (falls back to alpha blend if somehow unlisted).
 		auto infoIt = info.find( tex );
 		Rhi::PipelineState* pso = infoIt != info.end()
-			? m_Pipelines.GetOrCreateParticlePipeline( infoIt->second.BlendState )
+			? m_Pipelines.GetOrCreateParticlePipeline( infoIt->second.BlendState, pulled )
 			: nullptr;
 		if ( !pso ) {
 			GothicBlendStateInfo alpha; alpha.SetAlphaBlending();
-			pso = m_Pipelines.GetOrCreateParticlePipeline( alpha );
+			pso = m_Pipelines.GetOrCreateParticlePipeline( alpha, pulled );
 		}
 		if ( !pso ) continue;
 		if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
@@ -1777,9 +1782,14 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 		const UINT instOffset = m_ParticleInstanceBufferOffset;
 		memcpy( m_ParticleInstanceBufferPtr[frame] + instOffset, instances.data(), instBytes );
 		m_ParticleInstanceBufferOffset += instBytes;
-		const D3D12_VERTEX_BUFFER_VIEW instView = {
-			m_ParticleInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( ParticleInstanceInfo ) };
-		m_CmdList->IASetVertexBuffers( 0, 1, &instView );
+		if ( pulled ) {
+			const UINT firstInstance = instOffset / static_cast<UINT>( sizeof( ParticleInstanceInfo ) );   // the ring advances in whole instances
+			m_CmdList->SetGraphicsRoot32BitConstants( pullParam + 1, 1, &firstInstance, 0 );
+		} else {
+			const D3D12_VERTEX_BUFFER_VIEW instView = {
+				m_ParticleInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( ParticleInstanceInfo ) };
+			m_CmdList->IASetVertexBuffers( 0, 1, &instView );
+		}
 
 		D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
 		if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
@@ -2064,13 +2074,25 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	m_CmdList->RSSetScissorRects( 1, &sc );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-	const D3D12_VERTEX_BUFFER_VIEW instView = {
-		m_DecalInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( DecalInstanceInfo ) };
-	const D3D12_VERTEX_BUFFER_VIEW views[2] = { m_DecalQuadVBV, instView };
-	m_CmdList->IASetVertexBuffers( 0, 2, views );
+	// Pulled: quad VB + the whole frame ring are the t6/t7 root SRVs; b8 carries this pass's first element, and each draw adds its own index.
+	const bool pulled = m_VertexPullWorld && m_Pipelines.Decal.LitPSOPull;
+	const UINT pullParam = m_Pipelines.Decal.PullRootParam;
+	const UINT firstInstance = instOffset / static_cast<UINT>( sizeof( DecalInstanceInfo ) );   // the ring advances in whole instances
+	if ( pulled ) {
+		m_CmdList->SetGraphicsRootShaderResourceView( pullParam, m_DecalQuadVB->GetGPUVirtualAddress() );
+		m_CmdList->SetGraphicsRootShaderResourceView( pullParam + 1, m_DecalInstanceBuffer[frame]->GetGPUVirtualAddress() );
+	} else {
+		const D3D12_VERTEX_BUFFER_VIEW instView = {
+			m_DecalInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( DecalInstanceInfo ) };
+		const D3D12_VERTEX_BUFFER_VIEW views[2] = { m_DecalQuadVBV, instView };
+		m_CmdList->IASetVertexBuffers( 0, 2, views );
+	}
 
 	Rhi::PipelineState* lastPso = nullptr;
-	if ( lighting ) { m_CmdList->SetPipelineState( m_Pipelines.Decal.LitPSO.Get() ); lastPso = m_Pipelines.Decal.LitPSO.Get(); }
+	if ( lighting ) {
+		lastPso = pulled ? m_Pipelines.Decal.LitPSOPull.Get() : m_Pipelines.Decal.LitPSO.Get();
+		m_CmdList->SetPipelineState( lastPso );
+	}
 
 	zCTexture* lastTex = nullptr;
 	unsigned int drawnTris = 0;
@@ -2088,7 +2110,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 			// D3D11 skips those too rather than falling back to alpha blending.
 			default: continue;
 			}
-			Rhi::PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend );
+			Rhi::PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend, pulled );
 			if ( !pso ) continue;
 			if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
 		}
@@ -2109,7 +2131,13 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 			lastTex = tex;
 		}
 
-		m_CmdList->DrawInstanced( 6, 1, 0, static_cast<UINT>(i) );
+		if ( pulled ) {
+			const UINT instance = firstInstance + static_cast<UINT>( i );
+			m_CmdList->SetGraphicsRoot32BitConstants( pullParam + 2, 1, &instance, 0 );
+			m_CmdList->DrawInstanced( 6, 1, 0, 0 );
+		} else {
+			m_CmdList->DrawInstanced( 6, 1, 0, static_cast<UINT>(i) );
+		}
 		drawnTris += 2;
 	}
 
@@ -2426,6 +2454,9 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 	Rhi::PipelineState* pso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSO.Get()
 	                                : m_Pipelines.Grass.DepthPrepassPSO.Get();
 	if ( !pso ) return;
+	Rhi::PipelineState* pullPso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSOPull.Get() : m_Pipelines.Grass.DepthPrepassPSOPull.Get();
+	const bool pulled = m_VertexPullWorld && pullPso;
+	pso = PullPick( pso, pullPso );
 
 	const auto& vegetationBoxes = Engine::GAPI->GetVegetationBoxes();
 	if ( vegetationBoxes.empty() ) return;
@@ -2506,8 +2537,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 		const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
 		const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
 		const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
-		const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
-		m_CmdList->IASetVertexBuffers( 0, 2, views );
+		BindGrassBuffers( m_CmdList, pulled, m_Pipelines.Grass.PullRootParam, vbv, instVbv );
 		const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
 		m_CmdList->IASetIndexBuffer( &ibv );
 		m_CmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );
@@ -2555,6 +2585,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 	const FogConstants fog = MakeFogConstants();
 
 	const GrassCBData gcb = MakeGrassConstants();
+	const bool pulled = m_VertexPullWorld && m_Pipelines.Grass.PSOPull;
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
@@ -2583,7 +2614,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 
 		if ( !bound ) {
 			bound = true;
-			m_CmdList->SetPipelineState( m_Pipelines.Grass.PSO.Get() );
+			m_CmdList->SetPipelineState( PullPick( m_Pipelines.Grass.PSO.Get(), m_Pipelines.Grass.PSOPull.Get() ) );
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.Grass.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &gcb, 0 );
@@ -2624,8 +2655,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 		const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
 		const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
 		const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
-		const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
-		m_CmdList->IASetVertexBuffers( 0, 2, views );
+		BindGrassBuffers( m_CmdList, pulled, m_Pipelines.Grass.PullRootParam, vbv, instVbv );
 		const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
 		m_CmdList->IASetIndexBuffer( &ibv );
 		m_CmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );
@@ -4601,6 +4631,17 @@ void D3D12GraphicsEngine::BindWorldPull( D3D12CmdList& cmdList, UINT rootParam )
 
 void D3D12GraphicsEngine::BindSkelPull( D3D12CmdList& cmdList, UINT rootParam ) const {
     if ( m_VertexPullWorld && rootParam != UINT_MAX ) cmdList->SetGraphicsRoot32BitConstants( rootParam, 1, &m_WorldVbSlot, 0 );
+}
+
+void D3D12GraphicsEngine::BindGrassBuffers( D3D12CmdList& cmdList, bool pulled, UINT rootParam, const D3D12_VERTEX_BUFFER_VIEW& mesh,
+    const D3D12_VERTEX_BUFFER_VIEW& instances ) const {
+    if ( pulled ) {
+        cmdList->SetGraphicsRootShaderResourceView( rootParam, mesh.BufferLocation );
+        cmdList->SetGraphicsRootShaderResourceView( rootParam + 1, instances.BufferLocation );
+    } else {
+        const D3D12_VERTEX_BUFFER_VIEW views[2] = { mesh, instances };
+        cmdList->IASetVertexBuffers( 0, 2, views );
+    }
 }
 
 void D3D12GraphicsEngine::BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances,
