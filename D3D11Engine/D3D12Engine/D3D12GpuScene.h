@@ -137,7 +137,7 @@ public:
     static constexpr UINT kPointViews = 16;                 // static cube bakes per frame
     static constexpr UINT kPointInstanceCapacity = 4096;    // instances per view
     static constexpr UINT kPointCommandCapacity = 4096;     // commands per list (opaque, alpha) per view
-    static constexpr UINT kPointCommandStride = 24;         // D3D12PointShadows' PointShadowCasterCommand
+    static constexpr UINT kPointCommandStride = 32;         // D3D12PointShadows' PointShadowCasterCommand
     Rhi::Resource* PointInstances() const { return m_PointInstances.Get(); }
     UINT PointInstanceBytes() const { return kPointViews * kPointInstanceCapacity * kCasterInstanceStride; }
     Rhi::Resource* PointCounts() const { return m_PointCounts.Get(); }
@@ -149,10 +149,10 @@ public:
     // Resource states between the cull, the command build, the feedback copy and the draws.
     bool CountsReadable = false;   // NON_PIXEL_SHADER_RESOURCE | COPY_SOURCE, else UNORDERED_ACCESS
     bool ArgsDrawable = false;     // Args + ArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
-    bool CasterInstancesDrawable = false;   // VERTEX_AND_CONSTANT_BUFFER, else UNORDERED_ACCESS
+    bool CasterInstancesDrawable = false;   // kVobInstanceRead, else UNORDERED_ACCESS
     bool CasterCountsReadable = false;      // NON_PIXEL_SHADER_RESOURCE, else UNORDERED_ACCESS
     bool CasterArgsDrawable = false;        // CasterArgs + CasterArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
-    bool PointInstancesDrawable = false;    // VERTEX_AND_CONSTANT_BUFFER, else UNORDERED_ACCESS
+    bool PointInstancesDrawable = false;    // kVobInstanceRead, else UNORDERED_ACCESS
     bool PointCountsReadable = false;       // NON_PIXEL_SHADER_RESOURCE, else UNORDERED_ACCESS
     bool PointArgsDrawable = false;         // PointArgs + PointArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
 

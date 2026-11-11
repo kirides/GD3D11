@@ -81,6 +81,7 @@ namespace {
         static const LPCWSTR kArgs[] = {
             L"-spirv", L"-fspv-target-env=vulkan1.3", L"-fvk-use-dx-layout",
             L"-fspv-use-unknown-image-format", L"-fvk-support-nonzero-base-instance",
+            L"-fvk-support-nonzero-base-vertex",
             L"-fvk-b-shift", L"0", L"0", L"-fvk-t-shift", L"16", L"0",
             L"-fvk-u-shift", L"32", L"0", L"-fvk-s-shift", L"48", L"0",
             L"-fvk-bind-resource-heap", L"0", L"1",

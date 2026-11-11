@@ -58,6 +58,13 @@ public:
     // CSM + point-shadow tables, bindless material indices) anchors the lit world-mesh PSO, the lit
     // instanced-VOB PSO, and the depth-prepass PSOs. Skeletal + shadow-caster PSOs still living in the
     // engine also bind this RootSig, so it is the family's shared anchor and lives here.
+    // Root parameters of the arena-pulled VOB draws: b9 { stream base, PackedVobInfo }, the per-draw { VertexBase, InstanceBase }
+    // constants (a command-signature argument) and the instance-buffer SRV. Cb mirrors the pipeline's PullRootParam.
+    struct VobPullRoots {
+        UINT Cb = UINT_MAX;
+        UINT Draw = UINT_MAX;
+        UINT InstSrv = UINT_MAX;
+    };
     struct WorldPipeline {
         Microsoft::WRL::ComPtr<Rhi::RootSignature> RootSig;
         // Lit opaque world mesh
@@ -137,6 +144,19 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            QuadMarkVsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob>            QuadMarkPsBlob;   // PSQuadMark
         std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<Rhi::PipelineState>> QuadMarkPipelines;
+        // [Debug] VertexPulling A/B: twins of the world-VB PSOs above, VERTEX_PULL=1 VS blobs and no input layout.
+        // PullRootParam = the b9 root constant carrying the world VB's heap index (appended last).
+        UINT PullRootParam = UINT_MAX;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull, DepthPrepassVsBlobPull, DepthPrepassGBufVsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> PSOPull, OpaquePSOPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthPrepassPSOPull, DepthPrepassNoAlphaPSOPull, DepthPrepassGBufPSOPull;
+        // ...and of the VOB / attachment arena draws (VobVertexPull.hlsl); the per-mesh-VB paths keep the IA PSOs above.
+        VobPullRoots VobPull;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobVsBlobPull, VobAttachVsBlobPull, DepthPrepassVobVsBlobPull, DepthPrepassVobAttachVsBlobPull,
+                                                    DepthPrepassVobGBufVsBlobPull, DepthPrepassVobAttachGBufVsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobIndirectPSOPull, VobAttachPSOPull, DepthPrepassVobIndirectPSOPull, DepthPrepassVobNoAlphaPSOPull,
+                                                    DepthPrepassVobAttachPSOPull, DepthPrepassVobAttachNoAlphaPSOPull, DepthPrepassVobGBufPSOPull,
+                                                    DepthPrepassVobAttachGBufPSOPull;
     };
     // Water (transparent world surfaces): own root sig, the alpha-blended color PSO, plus a depth-only
     // prepass PSO (same root sig + VB/IB, lean position-only layout) that lays the water surface down in
@@ -149,6 +169,10 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthPrepassPSO;      // reuses VsBlob — see CreateWater()
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassPsBlob;   // PSDepth (writes nothing)
+        // [Debug] VertexPulling A/B twins (see WorldPipeline::PullRootParam).
+        UINT PullRootParam = UINT_MAX;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull, OceanVsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> PSOPull, DepthPrepassPSOPull, OceanPSOPull, OceanDepthPrepassPSOPull;
         // Simulated ocean (D3D12Ocean.h): the same draws through VSOcean/HSOcean/DSOcean as 3-point patches. Optional: null when the
         // device has no tessellation, in which case the sea keeps the vertex waves.
         Microsoft::WRL::ComPtr<ID3DBlob>            OceanVsBlob, OceanHsBlob, OceanDsBlob;
@@ -244,6 +268,14 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterWorldNoAlphaPSO;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterVobNoAlphaPSO;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterSkeletalNoAlphaPSO;
+        // [Debug] VertexPulling A/B: the world caster pulling the world VB (VSCubeWorldPull); the skinned casters stay on IA.
+        UINT PullRootParam = UINT_MAX;
+        Microsoft::WRL::ComPtr<ID3DBlob>            WorldVsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterWorldPSOPull, CasterWorldNoAlphaPSOPull;
+        // VSCubeVobPull for the arena runs (attachments, GPU-scene points); the per-mesh-VB VOB draws keep CasterVobPSO.
+        VobPullRoots VobPull;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobVsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterVobPSOPull, CasterVobNoAlphaPSOPull;
     };
 
     // Bink video playback (zBinkPlayer): own root sig (b0 viewport consts, t0-t2 YUV planes SRV table, static
@@ -586,6 +618,11 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            EnvPsBlob;      // PSTransparentEnv
         Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthFillPSO;
         std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<Rhi::PipelineState>> BlendPipelines; // key = BlendKey | kind<<29 | depthWrite<<31
+        // [Debug] VertexPulling A/B twins, same keys (see WorldPipeline::PullRootParam).
+        UINT PullRootParam = UINT_MAX;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull, PortalVsBlobPull, EnvVsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthFillPSOPull;
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<Rhi::PipelineState>> BlendPipelinesPull;
     };
 
     // RTV format every "display space" pass targets — the tonemap resolve, the 2D/FF UI, video, the inventory
@@ -772,6 +809,14 @@ public:
     static D3D12_INPUT_LAYOUT_DESC PosedSkinLayout( bool withNormalStream );
     LinePipeline     Lines;         // debug/editor line lists (Shaders/D3D12/Lines.hlsl)
     WorldTransparencyPipeline WorldTransparency;  // alpha-blended world surfaces (Shaders/D3D12/World.hlsl VSTransparent/PSTransparent)
+    // [Debug] VertexPulling A/B: set when any pulled twin failed to build; the frame latch then stays on IA.
+    bool VertexPullFailed = false;
+    // Latched per frame by the engine; the world-transparency getters below then hand out the pulled twins.
+    bool VertexPullActive = false;
+    Rhi::PipelineState* WorldTransparencyDepthFill() const {
+        return VertexPullActive && !VertexPullFailed && WorldTransparency.DepthFillPSOPull
+            ? WorldTransparency.DepthFillPSOPull.Get() : WorldTransparency.DepthFillPSO.Get();
+    }
 
 private:
     // Returns the retained root layout registered under `name`, cleared and ready to declare into.
@@ -783,6 +828,10 @@ private:
     // against a root signature another pass owns (the World family: CreateVob/CreateDepthPrepass
     // share World.RootSig). Returns nullptr if the owning Create*() hasn't run.
     D3D12RootLayout* GetLayout( const char* name );
+    // [Debug] VertexPulling A/B: builds the pulled twin of `desc` (VS swapped, no input layout); a failure sets VertexPullFailed.
+    void CreatePullTwin( Rhi::GraphicsPipelineStateDesc desc, ID3DBlob* pulledVs, Rhi::PipelineState** out, const char* what );
+    /** Records a pulled Vob.hlsl VS compile (a failure sets VertexPullFailed) and validates the blob against the World root signature. */
+    bool VobPullCompiled( bool compiled, const Microsoft::WRL::ComPtr<ID3DBlob>& blob, const char* name );
 
     Rhi::Device*        m_Device = nullptr;
     D3D12ShaderBackend* m_Shaders = nullptr;

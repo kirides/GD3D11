@@ -2,6 +2,7 @@
 #include "../pch.h"
 #include "D3D12GpuWorld.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12GpuScene.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../WorldObjects.h"
@@ -43,7 +44,8 @@ namespace {
     constexpr uint32_t kRefreshPerFrame = 32;     // unresolved materials re-polled without CacheIn
     constexpr uint32_t kOrmIndexMask = 0x0FFFFFFFu;
     constexpr UINT kCommandStride = 36;   // WorldDrawCommand, WorldCull.hlsl WORLD_DRAW_COMMAND_STRIDE
-    constexpr UINT kCubeCommandStride = 24;   // PointShadowCasterCommand, WorldCull.hlsl CUBE_COMMAND_STRIDE
+    constexpr UINT kCubeCommandStride = 32;   // PointShadowCasterCommand, WorldCull.hlsl CUBE_COMMAND_STRIDE
+    static_assert( kCubeCommandStride == D3D12GpuScene::kPointCommandStride, "both build PointShadowCasterCommands" );
 
     D3D12_RESOURCE_DESC BufferDesc( UINT64 bytes, bool uav ) {
         D3D12_RESOURCE_DESC bd = {};

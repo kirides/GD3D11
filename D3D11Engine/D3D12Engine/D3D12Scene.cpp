@@ -37,6 +37,8 @@
 #include "D3D12RenderQueue.h"
 #include "D3D12RenderGraph.h"
 #include "D3D12RayTracing.h"
+#include "D3D12GeometryStreams.h"
+#include "D3D12VertexPullSelfTest.h"
 #include "InstancingUtils.h"
 #include "../ThreadPool.h"   // Engine::RenderingThreadPool — MT shadow-cascade cull/record fan-out
 
@@ -1268,6 +1270,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// position / shadow index are left defaulted (world-space shading in the MVP; tiling fills them later).
 	m_FrameLightCount = 0;
 	const UINT frame = m_FrameIndex;
+	m_LightCbUsed[frame] = 0;   // the ring restarts with the frame's first light build
 	UpdateFarField();
 	const bool farFieldActive = GetStaticLightFarField().IsActive();
 	if ( !m_LightBuffer[frame] || !m_LightBufferPtr[frame] ) return;
@@ -1502,28 +1505,69 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// cleared by SetGraphicsRootSignature, and an undefined loop bound runs billions of iterations into a GPU
 	// timeout. Param indices differ per root sig: World (3,4,5), Skeletal (4,5,6), Grass (5,6,7).
 	m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_NumTilesX, 1 );         // NumTilesX  @ b*.y
-	// LimitLightIntensity @ b*.z — mirrors D3D11's ForwardPlusLighting.hlsl MAX-blend mode (swap "sum of
-	// every overlapping point light" for "brightest single light" to avoid overexposure).
-	const UINT limitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, limitLightIntensity, 2 );
-	// PointShadowDynIndex @ b*.w — the BINDLESS heap slot of the OVERLAY cube array. The static core array is a
-	// declared t-register in each shader (PointShadowCubes), but the second tier rides in this spare root
-	// constant instead (SM6.6 ResourceDescriptorHeap), which is why it needed no root signature changes. Only
-	// ever read by a light whose ShadowCubeIndex carries a non-zero HI half, so the 0 fallback is never
-	// dereferenced.
+	// LightCB is a root CBV into the per-frame LightCB ring (identical contents share one slot).
+	LightCBData cb = {};
+	cb.LightCount = m_FrameLightCount;
+	cb.NumTilesX = m_NumTilesX;
+	// LimitLightIntensity mirrors D3D11's ForwardPlusLighting.hlsl MAX-blend mode (brightest single light
+	// instead of the sum of every overlapping one).
+	cb.LimitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
+	// PointShadowDynIndex: bindless heap slot of the overlay cube array; only read by lights whose
+	// ShadowCubeIndex has a non-zero HI half, so the 0 fallback is never dereferenced.
 	const UINT dynCubeSrv = m_PointShadows.GetDynSrvSlot();
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv, 3 );
-	// RtShadowMaskIndex @ 4: the ray-traced shadow mask + 1, only while the opaque prepass surfaces shade
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_RtShadowMaskSlot == UINT_MAX ? 0u : m_RtShadowMaskSlot + 1u, 4 );
-	// ProjA/ProjB/NearZ/FarZ (P2.14): let every lit pixel shader reconstruct ITS OWN cluster Z slice from its
-	// own SV_Position.z (PBRLighting.hlsl's ComputeZSlice) — must match DispatchLightCulling's CullCB exactly,
-	// or a pixel picks a different cluster than the one the compute pass culled lights into.
+	cb.PointShadowDynIndex = dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv;
+	cb.RtShadowMaskIndex = m_RtShadowMaskSlot == UINT_MAX ? 0u : m_RtShadowMaskSlot + 1u;
+	// ProjA/ProjB/NearZ/FarZ feed PBRLighting.hlsl's ComputeZSlice; must match DispatchLightCulling's CullCB exactly.
 	const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
-	const float clusterConsts[4] = { projM._33, projM._43, Engine::GAPI->GetNearPlane(), GetClusterFarZ() };
-	m_CmdList->SetGraphicsRoot32BitConstants( countParam, 4, clusterConsts, 5 );
+	cb.ProjA = projM._33;
+	cb.ProjB = projM._43;
+	cb.NearZ = Engine::GAPI->GetNearPlane();
+	cb.FarZ = GetClusterFarZ();
+	m_CmdList->SetGraphicsRootConstantBufferView( countParam, AllocLightCb( cb ) );
 	m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
+}
+
+
+bool D3D12GraphicsEngine::CreateLightConstantBuffer() {
+	D3D12_RESOURCE_DESC bd = {};
+	bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bd.Width = static_cast<UINT64>( kLightCbSlots ) * kLightCbStride;
+	bd.Height = 1;
+	bd.DepthOrArraySize = 1;
+	bd.MipLevels = 1;
+	bd.Format = DXGI_FORMAT_UNKNOWN;
+	bd.SampleDesc.Count = 1;
+	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+		if ( FAILED( m_Rhi->CreateResource( DefaultUploadHeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LightCB[i].ReleaseAndGetAddressOf() ) ) )
+			return false;
+		m_LightCB[i]->SetName( L"LightCBRing" );
+		D3D12_RANGE noRead = { 0, 0 };
+		void* mapped = nullptr;
+		if ( FAILED( m_LightCB[i]->Map( 0, &noRead, &mapped ) ) ) return false;
+		m_LightCBMapped[i] = static_cast<uint8_t*>( mapped );
+		memset( mapped, 0, static_cast<size_t>( bd.Width ) );
+	}
+	return true;
+}
+
+
+D3D12_GPU_VIRTUAL_ADDRESS D3D12GraphicsEngine::AllocLightCb( const LightCBData& cb ) {
+	const UINT frame = m_FrameIndex;
+	const D3D12_GPU_VIRTUAL_ADDRESS base = m_LightCB[frame]->GetGPUVirtualAddress();
+	uint8_t* mapped = m_LightCBMapped[frame];
+	UINT& used = m_LightCbUsed[frame];
+	// Near-constant within a frame: reuse the last slot when unchanged, compared against a CPU copy.
+	if ( used > 0 && memcmp( &m_LightCbLast[frame], &cb, sizeof( cb ) ) == 0 )
+		return base + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( used - 1 ) * kLightCbStride;
+	m_LightCbLast[frame] = cb;
+	if ( used >= kLightCbSlots ) {
+		static bool s_logged = false;
+		if ( !s_logged ) { s_logged = true; Logging::Wrn( "D3D12: LightCB ring full ({} distinct values in a frame); reusing the last slot.", kLightCbSlots ); }
+		used = kLightCbSlots - 1;
+	}
+	memcpy( mapped + used * kLightCbStride, &cb, sizeof( cb ) );
+	return base + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( used++ ) * kLightCbStride;
 }
 
 
@@ -2735,6 +2779,18 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// NPCs draw this frame. Before the cascade jobs launch, which read the arenas lock-free.
 	m_SkelArena->Flush( this );
 	m_AttachArena->Flush( this );
+	// Last arena flush/growth of the frame is behind us (VOB arena, BeginSkinningFrame, the two above) and no cascade
+	// job has launched yet: rewrite this frame slot's stream table here. Passes recorded after this point may read it.
+	m_GeometryStreams->Update();
+	{
+		MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+		D3D12VertexBuffer* wvb = wm && wm->GetMeshVertexBuffer() ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
+		m_WorldVbSlot = m_GeometryStreams->Slot( D3D12GeometryStreams::Stream::WorldVB );
+		m_VertexPullWorld = Engine::GAPI->GetRendererState().RendererSettings.VertexPulling && !m_Pipelines.VertexPullFailed
+			&& m_WorldVbSlot != UINT_MAX && wvb && wvb->GetResource();
+		m_Pipelines.VertexPullActive = m_VertexPullWorld;
+	}
+	m_VertexPullSelfTest->Run();   // before BindSceneColorTarget, which rebinds the RT it disturbs
 
 	// Refresh the wind CB's player position ONCE here (before shadows/prepass/color all run this frame) — windDir/
 	// globalTime were already advanced once in OnBeginFrame; minHeight/maxHeight are refreshed per-visual right
@@ -3672,7 +3728,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
 /** Built on m_Pipelines.World.RootSig, so rebuilt with it (RebuildRootSignatureDependents). */
 bool D3D12GraphicsEngine::CreateVobIndirectSignature() {
-    D3D12_INDIRECT_ARGUMENT_DESC args[3] = {};
+    D3D12_INDIRECT_ARGUMENT_DESC args[4] = {};
     args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
     args[0].Constant.RootParameterIndex = 10;                 // b6 MaterialCB { normal, orm, diffuse }
     args[0].Constant.DestOffsetIn32BitValues = 0;
@@ -3681,10 +3737,14 @@ bool D3D12GraphicsEngine::CreateVobIndirectSignature() {
     args[1].Constant.RootParameterIndex = 11;                 // b4 WindCB: overwrite only minHeight/maxHeight (@4,5)
     args[1].Constant.DestOffsetIn32BitValues = 4;
     args[1].Constant.Num32BitValuesToSet = 2;
-    args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[2].Constant.RootParameterIndex = m_Pipelines.World.VobPull.Draw;   // b10 { VertexBase, InstanceBase } (15): increasing parameter order
+    args[2].Constant.DestOffsetIn32BitValues = 0;
+    args[2].Constant.Num32BitValuesToSet = 2;
+    args[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
 
     D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
-    sigDesc.ByteStride = sizeof( VobDrawCommand );            // 48 B; MUST match the struct + arg layout
+    sigDesc.ByteStride = sizeof( VobDrawCommand );            // 56 B; MUST match the struct + arg layout
     sigDesc.NumArgumentDescs = _countof( args );
     sigDesc.pArgumentDescs = args;
     // Commands set root constants (b6/b4), so the signature must carry the root signature those param indices refer to.
@@ -3711,10 +3771,12 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 
     // The trailing 8 bytes (VisualIndex + LodBucket) sit PAST the arguments the GPU reads; ByteStride only has
     // to cover them, so they are ours (VobCull.hlsl's CSPatchArgs reads both out of the buffer it patches).
-    static_assert( sizeof( VobDrawCommand ) == 48, "VobDrawCommand must match the command signature arg layout (48 B stride)" );
+    static_assert( sizeof( VobDrawCommand ) == 56, "VobDrawCommand must match the command signature arg layout (56 B stride)" );
     static_assert( offsetof( VobDrawCommand, MatNormalIndex ) == 0, "b6 consts lead the VOB command" );
-    static_assert( offsetof( VobDrawCommand, Draw ) == 20, "VobDrawCommand draw args must be last of the indirect arguments" );
-    static_assert( offsetof( VobDrawCommand, VisualIndex ) == 40, "VisualIndex must follow the indirect arguments" );
+    static_assert( offsetof( VobDrawCommand, WindMinHeight ) == 12, "b4[4..5] follows b6" );
+    static_assert( offsetof( VobDrawCommand, VertexBase ) == 20 && offsetof( VobDrawCommand, InstanceBase ) == 24, "b10 follows b4 (VobCull.hlsl AppendSceneCommand)" );
+    static_assert( offsetof( VobDrawCommand, Draw ) == 28, "VobDrawCommand draw args must be last of the indirect arguments" );
+    static_assert( offsetof( VobDrawCommand, VisualIndex ) == 48 && offsetof( VobDrawCommand, LodBucket ) == 52, "VisualIndex must follow the indirect arguments" );
 
     if ( !CreateVobIndirectSignature() ) return false;
 
@@ -3838,34 +3900,43 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
 
 
 bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes,
-    UINT instanceStride ) {
+    UINT instanceStride, const D3D12PipelineState::VobPullRoots* pull ) {
     if ( !m_VobArena->Ready() || !instances || instanceBytes == 0 ) return false;
 
     // The whole buffer is bound once: a VOB command addresses its sub-mesh through
     // BaseVertexLocation/StartIndexLocation and its instances through StartInstanceLocation, so nothing
     // per-draw is left in the IA state. That is what replaces ~560 binds with this one.
-    const D3D12_VERTEX_BUFFER_VIEW views[2] = {
-        { m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(),
-          D3D12VobArena::VertexStride() },
-        { instances->GetGPUVirtualAddress(), instanceBytes, instanceStride ? instanceStride : VobInstanceStride() },
-    };
+    const UINT stride = instanceStride ? instanceStride : VobInstanceStride();
     const D3D12_INDEX_BUFFER_VIEW ibv = {
         m_VobArena->GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetIndexBytes(), DXGI_FORMAT_R16_UINT };
-    cmdList->IASetVertexBuffers( 0, 2, views );
+    if ( m_VertexPullWorld && pull && pull->InstSrv != UINT_MAX ) {
+        BindVobPull( cmdList, *pull, instances, stride, false );
+    } else {
+        const D3D12_VERTEX_BUFFER_VIEW views[2] = {
+            { m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(),
+              D3D12VobArena::VertexStride() },
+            { instances->GetGPUVirtualAddress(), instanceBytes, stride },
+        };
+        cmdList->IASetVertexBuffers( 0, 2, views );
+    }
     cmdList->IASetIndexBuffer( &ibv );
     return true;
 }
 
 
-bool D3D12GraphicsEngine::BindAttachArenaIA( D3D12CmdList& cmdList ) {
+bool D3D12GraphicsEngine::BindAttachArenaIA( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots* pull ) {
     if ( !m_AttachArena->Ready() || !m_VobInstanceBuffer[m_FrameIndex] ) return false;
     // StartInstanceLocation is an element index into the whole ring (see BuildSkeletalDrawCommands).
-    const D3D12_VERTEX_BUFFER_VIEW views[2] = {
-        m_AttachArena->VertexBufferView(),
-        { m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress(), m_VobInstanceBufferCapacity, VobInstanceStride() },
-    };
     const D3D12_INDEX_BUFFER_VIEW ibv = m_AttachArena->IndexBufferView();
-    cmdList->IASetVertexBuffers( 0, 2, views );
+    if ( m_VertexPullWorld && pull && pull->InstSrv != UINT_MAX ) {
+        BindVobPull( cmdList, *pull, m_VobInstanceBuffer[m_FrameIndex].Get(), VobInstanceStride(), true );
+    } else {
+        const D3D12_VERTEX_BUFFER_VIEW views[2] = {
+            m_AttachArena->VertexBufferView(),
+            { m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress(), m_VobInstanceBufferCapacity, VobInstanceStride() },
+        };
+        cmdList->IASetVertexBuffers( 0, 2, views );
+    }
     cmdList->IASetIndexBuffer( &ibv );
     return true;
 }
@@ -4105,10 +4176,12 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 c.Draw.InstanceCount         = up.numInstances;
                 c.Draw.StartIndexLocation    = cmdIndexStart;
                 c.Draw.BaseVertexLocation    = static_cast<INT>( range->BaseVertex );
+                c.VertexBase                 = range->BaseVertex;
                 // Absolute, not range-relative: there is no per-command instance VBV any more, so the command
                 // names its visual's block inside the one buffer the pass binds. CSPatchArgs overwrites this
                 // for culled commands; the value here is what an unpatched one draws.
                 c.Draw.StartInstanceLocation = up.instanceBase;
+                c.InstanceBase               = up.instanceBase;
                 // Staged, not emitted: the visual's split mode isn't known until every sub-mesh is resolved.
                 StagedSubMesh s{};
                 s.Cmd = c;
@@ -4176,10 +4249,13 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     // Final: nothing patches this command, so both halves of the run are named outright.
                     f.Draw.InstanceCount = cpuFarCount;
                     f.Draw.StartInstanceLocation = up.instanceBase + cpuNearCount;
+                    f.InstanceBase = f.Draw.StartInstanceLocation;
                 } else {
-                    // GPU path: CSPatchArgs fills in both. 0 so an unpatched command draws nothing rather
-                    // than every instance a second time.
+                    // GPU path: CSPatchArgs fills in the count and StartInstanceLocation. 0 so an unpatched command
+                    // draws nothing rather than every instance a second time. The pulled VS must not depend on the
+                    // patch (root arguments are CPU-written), so it walks the far run backward from the block end.
                     f.Draw.InstanceCount = 0;
+                    f.InstanceBase = kVobFarRunBit | ( up.instanceBase + up.numInstances - 1u );
                 }
                 cmds[count++] = f;   // not counted in m_VobDrawnTriangles: the near command already
             }                        // counted every instance, keeping that stat a pre-cull upper bound
@@ -4492,7 +4568,9 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             c.Draw.InstanceCount         = static_cast<UINT>( b.members.size() );
             c.Draw.StartIndexLocation    = b.range->StartIndex;
             c.Draw.BaseVertexLocation    = static_cast<INT>( b.range->BaseVertex );
+            c.VertexBase                 = b.range->BaseVertex;
             c.Draw.StartInstanceLocation = instOffset / instBytes;
+            c.InstanceBase               = instOffset / instBytes;
             c.VisualIndex = 0xFFFFFFFFu;   // never GPU-culled: "leave the CPU's instance count alone"
             c.LodBucket   = kLodBucketNear;   // attachments never split; VisualIndex already skips them
             if ( b.alphaTested ) alphaAttachCmds.push_back( c );
@@ -4507,6 +4585,20 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
     }
 }
 
+
+void D3D12GraphicsEngine::BindWorldPull( D3D12CmdList& cmdList, UINT rootParam ) const {
+    const UINT info[2] = { m_WorldVbSlot, 0u };
+    if ( m_VertexPullWorld && rootParam != UINT_MAX ) cmdList->SetGraphicsRoot32BitConstants( rootParam, 2, info, 0 );
+}
+
+void D3D12GraphicsEngine::BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances,
+    UINT instanceStride, bool attachArena ) const {
+    // The stream table is one block in enum order, so the arena VB is a small offset from the world VB slot.
+    const UINT streamOffset = m_GeometryStreams->Slot( attachArena ? D3D12GeometryStreams::Stream::AttachVB : D3D12GeometryStreams::Stream::VobVB ) - m_WorldVbSlot;
+    const UINT info[2] = { m_WorldVbSlot, instanceStride | ( streamOffset << 16 ) };
+    cmdList->SetGraphicsRoot32BitConstants( pull.Cb, 2, info, 0 );
+    cmdList->SetGraphicsRootShaderResourceView( pull.InstSrv, instances->GetGPUVirtualAddress() );
+}
 
 void D3D12GraphicsEngine::DrawDepthPrepass() {
     // Forward+ opaque WORLD-MESH depth prepass, before the lit color passes. Writes depth only (color write
@@ -4547,10 +4639,11 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // for this. See World.DepthPrepassNoAlphaPSO.
     const bool splitAlpha = !gbuf && m_Pipelines.World.DepthPrepassNoAlphaPSO != nullptr;
 
-    m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassGBufPSO.Get()
-                                      : ( splitAlpha ? m_Pipelines.World.DepthPrepassNoAlphaPSO.Get()
-                                                     : m_Pipelines.World.DepthPrepassPSO.Get() ) );
+    m_CmdList->SetPipelineState( gbuf ? PullPick( m_Pipelines.World.DepthPrepassGBufPSO.Get(), m_Pipelines.World.DepthPrepassGBufPSOPull.Get() )
+                                      : ( splitAlpha ? PullPick( m_Pipelines.World.DepthPrepassNoAlphaPSO.Get(), m_Pipelines.World.DepthPrepassNoAlphaPSOPull.Get() )
+                                                     : PullPick( m_Pipelines.World.DepthPrepassPSO.Get(), m_Pipelines.World.DepthPrepassPSOPull.Get() ) ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+    BindWorldPull( m_CmdList, m_Pipelines.World.PullRootParam );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
     if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSWorldGBuf)
 
@@ -4572,7 +4665,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     if ( m_GpuWorldActive ) {
         if ( !m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) return;
         m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
-        if ( splitAlpha ) m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
+        if ( splitAlpha ) m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.DepthPrepassPSO.Get(), m_Pipelines.World.DepthPrepassPSOPull.Get() ) );
         m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
         m_WorldPrepassDrawn = true;
         return;
@@ -4597,7 +4690,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     }
     // Alpha-tested suffix through the clipping PSO, starting at the partition point.
     if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
-        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
+        m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.DepthPrepassPSO.Get(), m_Pipelines.World.DepthPrepassPSOPull.Get() ) );
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
             static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );
@@ -4710,6 +4803,7 @@ void D3D12GraphicsEngine::BindWorldFrameRootState( const XMFLOAT4X4& viewProj ) 
     const FogConstants fog = MakeFogConstants();
 
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+    BindWorldPull( m_CmdList, m_Pipelines.World.PullRootParam );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
     BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — MUST set both or the
@@ -4754,7 +4848,8 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
 
     // Opaque run depth-EQUAL against the prepass (no clip, early depth); alpha-tested run keeps PSO's clip.
     Rhi::PipelineState* opaquePso = m_WorldPrepassDrawn && m_Pipelines.World.OpaquePSO
-        ? m_Pipelines.World.OpaquePSO.Get() : m_Pipelines.World.PSO.Get();
+        ? PullPick( m_Pipelines.World.OpaquePSO.Get(), m_Pipelines.World.OpaquePSOPull.Get() )
+        : PullPick( m_Pipelines.World.PSO.Get(), m_Pipelines.World.PSOPull.Get() );
     m_WorldPrepassDrawn = false;
     m_CmdList->SetPipelineState( opaquePso );
     BindWorldFrameRootState( viewProj );
@@ -4778,7 +4873,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     if ( m_GpuWorldActive ) {
         if ( m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) {
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
-            m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+            m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.PSO.Get(), m_Pipelines.World.PSOPull.Get() ) );
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
         }
         return XR_SUCCESS;
@@ -4789,7 +4884,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
             m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
     if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
-        m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+        m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.PSO.Get(), m_Pipelines.World.PSOPull.Get() ) );
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
             static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );
@@ -5066,9 +5161,9 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
     const bool splitAlpha = !gbuf && m_Pipelines.World.DepthPrepassVobNoAlphaPSO != nullptr;
 
-    m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassVobGBufPSO.Get()
-                                      : ( splitAlpha ? m_Pipelines.World.DepthPrepassVobNoAlphaPSO.Get()
-                                                     : m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() ) );
+    m_CmdList->SetPipelineState( gbuf ? PullPick( m_Pipelines.World.DepthPrepassVobGBufPSO.Get(), m_Pipelines.World.DepthPrepassVobGBufPSOPull.Get() )
+                                      : ( splitAlpha ? PullPick( m_Pipelines.World.DepthPrepassVobNoAlphaPSO.Get(), m_Pipelines.World.DepthPrepassVobNoAlphaPSOPull.Get() )
+                                                     : PullPick( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get(), m_Pipelines.World.DepthPrepassVobIndirectPSOPull.Get() ) ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
     if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSDepthGBuf)
@@ -5081,7 +5176,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws() ) )
+    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws(), 0, &m_Pipelines.World.VobPull ) )
         return;
 
     // One GPU-driven submit over the shared command set BuildVobDrawCommands filled (same set the color pass draws).
@@ -5106,7 +5201,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     // The alpha-tested run, whole — no distance trim. Leaving alpha-tested surfaces out of the prepass lets
     // grass and other later geometry draw on top of them.
     const UINT alphaCount = cpuDraws ? m_VobDrawCount - m_VobOpaqueDrawCount : 0u;
-    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
+    m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get(), m_Pipelines.World.DepthPrepassVobIndirectPSOPull.Get() ) );
     if ( alphaCount > 0 ) {
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), alphaCount, drawArgs,
             static_cast<UINT64>( m_VobOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
@@ -5144,7 +5239,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 
     const FogConstants fog = MakeFogConstants();
 
-    m_CmdList->SetPipelineState( m_Pipelines.World.VobIndirectPSO.Get() );
+    m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.VobIndirectPSO.Get(), m_Pipelines.World.VobIndirectPSOPull.Get() ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
@@ -5162,7 +5257,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws() ) )
+    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws(), 0, &m_Pipelines.World.VobPull ) )
         return XR_SUCCESS;
 
     static_assert( sizeof( VS_ExConstantBuffer_Wind ) == 48, "WindCB (b4) layout must match Vob.hlsl's WindCB" );
@@ -5688,9 +5783,9 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         const bool attachGbuf = motionCb && MotionGBufferActive();
         // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
         const bool attachSplit = !attachGbuf && m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSO != nullptr;
-        m_CmdList->SetPipelineState( attachGbuf ? m_Pipelines.World.DepthPrepassVobAttachGBufPSO.Get()
-                                                : ( attachSplit ? m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSO.Get()
-                                                                : m_Pipelines.World.DepthPrepassVobAttachPSO.Get() ) );
+        m_CmdList->SetPipelineState( attachGbuf ? PullPick( m_Pipelines.World.DepthPrepassVobAttachGBufPSO.Get(), m_Pipelines.World.DepthPrepassVobAttachGBufPSOPull.Get() )
+                                                : ( attachSplit ? PullPick( m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSO.Get(), m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSOPull.Get() )
+                                                                : PullPick( m_Pipelines.World.DepthPrepassVobAttachPSO.Get(), m_Pipelines.World.DepthPrepassVobAttachPSOPull.Get() ) ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         if ( attachGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB
@@ -5700,7 +5795,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        BindAttachArenaIA( m_CmdList );
+        BindAttachArenaIA( m_CmdList, &m_Pipelines.World.VobPull );
         if ( !attachSplit ) {
             m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
                 m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -5710,7 +5805,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
                     m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
             }
             if ( m_AttachDrawCount > m_AttachOpaqueDrawCount ) {
-                m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
+                m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.DepthPrepassVobAttachPSO.Get(), m_Pipelines.World.DepthPrepassVobAttachPSOPull.Get() ) );
                 m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(),
                     m_AttachDrawCount - m_AttachOpaqueDrawCount, m_AttachDrawArgs[m_FrameIndex].Get(),
                     static_cast<UINT64>( m_AttachOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
@@ -5771,7 +5866,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig && m_AttachArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Draw attachments" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw attachments" );
-        m_CmdList->SetPipelineState( m_Pipelines.World.VobAttachPSO.Get() );
+        m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.VobAttachPSO.Get(), m_Pipelines.World.VobAttachPSOPull.Get() ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)
@@ -5787,7 +5882,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
         // Each command sets its b6 { normal, ORM, diffuse } bindless material constants, then DrawIndexed into
         // the arena — PSMainBindless reads the identical MaterialCB layout the base meshes use.
-        BindAttachArenaIA( m_CmdList );
+        BindAttachArenaIA( m_CmdList, &m_Pipelines.World.VobPull );
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
             m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }

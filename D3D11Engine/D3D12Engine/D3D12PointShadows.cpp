@@ -75,13 +75,18 @@ namespace {
 		return { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), format };
 	}
 
-	// Skinned and arena-attachment casters: { b1 diffuse slot, DrawIndexed } through m_CasterCmdSig, so a light's
-	// run is one ExecuteIndirect per alpha partition (device-generated on Vulkan).
+	// Skinned and arena-attachment casters: { b1 diffuse slot, b10 { VertexBase, InstanceBase }, DrawIndexed } through
+	// m_CasterCmdSig, so a light's run is one ExecuteIndirect per alpha partition (device-generated on Vulkan).
+	// VobVertexPull.hlsl reads b10 for the pulled attachment casters; the IA skinned casters ignore it.
 	struct PointShadowCasterCommand {
 		uint32_t                     DiffuseIndex;   // @0 b1
-		D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @4, InstanceCount 6 = the cube faces
+		uint32_t                     VertexBase;     // @4 b10.x
+		uint32_t                     InstanceBase;   // @8 b10.y, an element of the instance buffer (face = instance id % 6)
+		D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @12, InstanceCount 6 = the cube faces
 	};
-	static_assert( sizeof( PointShadowCasterCommand ) == 24, "must match m_CasterCmdSig's stride" );
+	static_assert( sizeof( PointShadowCasterCommand ) == 32, "must match m_CasterCmdSig's stride" );
+	static_assert( offsetof( PointShadowCasterCommand, Draw ) == 12, "WorldCull.hlsl and VobCull.hlsl CUBE_COMMAND_STRIDE writers rely on this layout" );
+	static_assert( sizeof( PointShadowCasterCommand ) == D3D12GpuScene::kPointCommandStride, "GPU-built cube commands use this stride" );
 	// A run in the caster ring: [first, first + opaque) needs no cutout, the rest clips.
 	struct CasterRun { UINT first = 0, opaque = 0, count = 0; };
 
@@ -128,12 +133,16 @@ bool D3D12PointShadows::IsNpcAttached( const zCVob* vob ) {
 
 /** Built on m_Pipelines.PointShadow.RootSig, so rebuilt with it (RebuildRootSignatureDependents). */
 bool D3D12PointShadows::CreateCasterSignature() {
-	D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
+	D3D12_INDIRECT_ARGUMENT_DESC args[3] = {};
 	args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
 	args[0].Constant.RootParameterIndex = 1;   // b1 CasterCB { DiffuseIndex }
 	args[0].Constant.DestOffsetIn32BitValues = 0;
 	args[0].Constant.Num32BitValuesToSet = 1;
-	args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+	args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+	args[1].Constant.RootParameterIndex = m_E->m_Pipelines.PointShadow.VobPull.Draw;   // b10 { VertexBase, InstanceBase }, after b1
+	args[1].Constant.DestOffsetIn32BitValues = 0;
+	args[1].Constant.Num32BitValuesToSet = 2;
+	args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
 	D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
 	sigDesc.ByteStride = sizeof( PointShadowCasterCommand );
 	sigDesc.NumArgumentDescs = _countof( args );
@@ -551,6 +560,8 @@ namespace {
 	void StageCaster( UINT diffuseSlot, bool alphaTested, const D3D12MeshArena::Range& range, INT baseVertex, UINT startInstance ) {
 		PointShadowCasterCommand cmd;
 		cmd.DiffuseIndex = diffuseSlot;
+		cmd.VertexBase = static_cast<uint32_t>( baseVertex );
+		cmd.InstanceBase = startInstance;
 		cmd.Draw = { range.IndexCount, 6, range.StartIndex, baseVertex, startInstance };
 		( alphaTested ? s_alphaCmds : s_opaqueCmds ).push_back( cmd );
 	}
@@ -1453,8 +1464,9 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 		if ( !casterArgs ) return;
 		beginRun( L );
 		// Attachment arena + the whole VOB ring; StartInstanceLocation picks the attachment's world matrix.
-		if ( !m_E->BindAttachArenaIA( cmdList ) ) return;
-		submitRun( run, psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get() );
+		if ( !m_E->BindAttachArenaIA( cmdList, &psPipe.VobPull ) ) return;
+		submitRun( run, m_E->PullPick( psPipe.CasterVobPSO.Get(), psPipe.CasterVobPSOPull.Get() ),
+			m_E->PullPick( psPipe.CasterVobNoAlphaPSO.Get(), psPipe.CasterVobNoAlphaPSOPull.Get() ) );
 		};
 
 	// One-time: both arrays are born with UNDEFINED depth, and a comparison sample against 0 reads as fully
@@ -1510,10 +1522,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				m_E->BindWorldPull( cmdList, psPipe.PullRootParam );
 				resetBindCache();
 				for ( UINT i = L.staticWorldBegin; i < L.staticWorldEnd; ++i ) {
 					const PointShadowDraw& d = g_PsStaticWorldDraws[i];
-					bindCasterPso( psPipe.CasterWorldPSO.Get(), psPipe.CasterWorldNoAlphaPSO.Get(), d.alphaTested );
+					bindCasterPso( m_E->PullPick( psPipe.CasterWorldPSO.Get(), psPipe.CasterWorldPSOPull.Get() ),
+						m_E->PullPick( psPipe.CasterWorldNoAlphaPSO.Get(), psPipe.CasterWorldNoAlphaPSOPull.Get() ), d.alphaTested );
 					bindDiffuse( d.diffuseSlot );
 					emitGeometry( d );
 				}
@@ -1524,11 +1538,14 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh (GPU)" );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				m_E->BindWorldPull( cmdList, psPipe.PullRootParam );
 				cmdList->IASetVertexBuffers( 0, 1, &g_PsWorldVbv );
 				cmdList->IASetIndexBuffer( &g_PsWorldIbv );
-				bindCasterPso( psPipe.CasterWorldPSO.Get(), psPipe.CasterWorldNoAlphaPSO.Get(), false );
+				Rhi::PipelineState* const worldClip = m_E->PullPick( psPipe.CasterWorldPSO.Get(), psPipe.CasterWorldPSOPull.Get() );
+				Rhi::PipelineState* const worldNoAlpha = m_E->PullPick( psPipe.CasterWorldNoAlphaPSO.Get(), psPipe.CasterWorldNoAlphaPSOPull.Get() );
+				bindCasterPso( worldClip, worldNoAlpha, false );
 				m_E->m_GpuWorld->DrawCube( cmdList, static_cast<UINT>( L.gpuWorldView ), false, m_CasterCmdSig.Get() );
-				bindCasterPso( psPipe.CasterWorldPSO.Get(), psPipe.CasterWorldNoAlphaPSO.Get(), true );
+				bindCasterPso( worldClip, worldNoAlpha, true );
 				m_E->m_GpuWorld->DrawCube( cmdList, static_cast<UINT>( L.gpuWorldView ), true, m_CasterCmdSig.Get() );
 				resetBindCache();   // the commands wrote b1, and the IA binds are not the cache's
 			}
@@ -1539,10 +1556,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
 				const D3D12GpuScene& scene = *m_E->m_GpuScene;
-				if ( m_E->BindVobArenaIA( cmdList, scene.PointInstances(), scene.PointInstanceBytes(), D3D12GpuScene::kCasterInstanceStride ) ) {
-					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), false );
+				if ( m_E->BindVobArenaIA( cmdList, scene.PointInstances(), scene.PointInstanceBytes(), D3D12GpuScene::kCasterInstanceStride, &psPipe.VobPull ) ) {
+					Rhi::PipelineState* const vobClip = m_E->PullPick( psPipe.CasterVobPSO.Get(), psPipe.CasterVobPSOPull.Get() );
+					Rhi::PipelineState* const vobNoAlpha = m_E->PullPick( psPipe.CasterVobNoAlphaPSO.Get(), psPipe.CasterVobNoAlphaPSOPull.Get() );
+					bindCasterPso( vobClip, vobNoAlpha, false );
 					m_E->DrawGpuScenePoints( cmdList, static_cast<UINT>( L.gpuVobView ), false, m_CasterCmdSig.Get() );
-					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), true );
+					bindCasterPso( vobClip, vobNoAlpha, true );
 					m_E->DrawGpuScenePoints( cmdList, static_cast<UINT>( L.gpuVobView ), true, m_CasterCmdSig.Get() );
 				}
 				resetBindCache();

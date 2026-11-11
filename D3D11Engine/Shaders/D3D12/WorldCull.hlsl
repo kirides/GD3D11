@@ -78,7 +78,7 @@ RWByteAddressBuffer             ArgCount     : register( u1 );   // [0] opaque, 
 RWByteAddressBuffer             Feedback     : register( u2 );
 
 #define WORLD_DRAW_COMMAND_STRIDE 36u
-#define CUBE_COMMAND_STRIDE 24u       // D3D12PointShadows' PointShadowCasterCommand: b1 diffuse + DrawIndexed
+#define CUBE_COMMAND_STRIDE 32u       // D3D12PointShadows' PointShadowCasterCommand: b1 diffuse, { VertexBase, InstanceBase } (unused here), DrawIndexed
 #define WORLDCULL_GROUP_SIZE 64
 #define MAX_CLUSTER_WORDS 64        // 2048 clusters per mesh; the rest join the last run unculled
 #define REPORT_CAPACITY 62u         // D3D12PointShadows::kReportCapacity
@@ -132,8 +132,8 @@ void EmitCommand( WorldMaterial mat, uint startIndex, uint indexCount )
     {
         // One instance per cube face, routed by the cube VS.
         const uint cubeAt = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * CUBE_COMMAND_STRIDE;
-        Args.Store3( cubeAt,      uint3( mat.Diffuse, indexCount, 6u ) );
-        Args.Store3( cubeAt + 12, uint3( startIndex, 0u, 0u ) );
+        Args.Store4( cubeAt,      uint4( mat.Diffuse, 0u, 0u, indexCount ) );
+        Args.Store4( cubeAt + 16, uint4( 6u, startIndex, 0u, 0u ) );
         return;
     }
 

@@ -94,8 +94,28 @@ struct VS_IN
 };
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float focus : TEXCOORD5; };
 
-VS_OUT VSMain( VS_IN i )
+// VERTEX_PULL: the VS entry points take only the vertex/instance ids and read the arena vertex and the instance record
+// (include/VobVertexPull.hlsl); the body below each entry is shared with the input-assembler variant.
+#ifdef VERTEX_PULL
+#include "include/VobVertexPull.hlsl"
+struct VS_ENTRY_IN { uint vid : SV_VertexID; uint iid : SV_InstanceID; };
+VS_IN FetchVobVertex( VS_ENTRY_IN e )
 {
+    const FetchedVertex v = LoadFull( VobVb(), VF_EX60, VobVertexIndex( e.vid ) );
+    const VobInstance inst = LoadPulledVobInstance( e.iid );
+    VS_IN i;
+    i.pos = v.pos; i.nrm = v.nrm; i.uv = v.uv;
+    i.iworld = inst.world; i.icolor = inst.color; i.iwind = inst.wind; i.igpslot = inst.gpSlot;
+    return i;
+}
+#else
+typedef VS_IN VS_ENTRY_IN;
+VS_IN FetchVobVertex( VS_ENTRY_IN e ) { return e; }
+#endif
+
+VS_OUT VSMain( VS_ENTRY_IN e )
+{
+    const VS_IN i = FetchVobVertex( e );
     VS_OUT o;
     float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
 
@@ -158,8 +178,24 @@ struct VS_DEPTH_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0;
     row_major float3x4 iworld : INSTANCE_WORLD_MATRIX;
     float2 iwind : INSTANCE_WINDFLUENCE; };
 struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
-VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
+#ifdef VERTEX_PULL
+typedef VS_ENTRY_IN VS_DEPTH_ENTRY_IN;
+VS_DEPTH_IN FetchVobDepthVertex( VS_DEPTH_ENTRY_IN e )
 {
+    float3 pos; float2 uv;
+    LoadPosUv( VobVb(), VF_EX60, VobVertexIndex( e.vid ), pos, uv );
+    const VobInstance inst = LoadPulledVobInstance( e.iid );
+    VS_DEPTH_IN i;
+    i.pos = pos; i.uv = uv; i.iworld = inst.world; i.iwind = inst.wind;
+    return i;
+}
+#else
+typedef VS_DEPTH_IN VS_DEPTH_ENTRY_IN;
+VS_DEPTH_IN FetchVobDepthVertex( VS_DEPTH_ENTRY_IN e ) { return e; }
+#endif
+VS_DEPTH_OUT VSDepth( VS_DEPTH_ENTRY_IN e )
+{
+    const VS_DEPTH_IN i = FetchVobDepthVertex( e );
     VS_DEPTH_OUT o;
     float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
     float3 worldPos = mul( i.iworld, float4( localPos, 1.0 ) );
@@ -193,8 +229,9 @@ float3 ApplyAttachFatness( float3 pos, float3 nrm, float2 fatnessScaling )
     return ( pos + fatnessScaling.x * nrm ) * fatnessScaling.y;
 }
 
-VS_OUT VSMainAttach( VS_IN i )
+VS_OUT VSMainAttach( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchVobVertex( e );
     VS_OUT o;
     float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
 
@@ -209,8 +246,9 @@ VS_OUT VSMainAttach( VS_IN i )
     return o;
 }
 
-VS_DEPTH_OUT VSDepthAttach( VS_IN i )
+VS_DEPTH_OUT VSDepthAttach( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchVobVertex( e );
     VS_DEPTH_OUT o;
     float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
     float3 worldPos = mul( i.iworld, float4( localPos, 1.0 ) );
@@ -360,8 +398,25 @@ struct VS_GBUF_OUT
     float4 prevClip : TEXCOORD3;
 };
 
-VS_GBUF_OUT VSDepthGBuf( VS_GBUF_IN i )
+#ifdef VERTEX_PULL
+typedef VS_ENTRY_IN VS_GBUF_ENTRY_IN;
+VS_GBUF_IN FetchVobGBufVertex( VS_GBUF_ENTRY_IN e )
 {
+    const FetchedVertex v = LoadFull( VobVb(), VF_EX60, VobVertexIndex( e.vid ) );
+    const VobInstance inst = LoadPulledVobInstance( e.iid );
+    VS_GBUF_IN i;
+    i.pos = v.pos; i.nrm = v.nrm; i.uv = v.uv;
+    i.iworld = inst.world; i.iprev = inst.prevWorld; i.iwind = inst.wind;
+    return i;
+}
+#else
+typedef VS_GBUF_IN VS_GBUF_ENTRY_IN;
+VS_GBUF_IN FetchVobGBufVertex( VS_GBUF_ENTRY_IN e ) { return e; }
+#endif
+
+VS_GBUF_OUT VSDepthGBuf( VS_GBUF_ENTRY_IN e )
+{
+    const VS_GBUF_IN i = FetchVobGBufVertex( e );
     VS_GBUF_OUT o;
     float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
     float3 worldPos = mul( i.iworld, float4( localPos, 1.0 ) );
@@ -383,8 +438,9 @@ VS_GBUF_OUT VSDepthGBuf( VS_GBUF_IN i )
     return o;
 }
 
-VS_GBUF_OUT VSDepthAttachGBuf( VS_GBUF_IN i )
+VS_GBUF_OUT VSDepthAttachGBuf( VS_GBUF_ENTRY_IN e )
 {
+    const VS_GBUF_IN i = FetchVobGBufVertex( e );
     VS_GBUF_OUT o;
     float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
     float3 worldPos = mul( i.iworld, float4( localPos, 1.0 ) );

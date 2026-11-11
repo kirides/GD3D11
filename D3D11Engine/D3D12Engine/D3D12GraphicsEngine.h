@@ -49,6 +49,8 @@ struct GpuScenePointView;
 class D3D12GpuWorld;
 class D3D12MeshArena;
 class D3D12RayTracing;
+class D3D12GeometryStreams;
+class D3D12VertexPullSelfTest;
 class D3D12HeapCheck;
 struct FrameSkelDraw;
 struct FrameAttachDraw;
@@ -72,6 +74,9 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     friend class D3D12MeshArena;
     // The ray-traced scene builds over the arenas, the posed skinning streams and the frame's draw lists.
     friend class D3D12RayTracing;
+    // Stream table + startup self-test for vertex pulling (VERTEX_PULLING_PLAN.md).
+    friend class D3D12GeometryStreams;
+    friend class D3D12VertexPullSelfTest;
 
 public:
     /** Compile-time array-sizing bound for every per-frame resource ring (1 current + up to 2 queued).
@@ -384,7 +389,15 @@ private:
     void ResolveMaterialMapSlots( class zCTexture* tex, UINT* outNormalOrm ) const;
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
-    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5 );   // light SRV(t1)+count+cluster-mask(t2); (3,4,5)=world, (4,5,6)=skeletal, (5,6,7)=grass
+    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5 );   // light SRV(t1)+LightCB root CBV+cluster-mask(t2); (3,4,5)=world/decal, (4,5,6)=skeletal, (5,6,7)=grass
+    struct LightCBData {   // HLSL LightCB (include/LightCB.hlsl)
+        UINT LightCount, NumTilesX, LimitLightIntensity, PointShadowDynIndex, RtShadowMaskIndex;
+        float ProjA, ProjB, NearZ, FarZ;
+    };
+    static constexpr UINT kLightCbStride = 256;   // root-CBV alignment
+    static constexpr UINT kLightCbSlots = 64;     // distinct LightCB values per frame
+    bool CreateLightConstantBuffer();
+    D3D12_GPU_VIRTUAL_ADDRESS AllocLightCb( const LightCBData& cb );   // per-frame ring slot for these values
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     // Skeletal (animated NPC/monster) pipeline creation now lives in m_Pipelines.CreateSkeletal (root sig + lit +
     // depth-prepass PSOs). The per-frame skeletal CB ring stays here:
@@ -940,22 +953,31 @@ private:
     // The main view's GPU world cull, before the depth prepass.
     void CullGpuWorldMain();
 
-    struct VobDrawCommand {                          // 48 bytes; all members 4-byte, no GPUVA alignment to keep
+    struct VobDrawCommand {                          // 56 bytes; all members 4-byte, no GPUVA alignment to keep
         uint32_t MatNormalIndex;                     // @0  b6.x  (0xFFFFFFFF = no normal map)
         uint32_t MatOrmIndex;                        // @4  b6.y  (default ORM slot when no _FX)
         uint32_t MatDiffuseIndex;                    // @8  b6.z  bindless diffuse (alpha clip + albedo)
         float    WindMinHeight;                      // @12 b4[4] per-visual bbox.min.y
         float    WindMaxHeight;                      // @16 b4[5] per-visual bbox.max.y
-        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @20 (20 bytes) — ends the indirect arguments at @40
+        // The pulled VS adds these to SV_VertexID / SV_InstanceID, which exclude the draw's bases (root param 15, b10).
+        // VertexBase mirrors Draw.BaseVertexLocation. InstanceBase mirrors Draw.StartInstanceLocation, except that a
+        // GPU-culled far run sets kVobFarRunBit and names the LAST element of its visual's block (CSPatchArgs packs the
+        // far survivors backward from there, and rewriting root arguments on the GPU would escape the Vulkan CPU replay).
+        uint32_t VertexBase;                         // @20 b10.x
+        uint32_t InstanceBase;                       // @24 b10.y
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @28 (20 bytes) — ends the indirect arguments at @48
         // --- Past the end of the command signature's arguments. ExecuteIndirect reads the args packed from
         // offset 0 and only requires ByteStride to COVER them, so trailing fields are free per-command payload
         // for our own compute passes. VisualIndex tells CSPatchArgs which per-visual surviving-instance count
         // to write into Draw.InstanceCount; 0xFFFFFFFF = "leave the CPU's count alone" (not GPU-culled).
-        uint32_t VisualIndex;                        // @40
+        uint32_t VisualIndex;                        // @48
         // Which of the visual's two compacted instance runs this command draws; CSPatchArgs picks the
         // matching count + StartInstanceLocation from it.
-        uint32_t LodBucket;                          // @44
+        uint32_t LodBucket;                          // @52
     };
+    static constexpr uint32_t kVobFarRunBit = 0x80000000u;   // VobVertexPull.hlsl kVobFarRun
+    // Instance buffers a VS reads through a root SRV (the pulled VOB draws) after a GPU write: the IA read states plus NON_PIXEL_SHADER_RESOURCE.
+    static constexpr D3D12_RESOURCE_STATES kVobInstanceRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
     static constexpr uint32_t kLodBucketNear = 0;
     static constexpr uint32_t kLodBucketFar  = 1;
@@ -964,7 +986,7 @@ private:
     // bump would multiply across 3 cascades x kBackBufferCount rings and cost real 32-bit address space.
     static constexpr UINT kMaxVobDrawCommands       = 16384;  // main view: visuals x materials x sub-meshes
     static constexpr UINT kMaxShadowVobDrawCommands = 8192;   // per shadow cascade; overflow logs + drops
-    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_VobIndirectCmdSig;        // b6(3) + b4[4..5](2) + DrawIndexed
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_VobIndirectCmdSig;        // b6(3) + b4[4..5](2) + b10(2) + DrawIndexed
     // Every static VOB sub-mesh in one DEFAULT-heap VB/IB pair — see D3D12VobArena.h. Filled from OnAddVob
     // (which fires per vob during world load, so the world is resident before the first frame) and flushed
     // once per frame at the top of UploadFrameVobInstances.
@@ -981,6 +1003,19 @@ private:
     std::unique_ptr<D3D12MeshArena> m_AttachArena;
     // Inline ray tracing (water reflections, shadow mask); null without ray queries or when neither shader built.
     std::unique_ptr<D3D12RayTracing> m_RayTracing;
+    std::unique_ptr<D3D12GeometryStreams> m_GeometryStreams;       // bindless raw SRVs of every vertex resource
+    std::unique_ptr<D3D12VertexPullSelfTest> m_VertexPullSelfTest; // one-shot SV_VertexID/InstanceID base check
+    // [Debug] VertexPulling A/B: latched once per frame in OnStartWorldRendering (after the stream table refresh); every
+    // world and VOB pass of the frame reads these, so prepass and lit pass always agree and the two never mix.
+    // m_WorldVbSlot = the world VB's heap index = the stream table's base.
+    bool m_VertexPullWorld = false;
+    UINT m_WorldVbSlot = UINT_MAX;
+    Rhi::PipelineState* PullPick( Rhi::PipelineState* ia, Rhi::PipelineState* pulled ) const { return m_VertexPullWorld && pulled ? pulled : ia; }
+    /** Sets b9 { world VB heap index, no VOB info } of the root signature's `rootParam`; no-op while the frame is on the IA path. */
+    void BindWorldPull( D3D12CmdList& cmdList, UINT rootParam ) const;
+    /** The pulled VOB draw bind: b9 { stream base, instance stride | VB stream offset << 16 } and `instances` as the t6 root SRV (buffer start). */
+    void BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances, UINT instanceStride,
+        bool attachArena ) const;
     std::unique_ptr<D3D12HeapCheck> m_HeapCheck;   // -GPUHEAPCHECK only
     // This frame's ray-traced point shadows, decided before the light buffer is built
     bool m_RtPointShadowsActive = false;
@@ -1004,12 +1039,15 @@ private:
     // Re-uploads the arena ranges of animated static VOBs (.MMS morph meshes) from their own vertex buffers.
     // Runs right after DispatchMorphFold, which is what produces this frame's deformed vertices.
     void RefreshDynamicVobArena();
-    /** The one IA bind every instanced-VOB ExecuteIndirect needs: the mega-buffers on slot 0 / the index
+    /** The one bind every instanced-VOB ExecuteIndirect needs: the mega-buffers on slot 0 / the index
         stream, and `instances` (the per-instance VobInstanceInfo stream this pass draws from — the raw
         upload ring for the shadow/rain passes, the GPU-compacted buffer for a culled main view) on slot 1.
-        Returns false when the arena holds nothing, in which case the caller must not submit: its commands
-        would index a buffer that doesn't exist. instanceStride 0 = VobInstanceStride(). */
-    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes, UINT instanceStride = 0 );
+        While the frame is vertex-pulled (m_VertexPullWorld) the vertex slots are not bound; `pull` (the root signature's
+        VobPullRoots) then gets the b9 stream info and `instances` as a root SRV at its start, which is what the
+        commands' element indices address. Returns false when the arena holds nothing, in which case the caller must
+        not submit: its commands would index a buffer that doesn't exist. instanceStride 0 = VobInstanceStride(). */
+    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes, UINT instanceStride = 0,
+        const D3D12PipelineState::VobPullRoots* pull = nullptr );
     Microsoft::WRL::ComPtr<Rhi::Resource> m_VobDrawArgs[kBackBufferMax];   // main-view (prepass+color share it)
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
@@ -1125,8 +1163,8 @@ private:
     uint32_t ReserveSkinned( const SkeletalMeshVisualInfo* visual, uint32_t instanceRow, uint32_t& count );
     void DispatchSkinning();     // after the frame's last PrepareFrameSkeletals, before the depth prepass
     D3D12_VERTEX_BUFFER_VIEW SkinnedPosUvView() const;
-    /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1. */
-    bool BindAttachArenaIA( D3D12CmdList& cmdList );
+    /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1 (BindVobArenaIA's `pull` rules). */
+    bool BindAttachArenaIA( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots* pull = nullptr );
     /** Direct draws on m_CmdList (ghosts, item previews): bind one mesh out of its arena, requesting it on
         first sight. False until a flush has uploaded it; on true, `draw` holds the mesh's draw arguments. */
     bool BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
@@ -2232,6 +2270,10 @@ private:
     uint8_t* m_LightBufferPtr[kBackBufferMax] = {};
     UINT m_LightBufferCapacity = 0;                               // max lights per frame
     UINT m_FrameLightCount = 0;                                   // lights written this frame
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_LightCB[kBackBufferMax];   // LightCB ring (kLightCbSlots x 256 B), persistently mapped UPLOAD
+    uint8_t* m_LightCBMapped[kBackBufferMax] = {};
+    UINT m_LightCbUsed[kBackBufferMax] = {};
+    LightCBData m_LightCbLast[kBackBufferMax] = {};               // CPU copy of the last slot (never read the UPLOAD heap)
     bool m_LightOverflowLogged = false;
 
     // Water (transparent world surfaces). Own root sig = the world layout + b2 = { time, alpha } (VS

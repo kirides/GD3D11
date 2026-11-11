@@ -268,7 +268,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyDepthOnly() {
 
     DX_ZONE( m_CmdList.Get(), "World transparency (depth re-lay)" );
 
-    m_CmdList->SetPipelineState( m_Pipelines.WorldTransparency.DepthFillPSO.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.WorldTransparencyDepthFill() );
     // The depth-fill PSO reuses PSTransparent (color writes masked off) rather than a null PS, so the
     // shader still runs its bindless ResourceDescriptorHeap[MatDiffuseIndex] fetch even though the
     // result is discarded. Stamp a known-good slot: the loop below is less strict than the color loop
@@ -319,6 +319,7 @@ bool D3D12GraphicsEngine::BindWorldTransparencyFrameState() {
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.WorldTransparency.RootSig.Get() );
+    BindWorldPull( m_CmdList, m_Pipelines.WorldTransparency.PullRootParam );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
     // b4 world->view: only VSTransparentPortal reads it, but binding it unconditionally keeps the root
     // parameter initialized for every PSO on this signature. Uploaded verbatim like every other matrix here

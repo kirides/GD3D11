@@ -9,6 +9,7 @@
 #include "include/SkeletalInstance.hlsl"
 #define MOTIONCB_REGISTER b1
 #include "include/MotionVectors.hlsl"   // EncodeOctNormal
+#include "include/VertexFetch.hlsl"     // LoadSkel76, PackSnorm2x16
 
 cbuffer SkinCB : register( b0 )
 {
@@ -33,20 +34,6 @@ ByteAddressBuffer         SrcVerts  : register( t2 );   // the skeletal arena: 7
 RWByteAddressBuffer OutPosUv   : register( u0 );
 RWByteAddressBuffer OutNrmPrev : register( u1 );
 
-static const uint kSrcStride = 76;
-
-float4 LoadHalf4( uint address )
-{
-    const uint2 h = SrcVerts.Load2( address );
-    return float4( f16tof32( h.x ), f16tof32( h.x >> 16 ), f16tof32( h.y ), f16tof32( h.y >> 16 ) );
-}
-
-uint PackSnorm2x16( float2 v )
-{
-    const int2 i = int2( round( clamp( v, -1.0, 1.0 ) * 32767.0 ) );
-    return ( uint( i.x ) & 0xFFFFu ) | ( uint( i.y ) << 16 );
-}
-
 [numthreads( 64, 1, 1 )]
 void CSSkin( uint3 gid : SV_GroupID, uint gi : SV_GroupIndex )
 {
@@ -59,18 +46,12 @@ void CSSkin( uint3 gid : SV_GroupID, uint gi : SV_GroupIndex )
     if ( v >= job.VertexCount )
         return;
 
-    // ExSkelVertexStruct: Position[4] half4 @0, Normal float3 @32, BindPoseNormal @44, TexCoord @56,
-    // boneIndices uint8x4 @64, weights half4 @68.
-    const uint src = ( job.SrcBase + v ) * kSrcStride;
-    float4 pos[4];
-    [unroll]
-    for ( uint b = 0; b < 4; ++b )
-        pos[b] = LoadHalf4( src + b * 8 );
-    const float3 normal  = asfloat( SrcVerts.Load3( src + 32 ) );
-    const float2 uv      = asfloat( SrcVerts.Load2( src + 56 ) );
-    const uint   boneIds = SrcVerts.Load( src + 64 );
-    const uint4  bones   = uint4( boneIds & 0xFF, ( boneIds >> 8 ) & 0xFF, ( boneIds >> 16 ) & 0xFF, boneIds >> 24 );
-    const float4 weights = LoadHalf4( src + 68 );
+    const SkelVertexIn sv = LoadSkel76( SrcVerts, job.SrcBase + v );
+    const float4 pos[4]  = sv.pos;
+    const float3 normal  = sv.normal;
+    const float2 uv      = sv.uv;
+    const uint4  bones   = sv.bones;
+    const float4 weights = sv.weights;
 
     const SkeletalInstance inst = LoadSkelInstanceAt( job.InstanceRow );
     float3 skinnedPos, skinnedNormal;

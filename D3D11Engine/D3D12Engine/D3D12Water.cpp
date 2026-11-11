@@ -558,6 +558,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     }
 
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Water.RootSig.Get() );
+    BindWorldPull( m_CmdList, m_Pipelines.Water.PullRootParam );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     if ( copiesReady ) {
         m_CmdList->SetGraphicsRootConstantBufferView( 2, m_WaterCBGpu[m_FrameIndex] );                                  // b2 water
@@ -600,7 +601,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         DX_ZONE( m_CmdList.Get(), "Water Z-Prepass" );
         for ( UINT ocean = 0; ocean < 2; ++ocean ) {
             const bool tessellated = ocean == 1 && oceanSimulated && copiesReady;   // the CB only carries the FFT when the copies exist
-            m_CmdList->SetPipelineState( ( tessellated ? m_Pipelines.Water.OceanDepthPrepassPSO : m_Pipelines.Water.DepthPrepassPSO ).Get() );
+            m_CmdList->SetPipelineState( tessellated ? PullPick( m_Pipelines.Water.OceanDepthPrepassPSO.Get(), m_Pipelines.Water.OceanDepthPrepassPSOPull.Get() )
+                                                     : PullPick( m_Pipelines.Water.DepthPrepassPSO.Get(), m_Pipelines.Water.DepthPrepassPSOPull.Get() ) );
             m_CmdList->IASetPrimitiveTopology( tessellated ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
             for ( auto const& [tex, meshes] : g_FrameWaterSurfaces[ocean] ) {
                 for ( MeshInfo* mesh : meshes ) {
@@ -659,6 +661,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         }
         // The trace left a compute root signature and PSO bound; the color pass below rebinds its graphics state.
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Water.RootSig.Get() );
+        BindWorldPull( m_CmdList, m_Pipelines.Water.PullRootParam );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRootConstantBufferView( 2, m_WaterCBGpu[m_FrameIndex] );
         m_CmdList->SetGraphicsRootConstantBufferView( 3, m_WaterCBGpu[m_FrameIndex] + kWaterAtmosphereCbOffset );
@@ -667,7 +670,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     unsigned int drawnIndices = 0;
     for ( UINT ocean = 0; ocean < 2; ++ocean ) {
     const bool tessellated = ocean == 1 && oceanSimulated;
-    m_CmdList->SetPipelineState( ( tessellated ? m_Pipelines.Water.OceanPSO : m_Pipelines.Water.PSO ).Get() );
+    m_CmdList->SetPipelineState( tessellated ? PullPick( m_Pipelines.Water.OceanPSO.Get(), m_Pipelines.Water.OceanPSOPull.Get() )
+                                             : PullPick( m_Pipelines.Water.PSO.Get(), m_Pipelines.Water.PSOPull.Get() ) );
     m_CmdList->IASetPrimitiveTopology( tessellated ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     for ( auto const& [tex, meshes] : g_FrameWaterSurfaces[ocean] ) {
         D3D12_GPU_DESCRIPTOR_HANDLE srv = blackSrv;

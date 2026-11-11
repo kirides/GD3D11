@@ -35,6 +35,8 @@ using Microsoft::WRL::ComPtr;
 #include "../RHI/GpuDebug.h"
 #include "D3D12MeshArena.h"
 #include "D3D12RayTracing.h"
+#include "D3D12GeometryStreams.h"
+#include "D3D12VertexPullSelfTest.h"
 #include "D3D12RenderGraph.h"
 #include "../WorldObjects.h"
 #include "../MorphGpu.h"
@@ -61,6 +63,8 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_V
     m_AttachArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExVertexStruct ) ),
         L"AttachmentVertexArena", L"AttachmentIndexArena", "Attachment mesh" ) ) {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
+    m_GeometryStreams = std::make_unique<D3D12GeometryStreams>( *this );
+    m_VertexPullSelfTest = std::make_unique<D3D12VertexPullSelfTest>( *this );
     m_BackbufferResolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
     m_AppliedResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
@@ -319,7 +323,7 @@ bool D3D12GraphicsEngine::InitScene() {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the skeletal ExecuteIndirect resources." );
         return false;
     }
-    if ( !CreateShadowConstantBuffer() || !m_ShadowMap.Init() ) {
+    if ( !CreateLightConstantBuffer() || !CreateShadowConstantBuffer() || !m_ShadowMap.Init() ) {
         // Fatal: the lit world PSO samples the shadow map (t4) + CB (b3) unconditionally, so a missing map would
         // leave those root slots unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced/opt-in).
         // Runs after the depth-prepass + VOB + skeletal pipelines so the caster PSOs can reuse all three depth VS blobs.
@@ -2199,6 +2203,8 @@ void D3D12GraphicsEngine::WaitForFrameLatencyWaitable() {
 
 XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
+    m_VertexPullWorld = false;   // re-latched in OnStartWorldRendering; a frame without it stays on the IA path
+    m_Pipelines.VertexPullActive = false;
 
     if ( !g_MainLoopFramePacingInstalled ) {
         FrameMark;

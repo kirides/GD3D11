@@ -71,12 +71,28 @@ float4 DecodeTangent( float4 packed )
 
 // vid indexes the static-light far field: the world mesh is one vertex buffer drawn with BaseVertexLocation 0
 struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float4 tan : TANGENT; float2 uv : TEXCOORD0; float4 col : DIFFUSE; uint vid : SV_VertexID; };
+// VERTEX_PULL: the VS entry points take only the vertex id and read the same fields from the world VB (include/WorldVertexPull.hlsl).
+#ifdef VERTEX_PULL
+#include "include/WorldVertexPull.hlsl"
+struct VS_ENTRY_IN { uint vid : SV_VertexID; };
+VS_IN FetchWorldVertex( VS_ENTRY_IN e )
+{
+    const WorldRawVertex v = LoadWorldRaw( e.vid );
+    VS_IN i;
+    i.pos = v.pos; i.nrm = v.nrm; i.tan = v.tan; i.uv = v.uv; i.col = v.col; i.vid = e.vid;
+    return i;
+}
+#else
+typedef VS_IN VS_ENTRY_IN;
+VS_IN FetchWorldVertex( VS_ENTRY_IN e ) { return e; }
+#endif
 // `precise` (here and in DepthPrepass.hlsl) keeps clip bit-identical to the prepass, which PSMainOpaque's EQUAL test needs.
 struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float4 wtan : TEXCOORD5;
                 float4 farField : TEXCOORD7; };   // baked static-light irradiance, w = 1 when present
 
-VS_OUT VSMain( VS_IN i )
+VS_OUT VSMain( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWorldVertex( e );
     VS_OUT o;
     // World verts are already world-space; DepthPrepass.hlsl's VSWorld waves them identically
     const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );
@@ -253,8 +269,9 @@ struct VST_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : 
 // the blended color PSO and the depth-fill PSO that follows it — same rule as the water Z-prepass: a
 // depth-read-only color pass must share the VS *blob* with the pass that wrote that depth, or the two
 // disagree by an ULP on coplanar surfaces and shimmer.
-VST_OUT VSTransparent( VS_IN i )
+VST_OUT VSTransparent( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWorldVertex( e );
     VST_OUT o;
     const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );   // already world-space
     o.clip = mul( float4( wpos, 1.0 ), ViewProj );
@@ -293,8 +310,9 @@ float4 PSTransparent( VST_OUT i ) : SV_TARGET
 // WORLD-space reflection vector. Needs the world normal, so this gets its own VS.
 struct VSTE_OUT { float4 clip : SV_POSITION; float3 wpos : TEXCOORD0; float3 wnrm : TEXCOORD1; };
 
-VSTE_OUT VSTransparentEnv( VS_IN i )
+VSTE_OUT VSTransparentEnv( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWorldVertex( e );
     VSTE_OUT o;
     const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );   // already world-space
     o.clip = mul( float4( wpos, 1.0 ), ViewProj );
@@ -348,8 +366,9 @@ float4 PSTransparentFoam( VST_OUT i ) : SV_TARGET
 // own VS; everything else in the pass shares VSTransparent.
 struct VSTP_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3 vpos : TEXCOORD1; float3 wpos : TEXCOORD2; };
 
-VSTP_OUT VSTransparentPortal( VS_IN i )
+VSTP_OUT VSTransparentPortal( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWorldVertex( e );
     VSTP_OUT o;
     o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
     o.uv = i.uv;

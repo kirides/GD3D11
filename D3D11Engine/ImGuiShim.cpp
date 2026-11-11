@@ -1721,6 +1721,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SetItemTooltip( "D3D12/Vulkan: keep the light, skeletal and VOB/shadow instance rings in CPU-writable\n"
             "VRAM (GPU_UPLOAD / ReBAR) so the GPU stops reading them over PCIe. Needs Resizable BAR on D3D12.\n"
             "Takes effect after a restart. See Log.txt for which heap the rings got." );
+        ImGui::Checkbox( "Vertex pulling (world mesh)", &settings.VertexPulling );
+        ImGui::SetItemTooltip( "D3D12/Vulkan: read the world mesh vertices in the vertex shader instead of through the\n"
+            "input assembler, in every pass that draws it. Temporary A/B toggle; live, applies next frame." );
         // Both of these only describe the CPU deform, which the fold replaces outright.
         ImGui::BeginDisabled( MorphGpu::IsActive() );
         ImGui::Checkbox( "Reimplemented morph blend", &settings.UseReimplementedMorphBlend );
