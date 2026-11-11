@@ -4,6 +4,8 @@
 #ifndef D3D12_RTSCENE_HLSL
 #define D3D12_RTSCENE_HLSL
 
+#include "VertexFetch.hlsl"
+
 // One record per BLAS geometry of every non-world instance, at InstanceID() + GeometryIndex().
 struct RtGeom
 {
@@ -94,10 +96,8 @@ Tri FetchTri( uint instanceId, uint instanceIndex, uint geometry, uint primitive
         [unroll] for ( uint k = 0; k < 3; ++k )
         {
             uint v = WorldIB.Load( ( g.x + primitive * 3u + k ) * 4u );
-            uint a = v * 36u;
-            t.p[k] = asfloat( WorldVB.Load3( a ) );
-            t.uv[k] = asfloat( WorldVB.Load2( a + 20u ) );
-            t.light[k] = float( ( WorldVB.Load( a + 32u ) >> 8 ) & 0xFFu ) / 255.0;
+            LoadPosUv( WorldVB, VF_PACKED36, v, t.p[k], t.uv[k] );
+            t.light[k] = float( ( WorldVB.Load( v * kStridePacked36 + 32u ) >> 8 ) & 0xFFu ) / 255.0;
         }
         return t;
     }
@@ -111,21 +111,15 @@ Tri FetchTri( uint instanceId, uint instanceIndex, uint geometry, uint primitive
         t.light[k] = instLight;
         if ( g.Kind == kKindSkinned )
         {
-            uint a = ( g.BaseVertex + LoadIndex16( SkelIB, i ) ) * 20u;
-            t.p[k] = asfloat( SkinPosUv.Load3( a ) );
-            t.uv[k] = asfloat( SkinPosUv.Load2( a + 12u ) );
+            LoadPosUv( SkinPosUv, VF_POSED, g.BaseVertex + LoadIndex16( SkelIB, i ), t.p[k], t.uv[k] );
         }
         else if ( g.Kind == kKindAttach )
         {
-            uint a = ( g.BaseVertex + LoadIndex16( AttachIB, i ) ) * 60u;
-            t.p[k] = asfloat( AttachVB.Load3( a ) );
-            t.uv[k] = asfloat( AttachVB.Load2( a + 24u ) );
+            LoadPosUv( AttachVB, VF_EX60, g.BaseVertex + LoadIndex16( AttachIB, i ), t.p[k], t.uv[k] );
         }
         else
         {
-            uint a = ( g.BaseVertex + LoadIndex16( VobIB, i ) ) * 60u;
-            t.p[k] = asfloat( VobVB.Load3( a ) );
-            t.uv[k] = asfloat( VobVB.Load2( a + 24u ) );
+            LoadPosUv( VobVB, VF_EX60, g.BaseVertex + LoadIndex16( VobIB, i ), t.p[k], t.uv[k] );
         }
     }
     return t;
