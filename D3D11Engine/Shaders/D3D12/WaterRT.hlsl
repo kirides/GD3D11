@@ -37,14 +37,35 @@ float3 DelightDiffuse( float3 linearAlbedo )
     return saturate( linearAlbedo * lerp( 1.0, delightFactor, 0.5 ) );
 }
 
-// --- Water waves: the same ray ShadeWater derives, with the distortion LOD the pixel shader would pick ---
-static float g_DistortionLod;
+// --- Water waves: the same ray ShadeWater derives, filtered over the pixel's anisotropic water-plane footprint ---
+SamplerState smpAniso : register( s2 );
+
+// Required by WaterWaves.hlsl; the RT path samples with gradients in WaterBigDistortionGrad instead
 float3 WaterDistortion( float2 uv )
 {
     Texture2D tex = GD_HEAP( WaveDistortionIndex );
-    return tex.SampleLevel( smpWrap, uv, g_DistortionLod ).xyz;
+    return tex.SampleLevel( smpWrap, uv, 0 ).xyz;
 }
 #include "../include/WaterWaves.hlsl"
+
+// WaterBigDistortion (same two octaves) with the pixel's world.xz/1000 gradients, so grazing views filter along the footprint
+float3 WaterBigDistortionGrad( float2 worldTexCoord, float time, float2 ddx_w, float2 ddy_w )
+{
+    Texture2D tex = GD_HEAP( WaveDistortionIndex );
+    const float2 m2 = float2( -1, 0.7 );
+    float3 d = tex.SampleGrad( smpAniso, worldTexCoord * DIST_BIG_SCALE + time * DIST_BIG_SPEED, ddx_w * DIST_BIG_SCALE, ddy_w * DIST_BIG_SCALE ).xyz * 2 - 1;
+    d += tex.SampleGrad( smpAniso, worldTexCoord * m2 * DIST_BIG_SCALE + time * DIST_BIG_SPEED * 1.2, ddx_w * m2 * DIST_BIG_SCALE, ddy_w * m2 * DIST_BIG_SCALE ).xyz * 2 - 1;
+    return d * 0.5f;
+}
+
+// World-plane (y = relPos.y) camera-relative hit of the view ray through a pixel; the slope is clamped near the horizon
+float2 PlaneHitXZ( float2 uv, float raw, float planeY )
+{
+    float4 r = mul( float4( uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, raw, 1.0 ), InvViewProjRel );
+    float3 n = normalize( r.xyz / r.w );
+    float ny = planeY < 0.0 ? min( n.y, -0.02 ) : max( n.y, 0.02 );
+    return n.xz * ( planeY / ny );
+}
 
 // --- Tracing ---
 struct Hit
@@ -220,16 +241,17 @@ bool TraceSample( int2 px, float2 subPixel, inout float4 color, inout float dist
     float viewDistance = length( relPos );
     float3 viewDir = relPos / max( viewDistance, 1e-4 );
 
-    // LOD the pixel shader's trilinear lookup would take: the footprint's long axis on the water plane
-    float texW, texH;
-    Texture2D distTex = GD_HEAP( WaveDistortionIndex );
-    distTex.GetDimensions( texW, texH );
-    float footprint = viewDistance * PixelAngle / max( abs( viewDir.y ), 0.02 );
-    g_DistortionLod = log2( max( footprint * ( DIST_BIG_SCALE / 1000.0 ) * texW, 1e-4 ) );
+    // Footprint of this full-res pixel on the water plane along both screen axes
+    float2 hit0 = PlaneHitXZ( uv, raw, relPos.y );
+    float2 gx = clamp( PlaneHitXZ( uv + float2( InvFullSize.x, 0.0 ), raw, relPos.y ) - hit0, -4000.0, 4000.0 );
+    float2 gy = clamp( PlaneHitXZ( uv + float2( 0.0, InvFullSize.y ), raw, relPos.y ) - hit0, -4000.0, 4000.0 );
 
-    float3 waves = WaterWaveNormal( WaterBigDistortion( worldPos.xz / 1000.0f, Time ) );
+    float3 waves = WaterWaveNormal( WaterBigDistortionGrad( worldPos.xz / 1000.0f, Time, gx / 1000.0f, gy / 1000.0f ) );
     float3 dir = WaterGeometryReflectionDir( viewDir, waves, viewDistance );
-    dir.y = max( dir.y, 0.02 );   // steep waves must not send the ray into the lake bed
+    // Rays the waves push below half the flat reflection's elevation blend back toward it; grazing flat reflections are legit
+    float3 flatDir = reflect( viewDir, WATER_UP );
+    dir = lerp( flatDir, dir, smoothstep( 0.0, 0.5 * max( flatDir.y, 0.005 ), dir.y ) );
+    dir.y = max( dir.y, 0.002 );
     dir = normalize( dir );
 
     float spread = PixelAngle * float( Scale );
@@ -248,7 +270,6 @@ bool TraceSample( int2 px, float2 subPixel, inout float4 color, inout float dist
 void CSMain( uint3 id : SV_DispatchThreadID )
 {
     if ( any( id.xy >= RtSize ) ) return;
-    g_DistortionLod = 0.0;
 
     float4 color = 0.0;
     float distance = 0.0;

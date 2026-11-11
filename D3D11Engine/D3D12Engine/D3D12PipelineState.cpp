@@ -2450,6 +2450,10 @@ bool D3D12PipelineState::CreateWaterRT() {
     D3D12RootLayout& rs = Layout( "WaterRT" );
     AddRtSceneParams( rs );
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_ALL ) );
+    // s2: wave distortion with explicit footprint gradients, no global mip bias
+    D3D12_STATIC_SAMPLER_DESC waveSampler = D3D12RootLayout::SamplerAniso( 2, D3D12_SHADER_VISIBILITY_ALL, 16, D3D12_TEXTURE_ADDRESS_MODE_WRAP );
+    waveSampler.MipLODBias = 0.0f;
+    rs.AddStaticSampler( waveSampler );
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     WaterRT.RootSig = rs.RootSig();
