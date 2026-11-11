@@ -2220,12 +2220,14 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 			memcpy( ringBase + boneOff, ghostBoneCache.data(), boneSize );
 			m_SkeletalCBBufferOffset = boneOff + boneSize;
 
-			m_CmdList->SetPipelineState( m_Pipelines.GhostSkeletal.PSO.Get() );
+			const bool ghostPull = m_VertexPullWorld && m_Pipelines.GhostSkeletal.PSOPull;
+			m_CmdList->SetPipelineState( ghostPull ? m_Pipelines.GhostSkeletal.PSOPull.Get() : m_Pipelines.GhostSkeletal.PSO.Get() );
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.GhostSkeletal.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 			m_CmdList->SetGraphicsRootShaderResourceView( 1, m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress() );   // t3
-			m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &instRow, 0 );                                       // b10
+			m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &instRow, 0 );                                       // b10.x
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 1, &info.alpha, 0 );
+			if ( ghostPull ) BindSkelPull( m_CmdList, m_Pipelines.GhostSkeletal.PullRootParam );
 
 			for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
 				zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
@@ -2235,7 +2237,11 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 				BindMaterialMaps( tex, 4, PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat ) );
 				for ( auto const& mesh : meshList ) {
 					D3D12_DRAW_INDEXED_ARGUMENTS draw;
-					if ( !BindSkinnedMesh( mesh.get(), draw ) ) continue;
+					if ( !BindSkinnedMesh( mesh.get(), draw, ghostPull ) ) continue;
+					if ( ghostPull ) {
+						const UINT vertexBase = static_cast<UINT>( draw.BaseVertexLocation );
+						m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &vertexBase, 1 );   // b10.y
+					}
 					m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
 					drawnTris += draw.IndexCountPerInstance / 3;
 				}
@@ -3942,7 +3948,7 @@ bool D3D12GraphicsEngine::BindAttachArenaIA( D3D12CmdList& cmdList, const D3D12P
 }
 
 
-bool D3D12GraphicsEngine::BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw ) {
+bool D3D12GraphicsEngine::BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw, bool pulled ) {
     if ( !mesh || mesh->Indices.empty() ) return false;
     m_SkelArena->Request( mesh->ArenaSlot, mesh->Vertices.data(), static_cast<UINT>( mesh->Vertices.size() ),
         mesh->Indices.data(), static_cast<UINT>( mesh->Indices.size() ) );
@@ -3950,7 +3956,7 @@ bool D3D12GraphicsEngine::BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_D
     if ( !range || !m_SkelArena->Ready() ) return false;
     const D3D12_VERTEX_BUFFER_VIEW vbv = m_SkelArena->VertexBufferView();
     const D3D12_INDEX_BUFFER_VIEW ibv = m_SkelArena->IndexBufferView();
-    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    if ( !pulled ) m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
     m_CmdList->IASetIndexBuffer( &ibv );
     draw = { range->IndexCount, 1, range->StartIndex, static_cast<INT>( range->BaseVertex ), 0 };
     return true;
@@ -4283,9 +4289,9 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
 bool D3D12GraphicsEngine::CreateSkeletalIndirectSignature() {
     D3D12_INDIRECT_ARGUMENT_DESC args[3] = {};
     args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
-    args[0].Constant.RootParameterIndex = 2;                   // b10 SkelDrawCB { SkelInstanceRow }
+    args[0].Constant.RootParameterIndex = 2;                   // b10 SkelDrawCB { SkelInstanceRow, SkelVertexBase }
     args[0].Constant.DestOffsetIn32BitValues = 0;
-    args[0].Constant.Num32BitValuesToSet = 1;
+    args[0].Constant.Num32BitValuesToSet = 2;
     args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
     args[1].Constant.RootParameterIndex = 11;                  // b6 MaterialCB { normal, orm, diffuse }
     args[1].Constant.DestOffsetIn32BitValues = 0;
@@ -4313,11 +4319,12 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
 
     // Root constants and a draw, nothing else: the mesh comes from the arena (Base/StartIndex), the instance
     // and bones from the skeletal ring row. On Vulkan both constants are push constants, so DGC can run it.
-    static_assert( sizeof( SkeletalDrawCommand ) == 36, "SkeletalDrawCommand must match the command signature arg layout (36 B stride)" );
+    static_assert( sizeof( SkeletalDrawCommand ) == 40, "SkeletalDrawCommand must match the command signature arg layout (40 B stride)" );
     // D3D12 requires the arguments in increasing root-parameter order: b10 (param 2) before b6 (param 11).
     static_assert( offsetof( SkeletalDrawCommand, InstanceRow ) == 0, "SkeletalDrawCommand b10 must lead" );
-    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 4, "SkeletalDrawCommand b6 consts must follow b10" );
-    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 16, "SkeletalDrawCommand draw args must be last" );
+    static_assert( offsetof( SkeletalDrawCommand, VertexBase ) == 4, "SkeletalDrawCommand b10.y must follow b10.x" );
+    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 8, "SkeletalDrawCommand b6 consts must follow b10" );
+    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 20, "SkeletalDrawCommand draw args must be last" );
 
     if ( !CreateSkeletalIndirectSignature() ) return false;
 
@@ -4424,6 +4431,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                 c.MatOrmIndex     = mats[1];
                 c.MatDiffuseIndex = mats[2];
                 c.InstanceRow     = d.instRow;
+                c.VertexBase      = sub.Posed;
                 c.Draw.IndexCountPerInstance = range->IndexCount;
                 c.Draw.InstanceCount         = 1;
                 c.Draw.StartIndexLocation    = range->StartIndex;
@@ -4589,6 +4597,10 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
 void D3D12GraphicsEngine::BindWorldPull( D3D12CmdList& cmdList, UINT rootParam ) const {
     const UINT info[2] = { m_WorldVbSlot, 0u };
     if ( m_VertexPullWorld && rootParam != UINT_MAX ) cmdList->SetGraphicsRoot32BitConstants( rootParam, 2, info, 0 );
+}
+
+void D3D12GraphicsEngine::BindSkelPull( D3D12CmdList& cmdList, UINT rootParam ) const {
+    if ( m_VertexPullWorld && rootParam != UINT_MAX ) cmdList->SetGraphicsRoot32BitConstants( rootParam, 1, &m_WorldVbSlot, 0 );
 }
 
 void D3D12GraphicsEngine::BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances,
@@ -5745,17 +5757,17 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         const bool skelGbuf = motionCb && MotionGBufferActive();
         // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
         const bool splitAlpha = !skelGbuf && m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO != nullptr;
-        m_CmdList->SetPipelineState( skelGbuf ? m_Pipelines.Skeletal.DepthPrepassGBufPSO.Get()
-                                              : ( splitAlpha ? m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO.Get()
-                                                             : m_Pipelines.Skeletal.DepthPrepassPSO.Get() ) );
+        m_CmdList->SetPipelineState( skelGbuf ? PullPick( m_Pipelines.Skeletal.DepthPrepassGBufPSO.Get(), m_Pipelines.Skeletal.DepthPrepassGBufPSOPull.Get() )
+                                              : ( splitAlpha ? PullPick( m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO.Get(), m_Pipelines.Skeletal.DepthPrepassNoAlphaPSOPull.Get() )
+                                                             : PullPick( m_Pipelines.Skeletal.DepthPrepassPSO.Get(), m_Pipelines.Skeletal.DepthPrepassPSOPull.Get() ) ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         if ( skelGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 7, motionCb );   // b9 MotionCB
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        BindSkinnedGeometry( m_CmdList, 1 );
-        // Each command sets only its b6 material consts + b10 instance row, then DrawIndexed into the arena.
+        BindSkinnedGeometry( m_CmdList, 1, m_Pipelines.Skeletal.PullRootParam );
+        // Each command sets only its b6 material consts + b10 { instance row, vertex base }, then DrawIndexed into the arena.
         if ( !splitAlpha ) {
             m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
                 m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -5765,7 +5777,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
                     m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
             }
             if ( m_SkeletalDrawCount > m_SkeletalOpaqueDrawCount ) {
-                m_CmdList->SetPipelineState( m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
+                m_CmdList->SetPipelineState( PullPick( m_Pipelines.Skeletal.DepthPrepassPSO.Get(), m_Pipelines.Skeletal.DepthPrepassPSOPull.Get() ) );
                 m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(),
                     m_SkeletalDrawCount - m_SkeletalOpaqueDrawCount, m_SkeletalDrawArgs[m_FrameIndex].Get(),
                     static_cast<UINT64>( m_SkeletalOpaqueDrawCount ) * sizeof( SkeletalDrawCommand ), nullptr, 0 );
@@ -5841,7 +5853,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex] && m_SkelArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Draw skeletal" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal" );
-        m_CmdList->SetPipelineState( m_Pipelines.Skeletal.PSO.Get() );
+        m_CmdList->SetPipelineState( PullPick( m_Pipelines.Skeletal.PSO.Get(), m_Pipelines.Skeletal.PSOPull.Get() ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &fog, 0 );   // b3 fog
@@ -5853,7 +5865,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        BindSkinnedGeometry( m_CmdList, 1 );
+        BindSkinnedGeometry( m_CmdList, 1, m_Pipelines.Skeletal.PullRootParam );
         m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
             m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }

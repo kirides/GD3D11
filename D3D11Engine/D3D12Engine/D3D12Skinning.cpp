@@ -172,8 +172,8 @@ void D3D12GraphicsEngine::DispatchSkinning() {
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Compute skinning" );
 
     m_CmdList->TransitionBarriers( {
-        { m_SkinnedPosUv.Get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-        { m_SkinnedNrmPrev.Get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        { m_SkinnedPosUv.Get(), kSkinnedRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        { m_SkinnedNrmPrev.Get(), kSkinnedRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
     } );
 
     const UINT groupsPerRow = std::min<UINT>( groupCount, 65535u );
@@ -193,8 +193,8 @@ void D3D12GraphicsEngine::DispatchSkinning() {
     m_CmdList->Dispatch( groupsPerRow, rows, 1 );
 
     m_CmdList->TransitionBarriers( {
-        { m_SkinnedPosUv.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER },
-        { m_SkinnedNrmPrev.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER },
+        { m_SkinnedPosUv.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSkinnedRead },
+        { m_SkinnedNrmPrev.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSkinnedRead },
     } );
 }
 
@@ -204,14 +204,18 @@ D3D12_VERTEX_BUFFER_VIEW D3D12GraphicsEngine::SkinnedPosUvView() const {
 }
 
 
-bool D3D12GraphicsEngine::BindSkinnedGeometry( D3D12CmdList& cmdList, UINT skelDataParam ) {
+bool D3D12GraphicsEngine::BindSkinnedGeometry( D3D12CmdList& cmdList, UINT skelDataParam, UINT pullParam ) {
     if ( !m_SkelArena->Ready() || !m_SkinnedPosUv || !m_SkeletalCBBuffer[m_FrameIndex] ) return false;
-    const D3D12_VERTEX_BUFFER_VIEW views[2] = {
-        SkinnedPosUvView(),
-        { m_SkinnedNrmPrev->GetGPUVirtualAddress(), m_SkinnedCapacity * kSkinnedNrmPrevStride, kSkinnedNrmPrevStride },
-    };
     const D3D12_INDEX_BUFFER_VIEW ibv = m_SkelArena->IndexBufferView();
-    cmdList->IASetVertexBuffers( 0, 2, views );
+    if ( m_VertexPullWorld && pullParam != UINT_MAX ) {
+        BindSkelPull( cmdList, pullParam );
+    } else {
+        const D3D12_VERTEX_BUFFER_VIEW views[2] = {
+            SkinnedPosUvView(),
+            { m_SkinnedNrmPrev->GetGPUVirtualAddress(), m_SkinnedCapacity * kSkinnedNrmPrevStride, kSkinnedNrmPrevStride },
+        };
+        cmdList->IASetVertexBuffers( 0, 2, views );
+    }
     cmdList->IASetIndexBuffer( &ibv );
     cmdList->SetGraphicsRootShaderResourceView( skelDataParam, m_SkeletalCBBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     return true;

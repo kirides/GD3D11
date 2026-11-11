@@ -59,6 +59,17 @@ VS_OUT VSCubeVobPull( uint vid : SV_VertexID, uint iid : SV_InstanceID )
     return o;
 }
 
+// Skinned casters pulling the {pos, uv} stream SkinVertices.hlsl posed in world space; b10.x = the posed vertex base, b9.x = the stream-table base.
+#include "include/SkinnedVertexPull.hlsl"
+VS_OUT VSCubeSkinnedPull( uint vid : SV_VertexID, uint iid : SV_InstanceID )
+{
+    float3 pos; float2 uv;
+    LoadPosUv( PosedPosUvVb( WorldVbIndex ), VF_POSED, vid + VobVertexBase, pos, uv );
+    VS_IN i;
+    i.pos = pos; i.uv = uv; i.iid = iid;
+    return VSCube( i );
+}
+
 // Depth-only (void PS, no SV_Depth) so the caster keeps early-Z / Hi-Z rejection and the PSO's hardware slope-
 // scaled depth bias — the stored depth is the NATURAL hyperbolic z of the 90-deg perspective, which the sampler
 // reconstructs from the dominant-axis distance (more efficient than writing linear SV_Depth). Alpha-clip cutouts.

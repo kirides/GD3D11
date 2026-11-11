@@ -79,8 +79,40 @@ struct VS_POSED_IN
 };
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
 
-VS_OUT VSMain( VS_POSED_IN i )
+// VERTEX_PULL: the posed-stream VS entry points take only SV_VertexID and read the streams SkinVertices.hlsl wrote
+// (include/SkinnedVertexPull.hlsl); the body below each entry is shared with the input-assembler variant.
+// b11 = stream-table base, b10.y (SkelVertexBase) = the draw's first posed vertex.
+#ifdef VERTEX_PULL
+#include "include/SkinnedVertexPull.hlsl"
+cbuffer SkelPullCB : register(b11) { uint SkelStreamBase; };
+struct VS_POSED_ENTRY_IN { uint vid : SV_VertexID; };
+typedef VS_POSED_ENTRY_IN VS_POSED_DEPTH_ENTRY_IN;
+VS_POSED_IN FetchPosed( VS_POSED_ENTRY_IN e )
 {
+    const uint v = e.vid + SkelVertexBase;
+    VS_POSED_IN i;
+    LoadPosUv( PosedPosUvVb( SkelStreamBase ), VF_POSED, v, i.pos, i.uv );
+    const ByteAddressBuffer nrmPrev = PosedNrmPrevVb( SkelStreamBase );
+    i.nrm = LoadPosedOct( nrmPrev, v );
+    i.prevPos = LoadPosedPrevPos( nrmPrev, v );
+    return i;
+}
+VS_POSED_DEPTH_IN FetchPosedDepth( VS_POSED_DEPTH_ENTRY_IN e )
+{
+    VS_POSED_DEPTH_IN i;
+    LoadPosUv( PosedPosUvVb( SkelStreamBase ), VF_POSED, e.vid + SkelVertexBase, i.pos, i.uv );
+    return i;
+}
+#else
+typedef VS_POSED_IN VS_POSED_ENTRY_IN;
+typedef VS_POSED_DEPTH_IN VS_POSED_DEPTH_ENTRY_IN;
+VS_POSED_IN FetchPosed( VS_POSED_ENTRY_IN e ) { return e; }
+VS_POSED_DEPTH_IN FetchPosedDepth( VS_POSED_DEPTH_ENTRY_IN e ) { return e; }
+#endif
+
+VS_OUT VSMain( VS_POSED_ENTRY_IN e )
+{
+    const VS_POSED_IN i = FetchPosed( e );
     VS_OUT o;
     o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
     o.uv  = i.uv;
@@ -137,8 +169,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 // Also the CSM caster VS. Reads b0 (+ b6's diffuse index in the PS), NOT fog/light CBs — so it needs no
 // BindFrameLights (no light-loop hang).
 struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
-VS_DEPTH_OUT VSDepth( VS_POSED_DEPTH_IN i )
+VS_DEPTH_OUT VSDepth( VS_POSED_DEPTH_ENTRY_IN e )
 {
+    const VS_POSED_DEPTH_IN i = FetchPosedDepth( e );
     VS_DEPTH_OUT o;
     o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
     o.uv = i.uv;
@@ -178,8 +211,24 @@ struct VS_SKIN_IN
     uint4  boneIndices    : BONEIDS;
     float4 weights        : WEIGHTS;
 };
-VS_DEPTH_OUT VSGhost( VS_SKIN_IN i )
+// VERTEX_PULL: the raw 76 B arena vertex at SV_VertexID + SkelVertexBase (b10.y), same loader as SkinVertices.hlsl.
+#ifdef VERTEX_PULL
+struct VS_SKIN_ENTRY_IN { uint vid : SV_VertexID; };
+VS_SKIN_IN FetchSkinVertex( VS_SKIN_ENTRY_IN e )
 {
+    const SkelVertexIn v = LoadSkel76( SkelArenaVb( SkelStreamBase ), e.vid + SkelVertexBase );
+    VS_SKIN_IN i;
+    i.pos = v.pos; i.normal = v.normal; i.bindPoseNormal = float3( 0, 0, 0 ); i.uv = v.uv;
+    i.boneIndices = v.bones; i.weights = v.weights;
+    return i;
+}
+#else
+typedef VS_SKIN_IN VS_SKIN_ENTRY_IN;
+VS_SKIN_IN FetchSkinVertex( VS_SKIN_ENTRY_IN e ) { return e; }
+#endif
+VS_DEPTH_OUT VSGhost( VS_SKIN_ENTRY_IN e )
+{
+    const VS_SKIN_IN i = FetchSkinVertex( e );
     const SkeletalInstance inst = LoadSkelInstance();
     float3 skinnedPos, skinnedNormal;
     SkinVertex( i.pos, i.normal, i.boneIndices, i.weights, inst.BoneRow, skinnedPos, skinnedNormal );
@@ -216,8 +265,9 @@ struct VS_GBUF_OUT
     float4 prevClip : TEXCOORD3;
 };
 
-VS_GBUF_OUT VSDepthGBuf( VS_POSED_IN i )
+VS_GBUF_OUT VSDepthGBuf( VS_POSED_ENTRY_IN e )
 {
+    const VS_POSED_IN i = FetchPosed( e );
     VS_GBUF_OUT o;
     o.clip     = mul( float4( i.pos, 1.0 ), ViewProj );
     o.uv       = i.uv;

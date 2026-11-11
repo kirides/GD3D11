@@ -10,6 +10,10 @@
 
 static_assert( D3D12GraphicsEngine::kBackBufferMax == 3, "D3D12GeometryStreams::m_Base mirrors kBackBufferMax" );
 
+// include/SkinnedVertexPull.hlsl hard-codes these stream offsets.
+static_assert( static_cast<UINT>( D3D12GeometryStreams::Stream::SkelVB ) == 6 && static_cast<UINT>( D3D12GeometryStreams::Stream::SkinnedPosUv ) == 8
+    && static_cast<UINT>( D3D12GeometryStreams::Stream::SkinnedNrmPrev ) == 9, "SkinnedVertexPull.hlsl stream offsets" );
+
 namespace {
     constexpr UINT kCount = static_cast<UINT>( D3D12GeometryStreams::Stream::Count );
 

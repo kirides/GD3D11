@@ -1336,7 +1336,7 @@ struct D3D12RayTracing::Impl {
     void AcquirePosed() {
         Rhi::Resource* posed = E.m_SkinnedPosUv.Get();
         if ( PosedInRead || !posed || E.FrameSkelDraws().empty() ) return;
-        Cmd()->TransitionBarrier( posed, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, kPosedRead,
+        Cmd()->TransitionBarrier( posed, D3D12GraphicsEngine::kSkinnedRead, kPosedRead,
             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, Rhi::kBarrierSyncUnspecified,
             D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_COMPUTE_SHADING
             | D3D12_BARRIER_SYNC_PIXEL_SHADING );
@@ -1344,7 +1344,7 @@ struct D3D12RayTracing::Impl {
     }
     void ReleasePosed() {
         if ( !PosedInRead ) return;
-        Cmd()->TransitionBarrier( E.m_SkinnedPosUv.Get(), kPosedRead, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER );
+        Cmd()->TransitionBarrier( E.m_SkinnedPosUv.Get(), kPosedRead, D3D12GraphicsEngine::kSkinnedRead );
         PosedInRead = false;
     }
 

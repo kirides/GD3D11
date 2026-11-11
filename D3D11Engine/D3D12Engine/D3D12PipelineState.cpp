@@ -743,13 +743,15 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
     // Same skeletal ring + instance row as Skeletal.RootSig's t3/b10 — see there.
     rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_VERTEX );                // 1: t3 SkelData
-    rs.AddConstants( 10, 1, D3D12_SHADER_VISIBILITY_VERTEX );     // 2: b10 SkelDrawCB
+    rs.AddConstants( 10, 2, D3D12_SHADER_VISIBILITY_VERTEX );     // 2: b10 SkelDrawCB { SkelInstanceRow, SkelVertexBase }
     // 3: b7 GhostAlpha (Skeletal.hlsl's b0..b6 are all spoken for)
     rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );
     // 4: b6 MaterialCB { normal, ORM, DIFFUSE } — the same bindless material block Skeletal.RootSig uses, so
     // PSGhost shares SampleSkelDiffuse with the lit/prepass/shadow entry points and no skeletal pass needs a
     // diffuse descriptor table any more. PSGhost only reads the diffuse index; the other two ride along.
     rs.AddConstants( 6, 3, D3D12_SHADER_VISIBILITY_PIXEL );
+    // 5: b11 SkelPullCB { stream-table base } for the pulled VSGhost, A/B-only.
+    GhostSkeletal.PullRootParam = rs.AddConstants( 11, 1, D3D12_SHADER_VISIBILITY_VERTEX );
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
@@ -764,7 +766,11 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
         return false;
     }
 
+    if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSGhost", Shadermodel_VS, GhostSkeletal.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
+        { GhostSkeletal.VsBlobPull.Get(), "Skeletal.hlsl:VSGhost[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
         { GhostSkeletal.VsBlob.Get(), "Skeletal.hlsl:VSGhost", D3D12_SHADER_VISIBILITY_VERTEX },
         { GhostSkeletal.PsBlob.Get(), "Skeletal.hlsl:PSGhost", D3D12_SHADER_VISIBILITY_PIXEL  },
     } );
@@ -817,6 +823,7 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (ghost skeletal)." );
         return false;
     }
+    CreatePullTwin( pso, GhostSkeletal.VsBlobPull.Get(), GhostSkeletal.PSOPull.ReleaseAndGetAddressOf(), "ghost skeletal" );
     return true;
 }
 
@@ -1908,7 +1915,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     // Volatile: the ring keeps receiving records (ghosts, inventory) after a pass binds it.
     rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_VERTEX );                    // 1: t3 SkelData
     // Per-draw, like b6: the skeletal ExecuteIndirect writes both, which keeps it DGC-able on Vulkan.
-    rs.AddPerDrawConstants( 10, 1, D3D12_SHADER_VISIBILITY_VERTEX );  // 2: b10 SkelDrawCB { SkelInstanceRow }
+    rs.AddPerDrawConstants( 10, 2, D3D12_SHADER_VISIBILITY_VERTEX );  // 2: b10 SkelDrawCB { SkelInstanceRow, SkelVertexBase }
     // 3: b3 fog — FogConstants (8 DWORDs); VS: CamPosWS; PS: color/near/far
     rs.AddConstants( 3, 8, D3D12_SHADER_VISIBILITY_ALL );
     // Forward+ point lights (mirrors World.RootSig params 3/4/5, here at 4..6 — see BindFrameLights). All
@@ -1932,6 +1939,8 @@ bool D3D12PipelineState::CreateSkeletal() {
     // GhostSkeletal root sig/PSO, not this one). Set once per frame by DrawSkeletalColor before the base-mesh
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
     rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b8 AOCB { AoMaskIndex }
+    // 13: b11 SkelPullCB { stream-table base } for the pulled posed-stream VSs, A/B-only. Not per draw.
+    Skeletal.PullRootParam = rs.AddConstants( 11, 1, D3D12_SHADER_VISIBILITY_VERTEX );
 
     // s0 diffuse: anisotropic per RendererSettings.AnisotropicFiltering (matches D3D11's main texture sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -1952,6 +1961,9 @@ bool D3D12PipelineState::CreateSkeletal() {
     if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "PSMain", Shadermodel_PS, Skeletal.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+    // [Debug] VertexPulling A/B twins: the same entries with VERTEX_PULL=1 (the pulled blobs are validated below).
+    if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSMain", Shadermodel_VS, Skeletal.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
 
     // Every pass draws the vertices SkinVertices.hlsl posed (see PosedSkinLayout); the depth-only ones fetch
     // just the {pos, uv} stream.
@@ -1982,6 +1994,7 @@ bool D3D12PipelineState::CreateSkeletal() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal)." );
         return false;
     }
+    CreatePullTwin( pso, Skeletal.VsBlobPull.Get(), Skeletal.PSOPull.ReleaseAndGetAddressOf(), "skeletal lit" );
 
     // Skeletal depth-prepass PSO (P2.9b-4b): same root sig + depth state, but VSDepth/PSDepthClip, the {pos, uv}
     // stream only, and color writes masked off. Lays down NPC/monster depth so the light cull bounds tiles to
@@ -1993,7 +2006,12 @@ bool D3D12PipelineState::CreateSkeletal() {
         return false;
     }
 
+    if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSDepth", Shadermodel_VS, Skeletal.DepthPrepassVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
+        { Skeletal.VsBlobPull.Get(),             "Skeletal.hlsl:VSMain[pull]",  D3D12_SHADER_VISIBILITY_VERTEX },
+        { Skeletal.DepthPrepassVsBlobPull.Get(), "Skeletal.hlsl:VSDepth[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
         { Skeletal.VsBlob.Get(),             "Skeletal.hlsl:VSMain",      D3D12_SHADER_VISIBILITY_VERTEX },
         { Skeletal.PsBlob.Get(),             "Skeletal.hlsl:PSMain",      D3D12_SHADER_VISIBILITY_PIXEL  },
         { Skeletal.DepthPrepassVsBlob.Get(), "Skeletal.hlsl:VSDepth",     D3D12_SHADER_VISIBILITY_VERTEX },
@@ -2011,12 +2029,15 @@ bool D3D12PipelineState::CreateSkeletal() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass)." );
         return false;
     }
+    CreatePullTwin( pso, Skeletal.DepthPrepassVsBlobPull.Get(), Skeletal.DepthPrepassPSOPull.ReleaseAndGetAddressOf(), "skeletal depth prepass" );
     {
         Rhi::GraphicsPipelineStateDesc noAlpha = pso;
         noAlpha.PS = {};
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, Skeletal.DepthPrepassNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass, no-alpha)." );
             Skeletal.DepthPrepassNoAlphaPSO.Reset();
+        } else {
+            CreatePullTwin( noAlpha, Skeletal.DepthPrepassVsBlobPull.Get(), Skeletal.DepthPrepassNoAlphaPSOPull.ReleaseAndGetAddressOf(), "skeletal depth prepass no-alpha" );
         }
     }
 
@@ -2041,6 +2062,11 @@ bool D3D12PipelineState::CreateSkeletal() {
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, Skeletal.DepthPrepassGBufPSO.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal G-buffer prepass) — NPCs will have no per-vertex motion vectors." );
             Skeletal.DepthPrepassGBufPSO.Reset();
+        } else if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSDepthGBuf", Shadermodel_VS, Skeletal.DepthPrepassGBufVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) ) {
+            VertexPullFailed = true;
+        } else {
+            rs.ValidateShaders( { { Skeletal.DepthPrepassGBufVsBlobPull.Get(), "Skeletal.hlsl:VSDepthGBuf[pull]", D3D12_SHADER_VISIBILITY_VERTEX } } );
+            CreatePullTwin( pso, Skeletal.DepthPrepassGBufVsBlobPull.Get(), Skeletal.DepthPrepassGBufPSOPull.ReleaseAndGetAddressOf(), "skeletal G-buffer prepass" );
         }
     } else {
         Logging::Wrn( "D3D12: Skeletal.hlsl VSDepthGBuf/PSDepthClipGBuf failed to compile — NPCs will have no per-vertex motion vectors." );
@@ -2089,15 +2115,18 @@ bool D3D12PipelineState::CreatePointShadow() {
     if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "PSCubeClip", Shadermodel_PS, PointShadow.PsBlob.ReleaseAndGetAddressOf() ) )
         return false;
 
-    // The skinned casters keep VSCube over the posed IA stream; the world caster pulls.
+    // The pulled twins: the world caster and the skinned casters (posed streams through the stream table).
     if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "VSCubeWorldPull", Shadermodel_VS, PointShadow.WorldVsBlobPull.ReleaseAndGetAddressOf() ) )
         VertexPullFailed = true;
     if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "VSCubeVobPull", Shadermodel_VS, PointShadow.VobVsBlobPull.ReleaseAndGetAddressOf() ) )
+        VertexPullFailed = true;
+    if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "VSCubeSkinnedPull", Shadermodel_VS, PointShadow.SkinnedVsBlobPull.ReleaseAndGetAddressOf() ) )
         VertexPullFailed = true;
 
     rs.ValidateShaders( {
         { PointShadow.WorldVsBlobPull.Get(), "PointShadow.hlsl:VSCubeWorldPull", D3D12_SHADER_VISIBILITY_VERTEX },
         { PointShadow.VobVsBlobPull.Get(), "PointShadow.hlsl:VSCubeVobPull", D3D12_SHADER_VISIBILITY_VERTEX },
+        { PointShadow.SkinnedVsBlobPull.Get(), "PointShadow.hlsl:VSCubeSkinnedPull", D3D12_SHADER_VISIBILITY_VERTEX },
         { PointShadow.VsBlob.Get(),    "PointShadow.hlsl:VSCube",     D3D12_SHADER_VISIBILITY_VERTEX },
         { PointShadow.VobVsBlob.Get(), "PointShadow.hlsl:VSCubeVob",  D3D12_SHADER_VISIBILITY_VERTEX },
         { PointShadow.PsBlob.Get(),    "PointShadow.hlsl:PSCubeClip", D3D12_SHADER_VISIBILITY_PIXEL  },
@@ -2188,7 +2217,7 @@ bool D3D12PipelineState::CreatePointShadow() {
     }
 
     // --- Skeletal caster: the world caster's VSCube and root sig over the {pos, uv} stream SkinVertices.hlsl
-    // posed in world space.
+    // posed in world space (VSCubeSkinnedPull reads the same stream through the stream table).
     {
         pso.pRootSignature = PointShadow.RootSig.Get();
         pso.VS = { PointShadow.VsBlob->GetBufferPointer(), PointShadow.VsBlob->GetBufferSize() };
@@ -2198,12 +2227,15 @@ bool D3D12PipelineState::CreatePointShadow() {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster)." );
             return false;
         }
+        CreatePullTwin( pso, PointShadow.SkinnedVsBlobPull.Get(), PointShadow.CasterSkeletalPSOPull.ReleaseAndGetAddressOf(), "point-shadow skeletal caster" );
         {
             Rhi::GraphicsPipelineStateDesc noAlpha = pso;
             noAlpha.PS = {};
             if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, PointShadow.CasterSkeletalNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
                 Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster, no-alpha)." );
                 PointShadow.CasterSkeletalNoAlphaPSO.Reset();
+            } else {
+                CreatePullTwin( noAlpha, PointShadow.SkinnedVsBlobPull.Get(), PointShadow.CasterSkeletalNoAlphaPSOPull.ReleaseAndGetAddressOf(), "point-shadow skeletal caster no-alpha" );
             }
         }
     }

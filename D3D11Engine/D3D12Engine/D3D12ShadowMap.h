@@ -183,6 +183,8 @@ private:
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterVobIndirectPSOPull, m_CasterVobIndirectNoAlphaPSOPull;
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterVobAttachPSOPull, m_CasterVobAttachNoAlphaPSOPull;
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterSkeletalNoAlphaPSO;
+    // [Debug] VertexPulling A/B twins of the two skeletal casters (Skeletal.DepthPrepassVsBlobPull).
+    Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterSkeletalPSOPull, m_CasterSkeletalNoAlphaPSOPull;
     // CULL_NONE (not front-cull): grass cards are thin double-sided planes, matching Grass.PSO's own culling.
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterGrassPSO;
     Microsoft::WRL::ComPtr<ID3DBlob>            m_CasterGrassVsBlob;   // VSDepth (Vegetation.hlsl)

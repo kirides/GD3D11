@@ -248,6 +248,10 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthPrepassGBufPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassGBufVsBlob;  // VSDepthGBuf
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassGBufPsBlob;  // PSDepthClipGBuf
+        // [Debug] VertexPulling A/B twins (Skeletal.hlsl VERTEX_PULL=1, no input layout); PullRootParam = the b11 stream-base constant (appended last).
+        UINT PullRootParam = UINT_MAX;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull, DepthPrepassVsBlobPull, DepthPrepassGBufVsBlobPull;   // the CSM casters reuse DepthPrepassVsBlobPull
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> PSOPull, DepthPrepassPSOPull, DepthPrepassNoAlphaPSOPull, DepthPrepassGBufPSOPull;
     };
     // Point-light shadow cubes: one root sig (6-face view-proj CBV at b0), three VS/PS blobs, and three single-pass
     // 6-face caster PSOs (world, VOB, and compute-skinned skeletals through the world VS). The cube
@@ -272,6 +276,9 @@ public:
         UINT PullRootParam = UINT_MAX;
         Microsoft::WRL::ComPtr<ID3DBlob>            WorldVsBlobPull;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterWorldPSOPull, CasterWorldNoAlphaPSOPull;
+        // VSCubeSkinnedPull for the posed-stream skinned casters (b9 = stream base, b10.x = posed vertex base).
+        Microsoft::WRL::ComPtr<ID3DBlob>            SkinnedVsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterSkeletalPSOPull, CasterSkeletalNoAlphaPSOPull;
         // VSCubeVobPull for the arena runs (attachments, GPU-scene points); the per-mesh-VB VOB draws keep CasterVobPSO.
         VobPullRoots VobPull;
         Microsoft::WRL::ComPtr<ID3DBlob>            VobVsBlobPull;
@@ -777,7 +784,13 @@ public:
     InventoryItemPipeline InventoryItem;
     BloomPipeline    Bloom;
     GraphicsPipeline Ghost;
-    GraphicsPipeline GhostSkeletal;
+    // [Debug] VertexPulling A/B: PSOPull's VSGhost[pull] reads the raw arena vertex; PullRootParam = its b11 stream-base constant.
+    struct GhostSkeletalPipeline : GraphicsPipeline {
+        UINT PullRootParam = UINT_MAX;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> PSOPull;
+    };
+    GhostSkeletalPipeline GhostSkeletal;
     GrassPipeline    Grass;
     VideoPipeline    Video;
     SmaaPipeline     Smaa;
