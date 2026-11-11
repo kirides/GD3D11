@@ -694,14 +694,16 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         if ( !IsD3D12() ) shadersToReload |= ShaderCategory::Water;
     } );
 
-    ImGui::BeginDisabled( !IsD3D12() || settings.WaterWaves != GothicRendererSettings::WATER_WAVES_D3D11 );
-    CheckRow( "Water Tessellation", &settings.WaterTessellation,
-        "Evaluates the DX11 waves on a finely tessellated water mesh that adapts to distance, instead of only at Gothic's coarse vertices. Needs the DX11 Water Waves mode and D3D12 or Vulkan. Big lakes only get their full detail after the next world load." );
-    ImGui::BeginDisabled( !settings.WaterTessellation );
-    SliderIntRow( "Tessellation Detail", "##WaterTessellationMaxFactor", &settings.WaterTessellationMaxFactor, 4, 64, "%d",
-        "Maximum subdivision per water edge. Lower is faster; near the camera the wave spacing is about 38 m divided by this." );
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
+#ifdef BUILD_GOTHIC_2_6_fix
+    if ( IsD3D12() && settings.WaterWaves == GothicRendererSettings::WATER_WAVES_D3D11 ) {
+        CheckRow( "Water Tessellation", &settings.WaterTessellation,
+            "Evaluates the DX11 waves on a finely tessellated water mesh that adapts to distance, instead of only at Gothic's coarse vertices. Big lakes only get their full detail after the next world load. The FFT sea (Water Simulation) is always tessellated." );
+        ImGui::BeginDisabled( !settings.WaterTessellation );
+        SliderIntRow( "Tessellation Detail", "##WaterTessellationMaxFactor", &settings.WaterTessellationMaxFactor, 4, 64, "%d",
+            "Maximum subdivision per water edge. Lower is faster; near the camera the wave spacing is about 38 m divided by this." );
+        ImGui::EndDisabled();
+    }
+#endif //BUILD_GOTHIC_2_6_fix
 
     constexpr ListItem<GothicRendererSettings::E_WaterSimulation> waterSims[] = {
         { "Off", GothicRendererSettings::WATER_SIM_OFF, "The sea uses the Water Waves mode above." },
