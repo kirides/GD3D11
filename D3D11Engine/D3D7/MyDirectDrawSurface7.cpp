@@ -622,6 +622,7 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         byte* data;
         INT2 buffersize;
         int pixelSize;
+        Engine::GraphicsEngine->BeginOffFrameRender();
         Engine::GraphicsEngine->ResetPresentPending();
         Engine::GraphicsEngine->FlushUI2D();
         {
@@ -630,6 +631,7 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         }
         Engine::GraphicsEngine->GetBackbufferData( CreatingThumbnail, &data, buffersize, pixelSize );
         Engine::GraphicsEngine->ResetPresentPending();
+        Engine::GraphicsEngine->EndOffFrameRender();
 
         lpDDSurfaceDesc->ddpfPixelFormat.dwRGBBitCount = 32;
         lpDDSurfaceDesc->ddpfPixelFormat.dwRBitMask = 0x00FF0000;

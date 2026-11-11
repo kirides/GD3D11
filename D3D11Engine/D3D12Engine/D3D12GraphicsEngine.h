@@ -104,6 +104,8 @@ public:
     XRESULT OnBeginFrame() override;
     /** Ends the frame (EndScene hook): RTV -> present, execute, Present, advance frame. */
     XRESULT OnEndFrame() override;
+    void BeginOffFrameRender() override;
+    void EndOffFrameRender() override;
     XRESULT SetViewport( const ViewportInfo& viewportInfo ) override;
     XRESULT Clear( const float4& color ) override;
 
@@ -711,6 +713,8 @@ private:
     // the slot the request landed in, and would leave stale null DSV/UAV bindings in the meantime.
     bool  m_SwapChainReady = false;
     bool  m_FrameOpen = false;        // true between OnBeginFrame and OnEndFrame
+    bool  m_OffFrame = false;         // frame opened by BeginOffFrameRender (thumbnail between frames)
+    XRESULT OpenFrame();              // OnBeginFrame body after pacing: reset list, bind + clear the display target
     float m_ClearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f }; // black — the 2D UI draws over it
 
     // --- 2D / UI draw path (Gothic menus, fonts, HUD) ---
@@ -1433,6 +1437,12 @@ private:
     bool m_LdrCopyReady = false;              // BOTH scratches exist; every chain pass guards on it
     bool m_LdrScratchNeedsDiscard = false;    // fresh scratches must be initialized before first draw (debug layer #1422)
     bool CreateLdrCopyResource( INT2 size );  // (re)builds both scratches + their SRVs/RTVs
+    // World frame captured once on pause/save entry, shown behind menu frames that never render the world.
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_MenuBackdrop;
+    bool m_MenuBackdropValid = false;
+    bool m_MenuBackdropCapture = false;       // a forced capture render is in flight
+    bool m_MenuBackdropTried = false;         // capture attempted during this pause
+    bool EnsureMenuBackdrop();                // lazily creates m_MenuBackdrop (once per resize)
 
     // Where the finished display image currently lives: -1 = the real display target, 0/1 = that scratch.
     // Only ever non-negative between the tonemap resolve and the end of the chain.

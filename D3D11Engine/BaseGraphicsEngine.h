@@ -342,6 +342,10 @@ public:
     virtual INT2 GetResolution() { return INT2( 0, 0 ); }
     virtual INT2 GetBackbufferResolution() { return GetResolution(); }
 
+    /** Brackets a world render made outside Begin/EndFrame (savegame thumbnail); backends with a closed frame open one. */
+    virtual void BeginOffFrameRender() {}
+    virtual void EndOffFrameRender() {}
+
     /** Returns the data of the backbuffer */
     virtual void GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) {}
 
