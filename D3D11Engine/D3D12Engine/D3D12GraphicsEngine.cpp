@@ -2046,6 +2046,9 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
 void D3D12GraphicsEngine::CreateDisplayResolutionTargets( INT2 displaySize ) {
     ReleaseFsr();                           // display size is half of the pair the FFX context is built for
     CreateLdrCopyResource( displaySize );   // display-chain scratches; SMAA/sharpen/underwater no-op without them
+
+    m_MenuBackdrop.Reset();   // size changed; recreated lazily on the next pause
+    m_MenuBackdropValid = false;
     // SMAA's edges/blend and the underwater blur pair no longer need a resize hook — both are
     // D3D12RenderGraph-managed transients acquired fresh at the current resolution every call (see
     // D3D12PostFX.cpp's RenderSMAA / D3D12Underwater.cpp's DrawUnderwaterEffects).
@@ -2208,7 +2211,33 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     PausedFrameLimiterBeginFrame();
 
     TracyD3D12BeginFrame;
+    return OpenFrame();
+}
 
+
+bool D3D12GraphicsEngine::EnsureMenuBackdrop() {
+    if ( m_MenuBackdrop ) return true;
+    if ( m_BackbufferResolution.x < 4 || m_BackbufferResolution.y < 4 ) return false;
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width = static_cast<UINT64>( m_BackbufferResolution.x );
+    dd.Height = static_cast<UINT>( m_BackbufferResolution.y );
+    dd.DepthOrArraySize = 1;
+    dd.MipLevels = 1;
+    dd.Format = m_Pipelines.DisplayFormat;   // same as the display target, so CopyResource is legal
+    dd.SampleDesc.Count = 1;
+    dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &dd, D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr, m_MenuBackdrop.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
+        Logging::Wrn( "D3D12: failed to create the menu backdrop (menus will show black)." );
+        m_MenuBackdrop.Reset();
+        return false;
+    }
+    m_MenuBackdrop->SetName( L"MenuBackdrop" );
+    return true;
+}
+
+
+XRESULT D3D12GraphicsEngine::OpenFrame() {
     // Apply a pending TriggerResize() request here — the command list from the previous frame is already
     // Closed+Executed+Presented at this point (no open recording to disrupt), so this is the one place in
     // the frame it's safe to stall the GPU and swap the depth/scene-color/swapchain resources out from under
@@ -2301,7 +2330,17 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, bindDepth ? &dsv : nullptr );
     m_ColorTargetIsHDR = false;
-    m_CmdList->ClearRenderTargetView( rtv, m_ClearColor, 0, nullptr );
+    // Menu/pause/save frames never render the world; show a backdrop captured on entry (D3D11's persistent backbuffer).
+    const bool menuFrame = Engine::GAPI->IsIngameMenuPaused() || Engine::GAPI->IsInSavingLoadingState();
+    if ( !menuFrame ) m_MenuBackdropValid = m_MenuBackdropTried = false;   // next pause recaptures
+    if ( menuFrame && m_MenuBackdropValid && m_MenuBackdrop ) {
+        Rhi::Resource* dst = RealDisplayTarget();
+        m_CmdList->TransitionBarrier( dst, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST );
+        m_CmdList->CopyResource( dst, m_MenuBackdrop.Get() );
+        m_CmdList->TransitionBarrier( dst, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET );
+    } else {
+        m_CmdList->ClearRenderTargetView( rtv, m_ClearColor, 0, nullptr );
+    }
     if ( haveDepth )  // reversed-Z: clear to 0.0
         m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 0, nullptr );
 
@@ -2348,6 +2387,23 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     // thread runs at this point, which is what the arenas' lock-free Find needs.
     m_SkelArena->Flush( this );
     m_AttachArena->Flush( this );
+
+    // First menu frame without a backdrop: render the world once into it. Never on load screens (world may be torn down).
+    if ( menuFrame && !m_MenuBackdropValid && !m_MenuBackdropTried && m_SceneEnabled && !m_OffFrame ) {
+        oCGame* game = oCGame::GetGame();
+        const bool wantCapture = Engine::GAPI->IsIngameMenuPaused() || ( game && game->save_screen && !game->load_screen );
+        if ( wantCapture && game && Engine::GAPI->GetLoadedWorldInfo() && Engine::GAPI->GetLoadedWorldInfo()->MainWorld
+            && EnsureMenuBackdrop() ) {
+            m_MenuBackdropTried = true;   // once per pause, even if the render bails out
+            m_MenuBackdropCapture = true;
+            m_PresentPending = false;
+            {
+                ZenGinVobToggleScope vobToggles;
+                OnStartWorldRendering();
+            }
+            m_MenuBackdropCapture = false;
+        }
+    }
     return XR_SUCCESS;
 }
 
@@ -2385,6 +2441,21 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
     Engine::GAPI->OnEndFrame();
 
     return XR_SUCCESS;
+}
+
+
+void D3D12GraphicsEngine::BeginOffFrameRender() {
+    if ( !m_SwapChainReady || m_FrameOpen ) return;
+    m_OffFrame = SUCCEEDED( OpenFrame() ) && m_FrameOpen;
+}
+
+void D3D12GraphicsEngine::EndOffFrameRender() {
+    if ( !m_OffFrame ) return;
+    m_OffFrame = false;
+    FlushUI2D();
+    Present();
+    m_FrameOpen = false;
+    m_PresentPending = false;
 }
 
 
@@ -2684,7 +2755,8 @@ XRESULT D3D12GraphicsEngine::Present() {
     m_Rhi->GetDirectQueue()->ExecuteCommandListsAndSignal( 1, lists, m_Fence.Get(), frameFenceValue );
     m_LastDirectSignal.store( frameFenceValue );
 
-    const bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
+    const bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync
+        && !Engine::GAPI->IsInSavingLoadingState();
     const UINT syncInterval = vsync ? 1 : 0;
 
     UINT presentFlags = 0;

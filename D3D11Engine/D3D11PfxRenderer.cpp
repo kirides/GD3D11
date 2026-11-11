@@ -382,6 +382,10 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     ID3D11ShaderResourceView* srvs[4] = { nullptr, saoSRV, godraysSRV, depthSRV };
     context->PSSetShaderResources( 0, 4, srvs );
 
+    // Clamp so quarter-res god rays don't wrap onto the bottom edge
+    auto clampSampler = engine->GetClampSamplerState();
+    context->PSSetSamplers( 0, 1, &clampSampler );
+
     // Premultiplied blend: the shader outputs fog.rgb*fog.a + godrays with fog.a as coverage.
     auto& blend = Engine::GAPI->GetRendererState().BlendState;
     blend.SetAlphaBlending();

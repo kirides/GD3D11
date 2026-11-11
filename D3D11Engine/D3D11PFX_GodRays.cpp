@@ -234,6 +234,7 @@ XRESULT D3D11PFX_GodRays::RenderCS(
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
+    context->PSSetSamplers( 0, 1, &clampSampler );
     FxRenderer->CopyTextureToRTV( zoomBuffer->GetShaderResView(), oldRTV, res );
 
     engine->SetViewport( { 0, 0, res } );

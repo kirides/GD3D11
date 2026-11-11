@@ -423,6 +423,7 @@ void D3D12GraphicsEngine::OnLoadWorld()
 {
     m_GpuScene->Reset();
     m_GpuWorld->Reset();
+    m_MenuBackdropValid = false;   // shows the old world
     g_vobInfoVisualToBucket.clear();
     g_vobInfoVisualIndexToVisualInfo.clear();
     g_GeometryPassVobs.Reset();
@@ -3093,6 +3094,19 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	postFxGraph.AddPass( RG_PASS_NAME( "Display Chain Finish" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
 		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
 			FinishDisplayChain( cmdList );
+			if ( m_MenuBackdropCapture && m_MenuBackdrop ) {
+				Rhi::Resource* src = RealDisplayTarget();
+				cmdList.TransitionBarriers( {
+					{ src, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE },
+					{ m_MenuBackdrop.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
+					} );
+				cmdList.CopyResource( m_MenuBackdrop.Get(), src );
+				cmdList.TransitionBarriers( {
+					{ src, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+					{ m_MenuBackdrop.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE },
+					} );
+				m_MenuBackdropValid = true;
+			}
 			const D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
 			cmdList.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
 			};
