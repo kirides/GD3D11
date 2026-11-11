@@ -77,7 +77,18 @@ struct Hit
     float3x4 objectToWorld;
 };
 
-Hit TraceReflection( float3 origin, float3 dir, float coneSpread, float coneBase )
+// Per-ray alpha threshold in [1/255, 254/255]: PCG hash of pixel, sample and Time bits (Time changes every frame).
+// Hashed alpha testing turns the coarse-mip hard cut on reflected foliage into noise the TAA/blur resolves.
+float AlphaThreshold( int2 px, uint sampleIndex )
+{
+    uint v = uint( px.x ) * 1664525u + uint( px.y ) * 22695477u + sampleIndex * 747796405u + asuint( Time ) * 2891336453u;
+    v = v * 747796405u + 2891336453u;
+    v = ( ( v >> ( ( v >> 28u ) + 4u ) ) ^ v ) * 277803737u;
+    v = ( v >> 22u ) ^ v;
+    return clamp( float( v >> 8 ) * ( 1.0 / 16777216.0 ), 1.0 / 255.0, 254.0 / 255.0 );
+}
+
+Hit TraceReflection( float3 origin, float3 dir, float coneSpread, float coneBase, float alphaThreshold )
 {
     Hit h = (Hit)0;
     RayDesc ray;
@@ -109,7 +120,7 @@ Hit TraceReflection( float3 origin, float3 dir, float coneSpread, float coneBase
     {
         if ( q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE ) continue;
         Tri t = FetchTri( q.CandidateInstanceID(), q.CandidateInstanceIndex(), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex() );
-        if ( PassesAlpha( t, q.CandidateTriangleBarycentrics(), coneBase + coneSpread * q.CandidateTriangleRayT(), LodBias ) )
+        if ( PassesAlphaThreshold( t, q.CandidateTriangleBarycentrics(), coneBase + coneSpread * q.CandidateTriangleRayT(), LodBias, alphaThreshold ) )
             q.CommitNonOpaqueTriangleHit();
     }
     if ( q.CommittedStatus() != COMMITTED_TRIANGLE_HIT ) return h;
@@ -231,7 +242,7 @@ float SceneRaw( int2 px )   { Texture2D<float> d = GD_HEAP( SceneDepthIndex );  
 bool IsWater( int2 px ) { return SurfaceRaw( px ) > SceneRaw( px ) * 1.000001 + 1e-9; }
 
 // Adds one ray's contribution; false when the position is not water
-bool TraceSample( int2 px, float2 subPixel, inout float4 color, inout float distance )
+bool TraceSample( int2 px, uint sampleIndex, float2 subPixel, inout float4 color, inout float distance )
 {
     float raw = SurfaceRaw( px );
     float2 uv = ( float2( px ) + subPixel ) * InvFullSize;
@@ -256,7 +267,7 @@ bool TraceSample( int2 px, float2 subPixel, inout float4 color, inout float dist
 
     float spread = PixelAngle * float( Scale );
     float3 origin = worldPos + float3( 0.0, 2.0, 0.0 );
-    Hit h = TraceReflection( origin, dir, spread, spread * viewDistance );
+    Hit h = TraceReflection( origin, dir, spread, spread * viewDistance, AlphaThreshold( px, sampleIndex ) );
     if ( !h.valid ) return true;
 
     float coverage = saturate( ( MaxDistance - h.t ) / ( MaxDistance * 0.15 ) );
@@ -283,7 +294,7 @@ void CSMain( uint3 id : SV_DispatchThreadID )
         static const float2 kJitter[4] = { float2( 0.375, 0.125 ), float2( 0.875, 0.375 ), float2( 0.625, 0.875 ), float2( 0.125, 0.625 ) };
         if ( IsWater( base ) )
         {
-            [loop] for ( uint s = 0; s < 4u; ++s ) TraceSample( base, kJitter[s], color, distance );
+            [loop] for ( uint s = 0; s < 4u; ++s ) TraceSample( base, s, kJitter[s], color, distance );
             samples = 4.0;
         }
     }
@@ -295,7 +306,7 @@ void CSMain( uint3 id : SV_DispatchThreadID )
         {
             int2 px = min( base + kOrder[s], maxPx );
             if ( !IsWater( px ) ) continue;
-            TraceSample( px, float2( 0.5, 0.5 ), color, distance );
+            TraceSample( px, s, float2( 0.5, 0.5 ), color, distance );
             samples += 1.0;
             if ( SampleMode == 0u ) break;
         }
