@@ -149,7 +149,7 @@ float TextureLod( Tri t, Texture2D tex, float coneWidth, float cosine )
 bool PassesAlphaThreshold( Tri t, float2 bary, float coneWidth, float lodBias, float threshold )
 {
     if ( ( t.material & kMatAlphaTest ) == 0u || ( t.material & kMatNoTexture ) != 0u ) return true;
-    Texture2D tex = GD_HEAP( t.material & kMatSlotMask );
+    Texture2D tex = GD_HEAP_NONUNIFORM( t.material & kMatSlotMask );   // per-hit material: divergent across the wave
     float lod = max( TextureLod( t, tex, coneWidth, 1.0 ) + lodBias, 0.0 );
     return tex.SampleLevel( smpWrap, InterpUV( t, bary ), lod ).a >= threshold;
 }
@@ -158,7 +158,7 @@ bool PassesAlphaThreshold( Tri t, float2 bary, float coneWidth, float lodBias, f
 bool PassesAlpha( Tri t, float2 bary, float coneWidth, float lodBias )
 {
     if ( ( t.material & kMatAlphaTest ) == 0u || ( t.material & kMatNoTexture ) != 0u ) return true;
-    Texture2D tex = GD_HEAP( t.material & kMatSlotMask );
+    Texture2D tex = GD_HEAP_NONUNIFORM( t.material & kMatSlotMask );   // per-hit material: divergent across the wave
     float lod = max( TextureLod( t, tex, coneWidth, 1.0 ) + lodBias, 0.0 );
     return tex.SampleLevel( smpWrap, InterpUV( t, bary ), lod ).a >= 0.5;
 }

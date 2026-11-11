@@ -225,7 +225,7 @@ float3 ShadeHit( Hit h, float3 origin, float3 dir, float coneWidth )
     }
     else
     {
-        Texture2D tex = GD_HEAP( t.material & kMatSlotMask );
+        Texture2D tex = GD_HEAP_NONUNIFORM( t.material & kMatSlotMask );   // per-hit material: divergent across the wave
         float lod = max( TextureLod( t, tex, coneWidth, abs( dot( N, dir ) ) ) + LodBias, 0.0 );
         albedo = DelightDiffuse( SrgbToLinear( tex.SampleLevel( smpWrap, InterpUV( t, h.bary ), lod ).rgb ) );
     }
