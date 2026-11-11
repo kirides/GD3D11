@@ -14,7 +14,8 @@
 #define SKELDRAWCB_REGISTER b10
 #endif
 StructuredBuffer<float4> SkelData : register(SKELDATA_REGISTER);
-cbuffer SkelDrawCB : register(SKELDRAWCB_REGISTER) { uint SkelInstanceRow; };
+// SkelVertexBase: the draw's first vertex in the pulled stream (SV_VertexID excludes BaseVertexLocation); unused by the IA variants.
+cbuffer SkelDrawCB : register(SKELDRAWCB_REGISTER) { uint SkelInstanceRow; uint SkelVertexBase; };
 
 struct SkeletalInstance
 {

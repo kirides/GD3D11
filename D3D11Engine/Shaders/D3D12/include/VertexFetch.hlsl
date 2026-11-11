@@ -128,9 +128,14 @@ FetchedVertex LoadFull( ByteAddressBuffer b, uint fmt, uint v )
 }
 
 // Compute-skinned streams: A = {pos f3, uv f2} (20 B), B = {octN snorm16x2, prevPos f3} (16 B).
+float2 LoadPosedOct( ByteAddressBuffer b, uint v )
+{
+    return VfUnpackSnorm2x16( b.Load( v * kStridePosedB ) );
+}
+
 float3 LoadPosedNormal( ByteAddressBuffer b, uint v )
 {
-    return VfDecodeOctNormal( VfUnpackSnorm2x16( b.Load( v * kStridePosedB ) ) );
+    return VfDecodeOctNormal( LoadPosedOct( b, v ) );
 }
 
 float3 LoadPosedPrevPos( ByteAddressBuffer b, uint v )

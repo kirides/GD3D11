@@ -1456,9 +1456,11 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	auto drawSkinned = [&]( const PointShadowLightRecord& L, const CasterRun& run ) {
 		if ( !casterArgs || !g_PsPosedVbv.BufferLocation ) return;
 		beginRun( L );
-		cmdList->IASetVertexBuffers( 0, 1, &g_PsPosedVbv );
+		if ( m_E->m_VertexPullWorld ) m_E->BindWorldPull( cmdList, psPipe.PullRootParam );   // b9 = stream base; b10.x = each command's posed vertex base
+		else                          cmdList->IASetVertexBuffers( 0, 1, &g_PsPosedVbv );
 		cmdList->IASetIndexBuffer( &g_PsSkelIbv );
-		submitRun( run, psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get() );
+		submitRun( run, m_E->PullPick( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalPSOPull.Get() ),
+			m_E->PullPick( psPipe.CasterSkeletalNoAlphaPSO.Get(), psPipe.CasterSkeletalNoAlphaPSOPull.Get() ) );
 		};
 	auto drawAttachments = [&]( const PointShadowLightRecord& L, const CasterRun& run ) {
 		if ( !casterArgs ) return;

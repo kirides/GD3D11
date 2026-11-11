@@ -1013,6 +1013,8 @@ private:
     Rhi::PipelineState* PullPick( Rhi::PipelineState* ia, Rhi::PipelineState* pulled ) const { return m_VertexPullWorld && pulled ? pulled : ia; }
     /** Sets b9 { world VB heap index, no VOB info } of the root signature's `rootParam`; no-op while the frame is on the IA path. */
     void BindWorldPull( D3D12CmdList& cmdList, UINT rootParam ) const;
+    /** Sets the stream-table base (b11 of the Skeletal/GhostSkeletal root signatures) at `rootParam`; no-op while the frame is on the IA path. */
+    void BindSkelPull( D3D12CmdList& cmdList, UINT rootParam ) const;
     /** The pulled VOB draw bind: b9 { stream base, instance stride | VB stream offset << 16 } and `instances` as the t6 root SRV (buffer start). */
     void BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances, UINT instanceStride,
         bool attachArena ) const;
@@ -1114,19 +1116,20 @@ private:
     // (Base/StartIndex in the draw) and per-vob data in the skeletal ring (t3, located by SkelInstanceRow) or
     // the VOB instance ring (StartInstanceLocation). That keeps both signatures DGC-able on Vulkan.
     // Argument order follows the root parameter order (D3D12 requires it increasing): b10 is param 2, b6 param 11.
-    struct SkeletalDrawCommand {                     // 36 bytes
-        uint32_t InstanceRow;                        // @0  b10   SkeletalInstanceGPU row in the skeletal ring
-        uint32_t MatNormalIndex;                     // @4  b6.x  (0xFFFFFFFF = no normal map)
-        uint32_t MatOrmIndex;                        // @8  b6.y  (default ORM slot when no _FX)
-        uint32_t MatDiffuseIndex;                    // @12 b6.z  bindless diffuse (alpha clip + albedo)
-        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @16 (20 bytes)
+    struct SkeletalDrawCommand {                     // 40 bytes
+        uint32_t InstanceRow;                        // @0  b10.x SkeletalInstanceGPU row in the skeletal ring
+        uint32_t VertexBase;                         // @4  b10.y first posed vertex (== Draw.BaseVertexLocation); the pulled VS adds it to SV_VertexID
+        uint32_t MatNormalIndex;                     // @8  b6.x  (0xFFFFFFFF = no normal map)
+        uint32_t MatOrmIndex;                        // @12 b6.y  (default ORM slot when no _FX)
+        uint32_t MatDiffuseIndex;                    // @16 b6.z  bindless diffuse (alpha clip + albedo)
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @20 (20 bytes)
     };
     // Both are per-frame-in-flight UPLOAD rings, so keep the caps tight — the 32-bit address space is the
     // binding constraint, not the command count. A crowd of NPCs is ~100 vobs x a handful of materials x
     // sub-meshes; overflow logs once and drops the tail (same contract as the VOB/world rings).
     static constexpr UINT kMaxSkeletalDrawCommands = 4096;   // base skinned meshes (visual x material x sub-mesh)
     static constexpr UINT kMaxAttachDrawCommands   = 4096;   // node attachments (weapons/heads/held items)
-    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_SkeletalIndirectCmdSig;  // b10(1) + b6(3) + DrawIndexed
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_SkeletalIndirectCmdSig;  // b10(2) + b6(3) + DrawIndexed
     Microsoft::WRL::ComPtr<Rhi::Resource> m_SkeletalDrawArgs[kBackBufferMax];
     uint8_t* m_SkeletalDrawArgsPtr[kBackBufferMax] = {};
     UINT m_SkeletalDrawCount = 0;                    // commands built this frame (prepass + color share them)
@@ -1138,9 +1141,10 @@ private:
     UINT m_AttachOpaqueDrawCount = 0;                // alpha-test partition — see m_WorldOpaqueDrawCount
     unsigned int m_SkeletalDrawnTriangles = 0;       // triangles in this frame's skeletal+attachment command set (stats)
     bool m_SkeletalDrawArgsOverflowLogged = false;
-    /** Binds the posed skinned streams (slots 0/1), the skeletal arena's indices and the skeletal ring at root
-        parameter `skelDataParam`. False (and nothing bound) when there is nothing to draw from yet. */
-    bool BindSkinnedGeometry( D3D12CmdList& cmdList, UINT skelDataParam );
+    /** Binds the skeletal arena's indices and the skeletal ring at root parameter `skelDataParam`, plus the posed skinned
+        streams on slots 0/1 on the IA path. While the frame is vertex-pulled the streams come from the stream table instead:
+        `pullParam` (the root signature's b11 stream-base constant) is set. False (and nothing bound) when there is nothing to draw from yet. */
+    bool BindSkinnedGeometry( D3D12CmdList& cmdList, UINT skelDataParam, UINT pullParam = UINT_MAX );
 
     // ---- Compute skinning (D3D12Skinning.cpp, Shaders/D3D12/SkinVertices.hlsl) ----------------------------------
     // PrepareFrameSkeletals reserves each prepared sub-mesh a range of the two posed streams (ReserveSkinned,
@@ -1163,11 +1167,14 @@ private:
     uint32_t ReserveSkinned( const SkeletalMeshVisualInfo* visual, uint32_t instanceRow, uint32_t& count );
     void DispatchSkinning();     // after the frame's last PrepareFrameSkeletals, before the depth prepass
     D3D12_VERTEX_BUFFER_VIEW SkinnedPosUvView() const;
+    /** Resting state of the two posed streams: vertex input, and a VS reading them through the stream table. */
+    static constexpr D3D12_RESOURCE_STATES kSkinnedRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1 (BindVobArenaIA's `pull` rules). */
     bool BindAttachArenaIA( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots* pull = nullptr );
     /** Direct draws on m_CmdList (ghosts, item previews): bind one mesh out of its arena, requesting it on
         first sight. False until a flush has uploaded it; on true, `draw` holds the mesh's draw arguments. */
-    bool BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
+    /** `pulled`: the VS reads the arena vertices itself (b10.y = draw.BaseVertexLocation), so no vertex buffer is bound. */
+    bool BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw, bool pulled = false );
     bool BindAttachmentMesh( const MeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
     bool CreateSkeletalIndirectSignature();
     bool CreateSkeletalIndirect();                   // command signature + both per-frame arg rings (once, at init)

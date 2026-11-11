@@ -429,6 +429,7 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 				m_CasterSkeletalNoAlphaPSO.Reset();
 			}
 		}
+		pullCaster( pso, m_E->m_Pipelines.Skeletal.DepthPrepassVsBlobPull.Get(), m_CasterSkeletalPSOPull, m_CasterSkeletalNoAlphaPSOPull, "skeletal" );
 	}
 	return true;
 }
@@ -1239,6 +1240,7 @@ void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
 				const bool alphaTested = !snap || snap->alphaTested;
 				SkelCmd cmd{};
 				cmd.InstanceRow = d.instRow;
+				cmd.VertexBase = sub.Posed;
 				cmd.MatNormalIndex = 0xFFFFFFFFu;
 				cmd.MatOrmIndex = defaultOrm;
 				cmd.MatDiffuseIndex = snap ? snap->slot : blackSlot;
@@ -1600,10 +1602,11 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Skeletal.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-		if ( m_E->BindSkinnedGeometry( cmdList, 1 ) ) {
+		if ( m_E->BindSkinnedGeometry( cmdList, 1, m_E->m_Pipelines.Skeletal.PullRootParam ) ) {
 			ExecuteIndirectAlphaSplit( cmdList, m_E->m_SkeletalIndirectCmdSig.Get(), m_SkelDrawArgs[c][frame].Get(), 0,
 				sizeof( D3D12GraphicsEngine::SkeletalDrawCommand ), m_SkelDrawCount[c], m_SkelOpaqueDrawCount[c],
-				m_CasterSkeletalPSO.Get(), m_CasterSkeletalNoAlphaPSO.Get() );
+				m_E->PullPick( m_CasterSkeletalPSO.Get(), m_CasterSkeletalPSOPull.Get() ),
+				m_E->PullPick( m_CasterSkeletalNoAlphaPSO.Get(), m_CasterSkeletalNoAlphaPSOPull.Get() ) );
 		}
 	}
 
