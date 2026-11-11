@@ -240,7 +240,8 @@ namespace {
         }
 
         void Clear() {
-            for ( Chunk& c : m_Chunks ) if ( c.Block ) c.Block->Release();
+            // Live BLAS entries still hold sub-allocations at teardown; drop them so the block may be released.
+            for ( Chunk& c : m_Chunks ) if ( c.Block ) { c.Block->Clear(); c.Block->Release(); }
             m_Chunks.clear();
             m_Used = m_Reserved = 0;
         }
