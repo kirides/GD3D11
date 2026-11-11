@@ -488,6 +488,16 @@ bool D3D12ShadowMap::CreateGrassCaster() {
 		Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass shadow caster)." );
 		return false;
 	}
+	{
+		Rhi::GraphicsPipelineStateDesc pulled = pso;
+		ID3DBlob* pulledVs = m_E->m_Pipelines.Grass.DepthVsBlobPull.Get();
+		pulled.InputLayout = { nullptr, 0 };
+		if ( pulledVs ) pulled.VS = { pulledVs->GetBufferPointer(), pulledVs->GetBufferSize() };
+		if ( !pulledVs || FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pulled, m_CasterGrassPSOPull.ReleaseAndGetAddressOf() ) ) ) {
+			Logging::Wrn( "D3D12: vertex-pulling PSO unavailable (shadow grass casters); geometry stays on the input assembler." );
+			m_E->m_Pipelines.VertexPullFailed = true;
+		}
+	}
 	return true;
 }
 
@@ -1635,6 +1645,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		TracyD3D12ZoneCGX( cmdList.Get(), "Grass" );
 
 		bool grassBound = false;
+		const bool grassPulled = m_E->m_VertexPullWorld && m_CasterGrassPSOPull;
 		for ( GVegetationBox* box : g_GrassBoxes[c] ) {
 			GMeshSimple* mesh = box->GetVegetationMesh();
 			GfxVertexBuffer* instBuf = box->GetInstancingBuffer();
@@ -1646,7 +1657,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 			if ( !grassBound ) {
 				grassBound = true;
-				cmdList->SetPipelineState( m_CasterGrassPSO.Get() );
+				cmdList->SetPipelineState( grassPulled ? m_CasterGrassPSOPull.Get() : m_CasterGrassPSO.Get() );
 				cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Grass.RootSig.Get() );
 				cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 				cmdList->SetGraphicsRoot32BitConstants( 3, 8, &g_GrassCB, 0 );   // b1 GrassCB (wind sway)
@@ -1663,8 +1674,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 			const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
 			const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
 			const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
-			const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
-			cmdList->IASetVertexBuffers( 0, 2, views );
+			m_E->BindGrassBuffers( cmdList, grassPulled, m_E->m_Pipelines.Grass.PullRootParam, vbv, instVbv );
 			const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
 			cmdList->IASetIndexBuffer( &ibv );
 			cmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );

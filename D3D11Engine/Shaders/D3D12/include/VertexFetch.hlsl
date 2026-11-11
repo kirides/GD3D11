@@ -213,4 +213,11 @@ VobInstance LoadVobInstance( ByteAddressBuffer b, uint strideBytes, uint i )
     return o;
 }
 
+// A row_major float4x4 instance attribute: semantic index k is row k, 16 B apart (grass/decal instance streams).
+float4x4 LoadFloat4x4Rows( ByteAddressBuffer b, uint address )
+{
+    return float4x4( asfloat( b.Load4( address ) ), asfloat( b.Load4( address + 16 ) ),
+                     asfloat( b.Load4( address + 32 ) ), asfloat( b.Load4( address + 48 ) ) );
+}
+
 #endif // VERTEX_FETCH_HLSL

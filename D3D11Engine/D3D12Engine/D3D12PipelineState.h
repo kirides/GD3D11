@@ -48,6 +48,11 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthPrepassGBufPSO;   // + velocity/normal G-buffer MRT
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthGBufVsBlob;       // Vegetation.hlsl VSDepthGBuf
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthGBufPsBlob;       // Vegetation.hlsl PSDepthClipGBuf
+        // [Debug] VertexPulling A/B twins (Vegetation.hlsl VERTEX_PULL=1, no input layout). PullRootParam = the t7 root SRV (mesh VB),
+        // PullRootParam + 1 = t8 (instance matrices); both are bound at buffer offset 0.
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> PSOPull, DepthPrepassPSOPull, DepthPrepassGBufPSOPull;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull, DepthVsBlobPull, DepthGBufVsBlobPull;
+        UINT PullRootParam = UINT_MAX;
     };
     // Rain/snow billboards. ReactivePSO adds the FSR 2/3 reactive mask as RT1 (R8, MAX blend); optional.
     struct RainDrawPipeline : GraphicsPipeline {
@@ -216,7 +221,10 @@ public:
         Microsoft::WRL::ComPtr<Rhi::RootSignature> RootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;  // compiled once; reused for every blend PSO
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
-        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<Rhi::PipelineState>> Pipelines; // key = BlendKey
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<Rhi::PipelineState>> Pipelines; // key = BlendKey (| bit 31 = pulled twin)
+        // [Debug] VertexPulling A/B: VERTEX_PULL=1 VS (no input layout). PullRootParam = t1 instance-ring root SRV, +1 = b3 { first instance }.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull;
+        UINT PullRootParam = UINT_MAX;
     };
     // Decal sprites: own root sig (b0 ViewProj + t0 SRV + s0 clamp). Two pixel shaders — opaque/alpha-test
     // (fixed LitPSO, depth-write) and transparent (BlendPipelines cache per Gothic blend mode, depth-read-only).
@@ -227,7 +235,11 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            LitPsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob>            BlendPsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> LitPSO;   // opaque/alpha-test, depth-write on
-        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<Rhi::PipelineState>> BlendPipelines; // key = BlendKey
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<Rhi::PipelineState>> BlendPipelines; // key = BlendKey (| bit 31 = pulled twin)
+        // [Debug] VertexPulling A/B: VERTEX_PULL=1 VS + LitPSOPull. PullRootParam = t6 quad VB root SRV, +1 = t7 instance ring, +2 = b8 { first instance }.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> LitPSOPull;
+        UINT PullRootParam = UINT_MAX;
     };
     // Skinned skeletal meshes (animated NPCs/monsters): own root sig (b0 ViewProj consts, b1 instance CBV,
     // b2 bone-palette CBV, Forward+ light SRVs, CSM + point-shadow tables, bindless material indices). Lit PSO +
@@ -428,6 +440,10 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            OuterPsBlob;   // PSMainOuter (above the shell)
         Microsoft::WRL::ComPtr<Rhi::PipelineState> PSO;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> OuterPSO;
+        // [Debug] VertexPulling A/B twins (VSMain VERTEX_PULL=1, no input layout). PullRootParam = the t0 dome-VB root SRV (offset 0).
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> PSOPull, OuterPSOPull;
+        UINT PullRootParam = UINT_MAX;
     };
 
     // SMAA anti-aliasing (runtime toggle, RendererSettings.AntiAliasingMode == AA_SMAA). One bindless root
@@ -747,8 +763,8 @@ public:
     Rhi::PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend, const GothicDepthBufferStateInfo& depth,
         D3D12_CULL_MODE cullMode = D3D12_CULL_MODE_NONE, bool rtvIsHdr = false, bool forceMaxZ = false, bool frontCCW = false,
         bool ffVbLayout = false );
-    Rhi::PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend );
-    Rhi::PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
+    Rhi::PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend, bool pulled = false );
+    Rhi::PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend, bool pulled = false );
     // Alpha-blended world mesh. depthWrite mirrors D3D11's state machine: the list starts from
     // SetDefaultStates() (depth-write ON, blending off) and every alpha-func change turns depth-write off.
     Rhi::PipelineState* GetOrCreateWorldTransparencyPipeline( const GothicBlendStateInfo& blend, bool depthWrite,
