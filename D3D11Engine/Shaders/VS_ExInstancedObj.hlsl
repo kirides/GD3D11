@@ -94,7 +94,7 @@ float GetInstancePhaseOffset(float3x4 objMatrix, float maxHeightValue)
     return frac(sin(seed) * 43758.5453) * phaseVariation;
 }
 
-float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float3x4 instMatrix, float maxHeightValue, float windStrength)
+float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float3x4 instMatrix, float maxHeightValue, float windStrength, bool smooth)
 {
     // Calculate if vertex should be affected (1 if heightNorm >= trunkStiffness, 0 otherwise)
     float shouldAffect = saturate(sign(heightNorm - trunkStiffness + 0.0001f));
@@ -123,6 +123,8 @@ float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float
     // Chaotical motion
     float leafTurbulence = (sin(timeSec * 4.0 + vertexPos.x * 15.0) +
                           cos(timeSec * 3.7 + vertexPos.z * 12.0)) * 0.05 * topSmoothing;
+    if (smooth)
+        leafTurbulence = 0; // per-vertex noise: no coherent gradient for normal probes
     
     // Final offset
     float3 windOffset = direction * windStrength * windStrengMult *
@@ -143,7 +145,8 @@ float3 CalculatePlayerInfluence(
     float3 vertexLocalPos,
     float minHeight,
     float maxHeight,
-    float3x4 instWorldMatrix
+    float3x4 instWorldMatrix,
+    bool smooth
 )
 {
     float heightRange = max(maxHeight - minHeight, 0.001);
@@ -166,11 +169,61 @@ float3 CalculatePlayerInfluence(
     
     float influence = distanceFactor * vertexHeightNorm * heightMask;
     
-    float randomOffset = frac(sin(dot(vertexLocalPos.xz, float2(12.9898, 78.233))) * 43758.5453);
+    float randomOffset = smooth ? 0.5 : frac(sin(dot(vertexLocalPos.xz, float2(12.9898, 78.233))) * 43758.5453); // smooth: per-vertex hash has no usable gradient
     influence *= 0.9 + 0.1 * randomOffset;
 
     float3 displaceDirLocal = normalize(mul((float3x3)instWorldMatrix, displaceDirWorld));
     return displaceDirLocal * heroAffectStrength * influence;
+}
+#endif
+
+#if SHD_WIND || SHD_INFLUENCE
+// Swayed object-space position at `timeSec`; smooth drops the per-vertex noise terms (used by the normal probes).
+float3 SwayPosition(float3 p, float2 instWind, float localMinHeight, float localMaxHeight, float3x4 instWorld, float timeSec, bool smooth)
+{
+    float3 result = p;
+#if SHD_INFLUENCE
+    // Hero push uses the CURRENT playerPos for every time (no previous-frame player position is tracked).
+    if (instWind.y > 0)
+        result += CalculatePlayerInfluence(playerPos, result, localMinHeight, localMaxHeight, instWorld, smooth);
+#endif
+#if SHD_WIND
+    if (instWind.x > 0)
+    {
+        float heightRange = max(localMaxHeight - localMinHeight, 0.001);
+        float vertexHeightNorm = saturate((p.y - localMinHeight) / heightRange);
+        result += ApplyTreeWind(p, normalize(windDir), vertexHeightNorm, timeSec, instWorld, localMaxHeight, instWind.x, smooth);
+    }
+#endif
+    return result;
+}
+
+// Object-space normal of the swayed surface from finite differences of the smooth displacement field along an
+// orthonormal tangent pair; eps (~cm) is <= 1/4 of the narrowest smooth feature (hero mask, 0.02 * bbox height).
+static const float windNormalEps = 0.25f;
+float3 SwayNormal(float3 p, float3 nrm, float2 instWind, float localMinHeight, float localMaxHeight, float3x4 instWorld, float timeSec)
+{
+    if (instWind.x <= 0 && instWind.y <= 0)
+        return nrm;
+    if (dot(nrm, nrm) < 1e-8)
+        return nrm;
+    // Duff et al. branchless orthonormal basis
+    const float sgn = nrm.z >= 0 ? 1.0 : -1.0;
+    const float a = -1.0 / (sgn + nrm.z);
+    const float b = nrm.x * nrm.y * a;
+    const float3 T = float3(1.0 + sgn * nrm.x * nrm.x * a, sgn * b, -sgn * nrm.x);
+    const float3 B = float3(b, sgn + nrm.y * nrm.y * a, -nrm.y);
+    const float3 pT = p + windNormalEps * T;
+    const float3 pB = p + windNormalEps * B;
+    const float3 d0 = SwayPosition(p, instWind, localMinHeight, localMaxHeight, instWorld, timeSec, true) - p;
+    const float3 dT = SwayPosition(pT, instWind, localMinHeight, localMaxHeight, instWorld, timeSec, true) - pT - d0;
+    const float3 dB = SwayPosition(pB, instWind, localMinHeight, localMaxHeight, instWorld, timeSec, true) - pB - d0;
+    float3 n = cross(T + dT * (1.0 / windNormalEps), B + dB * (1.0 / windNormalEps));
+    const float l2 = dot(n, n);
+    if (l2 < 1e-12)
+        return nrm;
+    n *= rsqrt(l2);
+    return dot(n, nrm) < 0 ? -n : n;
 }
 #endif
 
@@ -193,55 +246,15 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 #endif
 
     // Previous-frame position, swayed with last frame's wind phase (prevGlobalTime) rather than reusing
-    // this frame's swayed `position` — otherwise, for static instances where InstancePrevWorldMatrix ==
-    // InstanceWorldMatrix, the sway motion cancels out of the velocity entirely (both clip positions carry
-    // the identical current-frame displacement), understating swaying grass/foliage as motion-vector-static
-    // and leaving it to smear under TAA/motion blur instead of resolving crisply.
+    // this frame's swayed `position` — otherwise a static instance's sway cancels out of the velocity and
+    // swaying foliage smears under TAA/motion blur.
     float3 prevPosition = Input.vPosition;
+    float3 objNormal = Input.vNormal;
 
-#if SHD_INFLUENCE
-
-    if (Input.InstanceWind.y > 0)
-    {
-        // HERO MOVING BUSHES SHADER — applied to prevPosition too, using the CURRENT playerPos (no
-        // previous-frame player position is tracked). Time-independent, so it cancels correctly out of
-        // the velocity when the player hasn't moved; omitting it (as before) leaked the WHOLE push
-        // offset as bogus motion every frame the effect was active, regardless of what actually moved.
-        position += CalculatePlayerInfluence(playerPos, position, localMinHeight, localMaxHeight, InstWorld(Input));
-        prevPosition += CalculatePlayerInfluence(playerPos, prevPosition, localMinHeight, localMaxHeight, InstWorld(Input));
-    }
-#endif
-
-#if SHD_WIND
-
-    if (Input.InstanceWind.x > 0)
-    {
-        // WIND SHADER
-        // Protect 0 height
-        float heightRange = max(localMaxHeight - localMinHeight, 0.001);
-        float vertexHeightNorm = saturate((Input.vPosition.y - localMinHeight) / heightRange);
-
-        // Apply wind
-        position += ApplyTreeWind(
-            Input.vPosition,
-            normalize(windDir),
-            vertexHeightNorm,
-            globalTime,
-            InstWorld(Input),
-            localMaxHeight,
-            Input.InstanceWind.x
-        );
-
-        prevPosition += ApplyTreeWind(
-            Input.vPosition,
-            normalize(windDir),
-            vertexHeightNorm,
-            prevGlobalTime,
-            InstWorld(Input),
-            localMaxHeight,
-            Input.InstanceWind.x
-        );
-    }
+#if SHD_WIND || SHD_INFLUENCE
+    position = SwayPosition(Input.vPosition, Input.InstanceWind, localMinHeight, localMaxHeight, InstWorld(Input), globalTime, false);
+    prevPosition = SwayPosition(Input.vPosition, Input.InstanceWind, localMinHeight, localMaxHeight, InstWorld(Input), prevGlobalTime, false);
+    objNormal = SwayNormal(Input.vPosition, Input.vNormal, Input.InstanceWind, localMinHeight, localMaxHeight, InstWorld(Input), globalTime);
 #endif
 
     // Common processing for both cases
@@ -259,7 +272,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     Output.vFarField = FF_DecodeVob( Input.InstanceColor );   // static VOBs: the far field rides in the spare bytes
     // 2.0 = focused (PS tests > 1.5), else 1.0 — PS_Simple multiplies by it as alpha for blended VOBs.
     Output.vDiffuse.w = (Input.InstanceWindMetaIndex >> 31u) ? 2.0f : 1.0f;
-    Output.vNormalVS = mul(mul((float3x3)InstWorld(Input), Input.vNormal), (float3x3)frame.M_View);
+    Output.vNormalVS = mul(mul((float3x3)InstWorld(Input), objNormal), (float3x3)frame.M_View);
     Output.vViewPosition = mul(float4(worldPos, 1.0), frame.M_View);
     
     // Store clip positions for velocity calculation in pixel shader
