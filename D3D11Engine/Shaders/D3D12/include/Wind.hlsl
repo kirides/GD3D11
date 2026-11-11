@@ -45,7 +45,7 @@ float WindInstancePhaseOffset( float3x4 instMatrix, float maxHeightValue )
     return frac( sin( seed ) * 43758.5453 ) * kWindPhaseVariation;
 }
 
-float3 ApplyTreeWind( float3 localPos, float3 direction, float heightNorm, float timeSec, float3x4 instMatrix, float maxHeightValue, float windStrength )
+float3 ApplyTreeWindEx( float3 localPos, float3 direction, float heightNorm, float timeSec, float3x4 instMatrix, float maxHeightValue, float windStrength, bool smooth )
 {
     float shouldAffect   = saturate( sign( heightNorm - kWindTrunkStiffness + 0.0001f ) );
     float instancePhase  = WindInstancePhaseOffset( instMatrix, maxHeightValue ) * kWindPI2;
@@ -58,8 +58,14 @@ float3 ApplyTreeWind( float3 localPos, float3 direction, float heightNorm, float
     float topSmoothing   = smoothstep( 0.7, 0.9, adjustedHeight );
     float combinedWave   = ( mainWave + secondaryWave * 0.5 ) * ( 1.0 - topSmoothing * 0.3 ) + inertiaEffect * topSmoothing;
     float leafTurbulence = ( sin( timeSec * 4.0 + localPos.x * 15.0 ) + cos( timeSec * 3.7 + localPos.z * 12.0 ) ) * 0.05 * topSmoothing;
+    if ( smooth ) leafTurbulence = 0;   // per-vertex noise: no coherent gradient for normal probes
 
     return direction * windStrength * kWindStrengthMult * ( combinedWave + leafTurbulence ) * heightFactor;
+}
+
+float3 ApplyTreeWind( float3 localPos, float3 direction, float heightNorm, float timeSec, float3x4 instMatrix, float maxHeightValue, float windStrength )
+{
+    return ApplyTreeWindEx( localPos, direction, heightNorm, timeSec, instMatrix, maxHeightValue, windStrength, false );
 }
 
 float3 ApplyHeroInfluence( float3 playerPosWS, float3 vertexLocalPos, float minHeightValue, float maxHeightValue, float4x4 instWorldMatrix )
@@ -86,7 +92,7 @@ float3 ApplyHeroInfluence( float3 playerPosWS, float3 vertexLocalPos, float minH
     return displaceDirLocal * kHeroAffectStrength * influence;
 }
 
-float3 ApplyHeroInfluence( float3 playerPosWS, float3 vertexLocalPos, float minHeightValue, float maxHeightValue, float3x4 instWorldMatrix )
+float3 ApplyHeroInfluenceEx( float3 playerPosWS, float3 vertexLocalPos, float minHeightValue, float maxHeightValue, float3x4 instWorldMatrix, bool smooth )
 {
     float heightRange      = max( maxHeightValue - minHeightValue, 0.001 );
     float vertexHeightNorm = saturate( ( vertexLocalPos.y - minHeightValue ) / heightRange );
@@ -102,9 +108,14 @@ float3 ApplyHeroInfluence( float3 playerPosWS, float3 vertexLocalPos, float minH
     float distanceFactor = exp( -(distanceXZ * distanceXZ) / (1.8 * kHeroAffectRange * kHeroAffectRange) );
 
     float influence = distanceFactor * vertexHeightNorm * heightMask;
-    float randomOffset = frac( sin( dot( vertexLocalPos.xz, float2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+    float randomOffset = smooth ? 0.5 : frac( sin( dot( vertexLocalPos.xz, float2( 12.9898, 78.233 ) ) ) * 43758.5453 );   // smooth: per-vertex hash has no usable gradient
     influence *= 0.9 + 0.1 * randomOffset;
 
     float3 displaceDirLocal = normalize( mul( (float3x3)instWorldMatrix, displaceDirWorld ) );
     return displaceDirLocal * kHeroAffectStrength * influence;
+}
+
+float3 ApplyHeroInfluence( float3 playerPosWS, float3 vertexLocalPos, float minHeightValue, float maxHeightValue, float3x4 instWorldMatrix )
+{
+    return ApplyHeroInfluenceEx( playerPosWS, vertexLocalPos, minHeightValue, maxHeightValue, instWorldMatrix, false );
 }

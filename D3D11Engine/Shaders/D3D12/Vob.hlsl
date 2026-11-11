@@ -57,7 +57,7 @@ SamplerState smpAoClamp : register(s1);
 // the color pass draws in front of where the (unswayed) prepass depth said it should be.
 // The instance matrices are row_major float3x4 inputs: element k is row k in both DXIL and SPIR-V (DXC's SPIR-V
 // ignores column_major on stage inputs), applied as mul(M, float4(p,1)).
-float3 ApplyVobWind( float3 pos, float2 iwind, float3x4 iworld, float time )
+float3 ApplyVobWindEx( float3 pos, float2 iwind, float3x4 iworld, float time, bool smooth )
 {
     float3 localPos = pos;
 
@@ -65,17 +65,49 @@ float3 ApplyVobWind( float3 pos, float2 iwind, float3x4 iworld, float time )
     // the CURRENT player position even when `time` is WindPrevGlobalTime (no previous-frame player position is
     // tracked) — see VSDepthGBuf for why that's an acceptable, much smaller error than dropping tree sway motion.
     if ( iwind.y > 0 )
-        localPos += ApplyHeroInfluence( WindPlayerPos, localPos, WindMinHeight, WindMaxHeight, iworld );
+        localPos += ApplyHeroInfluenceEx( WindPlayerPos, localPos, WindMinHeight, WindMaxHeight, iworld, smooth );
 
     // Tree/flag/leaf sway.
     if ( iwind.x > 0 )
     {
         float heightRange = max( WindMaxHeight - WindMinHeight, 0.001 );
         float heightNorm  = saturate( ( pos.y - WindMinHeight ) / heightRange );
-        localPos += ApplyTreeWind( pos, normalize( WindDir ), heightNorm, time, iworld, WindMaxHeight, iwind.x );
+        localPos += ApplyTreeWindEx( pos, normalize( WindDir ), heightNorm, time, iworld, WindMaxHeight, iwind.x, smooth );
     }
 
     return localPos;
+}
+
+float3 ApplyVobWind( float3 pos, float2 iwind, float3x4 iworld, float time )
+{
+    return ApplyVobWindEx( pos, iwind, iworld, time, false );
+}
+
+// Object-space normal of the swayed surface: finite differences of the displacement field along an orthonormal
+// tangent pair (no neighbour vertices needed). Probes use the smooth field (no per-vertex noise terms), eps in
+// object units (~cm): <= 1/4 of the narrowest smooth feature (hero mask, 0.02 * bbox height) yet far above fp32 noise.
+static const float kWindNormalEps = 0.25f;
+float3 ApplyVobWindNormal( float3 pos, float3 nrm, float2 iwind, float3x4 iworld, float time )
+{
+    if ( iwind.x <= 0 && iwind.y <= 0 )
+        return nrm;
+    if ( dot( nrm, nrm ) < 1e-8 )
+        return nrm;
+    // Duff et al. branchless orthonormal basis
+    const float sgn = nrm.z >= 0 ? 1.0 : -1.0;
+    const float a = -1.0 / ( sgn + nrm.z );
+    const float b = nrm.x * nrm.y * a;
+    const float3 T = float3( 1.0 + sgn * nrm.x * nrm.x * a, sgn * b, -sgn * nrm.x );
+    const float3 B = float3( b, sgn + nrm.y * nrm.y * a, -nrm.y );
+    const float3 d0 = ApplyVobWindEx( pos, iwind, iworld, time, true );
+    const float3 dT = ApplyVobWindEx( pos + kWindNormalEps * T, iwind, iworld, time, true ) - ( pos + kWindNormalEps * T ) - ( d0 - pos );
+    const float3 dB = ApplyVobWindEx( pos + kWindNormalEps * B, iwind, iworld, time, true ) - ( pos + kWindNormalEps * B ) - ( d0 - pos );
+    float3 n = cross( T + dT * ( 1.0 / kWindNormalEps ), B + dB * ( 1.0 / kWindNormalEps ) );
+    const float l2 = dot( n, n );
+    if ( l2 < 1e-12 )
+        return nrm;
+    n *= rsqrt( l2 );
+    return dot( n, nrm ) < 0 ? -n : n;
 }
 
 struct VS_IN
@@ -125,7 +157,7 @@ VS_OUT VSMain( VS_ENTRY_IN e )
     o.uv  = i.uv;
     o.col = i.icolor;
     o.wpos = worldPos;
-    o.wnrm = mul( (float3x3)i.iworld, i.nrm );
+    o.wnrm = mul( (float3x3)i.iworld, ApplyVobWindNormal( i.pos, i.nrm, i.iwind, i.iworld, WindGlobalTime ) );
     o.fogDist = distance(worldPos, CamPosWS);
     o.focus = ( i.igpslot >> 31u ) ? 2.0f : 0.0f;
     return o;
@@ -423,7 +455,7 @@ VS_GBUF_OUT VSDepthGBuf( VS_GBUF_ENTRY_IN e )
     worldPos += MaterialWaveOffset( worldPos, MatDiffuseIndex, false );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv   = i.uv;
-    o.wnrm = mul( (float3x3)i.iworld, i.nrm );
+    o.wnrm = mul( (float3x3)i.iworld, ApplyVobWindNormal( i.pos, i.nrm, i.iwind, i.iworld, WindGlobalTime ) );
     o.currClip = mul( float4( worldPos, 1.0 ), UnjitteredViewProj );
     // Re-evaluate the sway at last frame's wind phase (WindPrevGlobalTime) rather than reusing this frame's
     // swayed `localPos` — for a static instance (iprevworld == iworld) that reuse made the entire sway term
