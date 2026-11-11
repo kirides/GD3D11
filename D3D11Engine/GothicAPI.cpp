@@ -654,9 +654,10 @@ void GothicAPI::OnWorldUpdate() {
 #else
         const int waveMode = GothicRendererSettings::WATER_WAVES_OFF;
 #endif
+        const bool waterTessellated = RendererState.RendererSettings.WaterTessellation && Engine::IsModernBackend();
         const float totalTime = GetTotalTime();
         for ( VobInfo* vi : State->FloatingVobs ) {
-            UpdateWaterBob( *vi->WaterBob, totalTime, waveMode );
+            UpdateWaterBob( *vi->WaterBob, totalTime, waveMode, waterTessellated );
         }
     }
 
@@ -6122,6 +6123,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaves", to_string_locale_independent( (int)s.WaterWaves ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSimulation", to_string_locale_independent( (int)s.WaterSimulation ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterTessellation", to_string_locale_independent( s.WaterTessellation ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterTessellationMaxFactor", to_string_locale_independent( s.WaterTessellationMaxFactor ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSeaState", float_to_string( s.WaterSeaState, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveScale", float_to_string( s.WaterWaveScale, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterChoppiness", float_to_string( s.WaterChoppiness, 2 ).c_str(), ini.c_str() );
@@ -6443,6 +6446,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             GothicRendererSettings::WATER_WAVES_OFF, GothicRendererSettings::WATER_WAVES_D3D11 ) );
         s.WaterSimulation = static_cast<GothicRendererSettings::E_WaterSimulation>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterSimulation", ds.WaterSimulation, ini.c_str() ),
             GothicRendererSettings::WATER_SIM_OFF, GothicRendererSettings::WATER_SIM_HIGH ) );
+        s.WaterTessellation = GetPrivateProfileBoolA( "Display", "WaterTessellation", ds.WaterTessellation, ini );
+        s.WaterTessellationMaxFactor = std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterTessellationMaxFactor", ds.WaterTessellationMaxFactor, ini.c_str() ), 4, 64 );
         s.WaterSeaState = std::clamp( GetPrivateProfileFloatA( "Display", "WaterSeaState", ds.WaterSeaState, ini ), 0.0f, 3.0f );
         s.WaterWaveScale = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWaveScale", ds.WaterWaveScale, ini ), 0.0f, 3.0f );
         s.WaterChoppiness = std::clamp( GetPrivateProfileFloatA( "Display", "WaterChoppiness", ds.WaterChoppiness, ini ), 0.0f, 2.0f );

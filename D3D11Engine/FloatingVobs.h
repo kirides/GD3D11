@@ -11,8 +11,8 @@ struct WorldMeshSectionInfo;
 bool AttachWaterBob( VobInfo* vi, const std::map<int, std::map<int, WorldMeshSectionInfo>>& sections, std::string_view identifiers );
 
 /** Moves the bob to where the water's vertex waves put the surface at `totalTimeMs` (GothicAPI::GetTotalTime);
-    waveMode is E_WaterWaves. */
-void UpdateWaterBob( VobWaterBob& bob, float totalTimeMs, int waveMode );
+    waveMode is E_WaterWaves. `tessellated` = the DX11 waves are tessellated, so the surface follows the wave field at the plant's own position. */
+void UpdateWaterBob( VobWaterBob& bob, float totalTimeMs, int waveMode, bool tessellated = false );
 
 /** Adds a floating vob's displacement to its freshly packed instance. */
 inline void ApplyWaterBob( VobInstanceInfo& vii, const VobInfo& vi ) {

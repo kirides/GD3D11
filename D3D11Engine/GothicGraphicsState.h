@@ -1035,6 +1035,8 @@ struct GothicRendererSettings {
         BinkVideoRunning = false;
         WaterWaves = WATER_WAVES_ORIGINAL;
         WaterSimulation = WATER_SIM_OFF;
+        WaterTessellation = false;
+        WaterTessellationMaxFactor = 64;
         WaterSeaState = 1.0f;
         WaterWaveScale = 1.0f;
         WaterChoppiness = 1.0f;
@@ -1513,6 +1515,8 @@ struct GothicRendererSettings {
     bool BinkVideoRunning;
     E_WaterWaves WaterWaves;
     E_WaterSimulation WaterSimulation;   // FFT ocean on MT_Ocean; overrides WaterWaves there. Quality change reallocates.
+    bool WaterTessellation;              // D3D12/Vulkan: distance-adaptive tessellation of water in the DX11 wave mode; presplit needs a world reload
+    int WaterTessellationMaxFactor;      // hull-shader cap, 4..64
     float WaterSeaState;                 // 0 calm .. 3 storm (interpolated)
     float WaterWaveScale;                // amplitude multiplier
     float WaterChoppiness;               // horizontal displacement multiplier

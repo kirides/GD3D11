@@ -188,7 +188,7 @@ bool AttachWaterBob( VobInfo* vi, const std::map<int, std::map<int, WorldMeshSec
     return true;
 }
 
-void UpdateWaterBob( VobWaterBob& bob, float totalTimeMs, int waveMode ) {
+void UpdateWaterBob( VobWaterBob& bob, float totalTimeMs, int waveMode, bool tessellated ) {
     XMFLOAT3 offset( 0.0f, 0.0f, 0.0f );
     const OceanFFT::Surface& sea = OceanFFT::GetSurface();
     if ( bob.Ocean && sea.Active() ) {
@@ -201,6 +201,11 @@ void UpdateWaterBob( VobWaterBob& bob, float totalTimeMs, int waveMode ) {
         float d[3];
         sea.Displacement( pos.x, pos.z, OceanFFT::WaveWeightForShore( depth, distance ), d );
         offset = XMFLOAT3( d[0], d[1], d[2] );
+    } else if ( tessellated && waveMode == GothicRendererSettings::WATER_WAVES_D3D11 ) {
+        // Gerstner depends on the xz position only, and the tessellated surface evaluates it per point rather than per corner
+        const XMFLOAT3 pos( bob.Corners[0].x * bob.Weights.x + bob.Corners[1].x * bob.Weights.y + bob.Corners[2].x * bob.Weights.z, 0.0f,
+            bob.Corners[0].z * bob.Weights.x + bob.Corners[1].z * bob.Weights.y + bob.Corners[2].z * bob.Weights.z );
+        offset = GerstnerOffset( pos, bob.Amplitude, bob.Speed, totalTimeMs );
     } else if ( waveMode != GothicRendererSettings::WATER_WAVES_OFF ) {
         const float weights[3] = { bob.Weights.x, bob.Weights.y, bob.Weights.z };
         for ( int i = 0; i < 3; ++i ) {

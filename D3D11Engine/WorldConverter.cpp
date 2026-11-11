@@ -42,6 +42,8 @@ extern MeshManager* s_MeshManager;
 namespace {
     /** Longest edge (world units) of a sea triangle once the simulated ocean is on; the hull shader tessellates up to 64x within it. */
     constexpr float kOceanMaxEdge = 8192.0f;
+    /** Longest edge of a water triangle with WaterTessellation: 64 segments of 60 units, the spacing that samples the shortest swell (~470 units) ~8 times. */
+    constexpr float kWaterTessMaxEdge = 3840.0f;
     constexpr size_t kOceanSplitVertexBudget = 3000000;
 
     ExVertexStruct LerpVertex( const ExVertexStruct& a, const ExVertexStruct& b ) {
@@ -1178,9 +1180,12 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         const size_t firstNewVertex = it->second->Vertices.size();
         TriangleFanToList( &polyVertices[0], polyVertices.size(), &it->second->Vertices );
         // The simulated sea tessellates the original triangles; split the huge ones first so the hull shader's cap suffices
-        if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() && IsOceanWaterMaterial( mat )
-            && Engine::GAPI->GetRendererState().RendererSettings.WaterSimulation != GothicRendererSettings::WATER_SIM_OFF ) {
-            SplitLongTriangles( it->second->Vertices, firstNewVertex, kOceanMaxEdge );
+        if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() ) {
+            const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+            if ( IsOceanWaterMaterial( mat ) && rs.WaterSimulation != GothicRendererSettings::WATER_SIM_OFF )
+                SplitLongTriangles( it->second->Vertices, firstNewVertex, kOceanMaxEdge );
+            else if ( rs.WaterTessellation && Engine::IsModernBackend() )
+                SplitLongTriangles( it->second->Vertices, firstNewVertex, kWaterTessMaxEdge );
         }
         if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() ) {
 #ifdef BUILD_GOTHIC_1_08k
