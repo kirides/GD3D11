@@ -67,6 +67,13 @@ float2 OceanShore( float column, float columnDeriv )
     return float2( visibility, color );
 }
 
+// fwidth counting only quad neighbours deeper than this pixel; a shallower one may be an occluder (a swimmer).
+float WaterDeeperNeighbourWidth( float column, float2 pixelPos )
+{
+    float2 side = 1.0f - 4.0f * frac( floor( pixelPos ) * 0.5f );   // +1 even, -1 odd; ddx_fine = right minus left
+    return max( side.x * ddx_fine( column ), 0.0f ) + max( side.y * ddy_fine( column ), 0.0f );
+}
+
 // colorColumn is the smaller of the refracted and undistorted columns, widened on sloped banks.
 float2 LegacyShore( float column, float columnDeriv, float colorColumn, float colorColumnDeriv )
 {
@@ -669,8 +676,8 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float night = saturate( ( -AC_LightPos.y + 0.12f ) * 2.2f );
     float sunVisibility = smoothstep( -0.04f, 0.08f, AC_LightPos.y ) * ( 1.0f - rain );
 
-    // Depth of whatever the opaque scene put behind this water pixel
-    float rawCenterDepth = WaterSceneRawDepth( px.screenUV );
+    // Depth of whatever the opaque scene put behind this water pixel; unfiltered, a filtered silhouette is a phantom floor
+    float rawCenterDepth = WaterSceneRawDepthTexel( px.screenUV );
     float depth = WaterLinearDepth( rawCenterDepth );
     float shallowDepth = saturate( ( depth - px.surfaceViewZ ) * 0.01f );
     float3 viewDirection = normalize( px.worldPos - fr.cameraPos );
@@ -683,13 +690,19 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     distortionSmall *= 0.5f;
     float3 distortionBig = WaterBigDistortion( worldTexCoord, fr.time );
 
-    float2 distUV = px.screenUV + distortionSmall.xy * DIST_SMALL_AMOUNT + distortionBig.xy * DIST_SMALL_AMOUNT;
+    // Refraction grows with the water in front of the scene, so a swimmer just below the surface stays put
+    float straightGap = max( depth - px.surfaceViewZ, 0.0f );
+    float2 distUV = px.screenUV + ( distortionSmall.xy + distortionBig.xy ) * DIST_SMALL_AMOUNT * saturate( straightGap / 150.0f );
     float3 diffuse = WaterDiffuse( px.texcoord + distortionSmall.xy * DIST_SMALL_AMOUNT * 0.5f );
 
-    // Refraction, pulled back to the undistorted UV where the distorted texel lies in front of the water
-    float depthRefracted = WaterLinearDepth( WaterSceneRawDepth( distUV ) );
-    distUV = saturate( lerp( distUV, px.screenUV, saturate( px.surfaceViewZ - depthRefracted ) ) );
-    float rawDepthRefracted = WaterSceneRawDepth( distUV );
+    // Pulled back where the distorted texel crosses a silhouette: in front of the water, much shallower (onto a
+    // swimmer) or much deeper (off a swimmer onto the floor, which would show through un-tinted)
+    float depthRefracted = WaterLinearDepth( WaterSceneRawDepthTexel( distUV ) );
+    float refractedGap = depthRefracted - px.surfaceViewZ;
+    float pullBack = max( saturate( -refractedGap ), saturate( ( 0.5f * straightGap - refractedGap ) / max( 0.25f * straightGap, 1.0f ) ) );
+    pullBack = max( pullBack, saturate( ( refractedGap - 2.0f * straightGap - 20.0f ) / max( straightGap, 20.0f ) ) );
+    distUV = saturate( lerp( distUV, px.screenUV, pullBack ) );
+    float rawDepthRefracted = WaterSceneRawDepthTexel( distUV );
     depthRefracted = WaterLinearDepth( rawDepthRefracted );
     float refractedValid = step( 0.000001f, rawDepthRefracted );
 
@@ -795,7 +808,7 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float straightColumn = WaterColumnLength( depth, px.surfaceViewZ, px.surfaceViewDistance );
     float colorColumn = min( column, straightColumn );
     float columnDeriv = fwidth( column );
-    float colorColumnDeriv = fwidth( colorColumn );
+    float colorColumnDeriv = WaterDeeperNeighbourWidth( colorColumn, px.screenUV * fr.viewportSize );
     float rayFloorDepth = WaterDepthBelowSurface( px.worldPos, px.surfaceViewZ, rawCenterDepth, fr.cameraPos );
     float shoreException = step( WATER_DEEP_WATER_DEPTH, rayFloorDepth );
     [branch] if ( shoreException < 0.5f && cameraBelow < 0.5f )
@@ -979,6 +992,7 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
 
     [branch] if ( fr.shoreFieldState > 1.5f && topSide > 0.5f )
         color = WaterShoreFieldDebug( coast, surf );
+
     return max( color, 0.0f );
 }
 
