@@ -10,10 +10,26 @@ cbuffer MaterialCB : register(b6) { uint _matN; uint _matO; uint MatDiffuseIndex
 // World mesh: single stream, packed 36-byte ExVertexStructGPU. Only Position (@0) + TexCoord0 (@20) are
 // fetched here; the normal/tangent/uv2/color fields are not needed for a depth+alpha-clip pass.
 struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
+// VERTEX_PULL: the VS entry points take only the vertex id and read the same fields from the world VB.
+#ifdef VERTEX_PULL
+#include "include/WorldVertexPull.hlsl"
+struct VS_ENTRY_IN { uint vid : SV_VertexID; };
+VS_IN FetchWorldVertex( VS_ENTRY_IN e )
+{
+    const WorldRawVertex v = LoadWorldRaw( e.vid );
+    VS_IN i;
+    i.pos = v.pos; i.uv = v.uv;
+    return i;
+}
+#else
+typedef VS_IN VS_ENTRY_IN;
+VS_IN FetchWorldVertex( VS_ENTRY_IN e ) { return e; }
+#endif
 struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };   // precise: see World.hlsl VS_OUT
 
-VS_OUT VSWorld( VS_IN i )
+VS_OUT VSWorld( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWorldVertex( e );
     VS_OUT o;
     // World verts are already world-space (identity world); waves match World.hlsl's VSMain
     const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );
@@ -63,8 +79,23 @@ struct VS_GBUF_OUT
     float4 prevClip : TEXCOORD3;
 };
 
-VS_GBUF_OUT VSWorldGBuf( VS_GBUF_IN i )
+#ifdef VERTEX_PULL
+typedef VS_ENTRY_IN VS_GBUF_ENTRY_IN;
+VS_GBUF_IN FetchWorldGBufVertex( VS_GBUF_ENTRY_IN e )
 {
+    const WorldRawVertex v = LoadWorldRaw( e.vid );
+    VS_GBUF_IN i;
+    i.pos = v.pos; i.nrm = v.nrm; i.uv = v.uv;
+    return i;
+}
+#else
+typedef VS_GBUF_IN VS_GBUF_ENTRY_IN;
+VS_GBUF_IN FetchWorldGBufVertex( VS_GBUF_IN e ) { return e; }
+#endif
+
+VS_GBUF_OUT VSWorldGBuf( VS_GBUF_ENTRY_IN e )
+{
+    const VS_GBUF_IN i = FetchWorldGBufVertex( e );
     VS_GBUF_OUT o;
     const float3 wpos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, false );
     const float3 prevPos = i.pos + MaterialWaveOffset( i.pos, MatDiffuseIndex, true );   // only waves move

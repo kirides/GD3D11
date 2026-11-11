@@ -119,12 +119,14 @@ public:
     // The rain shadowmap (D3D12Rain.cpp) renders its own single-slice depth map with the same normal-Z
     // caster state, so it reuses these PSOs rather than duplicating them — the VOB one likewise submits
     // through the engine's shared VOB command signature, so the two passes are byte-compatible.
-    Rhi::PipelineState* GetWorldCasterPSO() const { return m_CasterWorldPSO.Get(); }
-    Rhi::PipelineState* GetVobIndirectCasterPSO() const { return m_CasterVobIndirectPSO.Get(); }
+    Rhi::PipelineState* GetWorldCasterPSO() const;   // the pulled twin while the frame's world mesh is pulled
+    Rhi::PipelineState* GetVobIndirectCasterPSO() const;   // ...likewise for the VOB / attachment arena casters
     // ...and their no-pixel-shader twins, for the leading opaque run of a partitioned caster command set.
     // Null when PSO creation failed, in which case the caller submits everything through the clipping PSO.
-    Rhi::PipelineState* GetWorldCasterNoAlphaPSO() const { return m_CasterWorldNoAlphaPSO.Get(); }
-    Rhi::PipelineState* GetVobIndirectCasterNoAlphaPSO() const { return m_CasterVobIndirectNoAlphaPSO.Get(); }
+    Rhi::PipelineState* GetWorldCasterNoAlphaPSO() const;
+    Rhi::PipelineState* GetVobIndirectCasterNoAlphaPSO() const;
+    Rhi::PipelineState* GetVobAttachCasterPSO() const;
+    Rhi::PipelineState* GetVobAttachCasterNoAlphaPSO() const;
 
     // ---- Per-cascade caster records, filled by the engine's shared collectors ----
     // The skeletal/attachment records are written by D3D12GraphicsEngine::PrepareFrameSkeletals (multi-cascade
@@ -173,8 +175,13 @@ private:
     // run through these and only the tail through the clipping PSOs. Mirror of the main-view
     // World.DepthPrepassNoAlphaPSO family; likewise optional (null => no split, everything clips as before).
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterWorldNoAlphaPSO;
+    // [Debug] VertexPulling A/B twins of the two world casters (World.DepthPrepassVsBlobPull, no input layout).
+    Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterWorldPSOPull, m_CasterWorldNoAlphaPSOPull;
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterVobIndirectNoAlphaPSO;
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterVobAttachNoAlphaPSO;
+    // ...and of the VOB / attachment casters (World.DepthPrepassVob[Attach]VsBlobPull, no input layout).
+    Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterVobIndirectPSOPull, m_CasterVobIndirectNoAlphaPSOPull;
+    Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterVobAttachPSOPull, m_CasterVobAttachNoAlphaPSOPull;
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterSkeletalNoAlphaPSO;
     // CULL_NONE (not front-cull): grass cards are thin double-sided planes, matching Grass.PSO's own culling.
     Microsoft::WRL::ComPtr<Rhi::PipelineState> m_CasterGrassPSO;

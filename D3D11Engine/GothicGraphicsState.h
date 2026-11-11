@@ -927,6 +927,7 @@ struct GothicRendererSettings {
         GpuScene = false;
         GpuWorld = false;
         UseGpuUploadRings = false;
+        VertexPulling = true;
         EnableVSync = true;
         DoZPrepass = false;
         SortRenderQueue = false;
@@ -1268,6 +1269,9 @@ struct GothicRendererSettings {
     // D3D12/Vulkan: the light, skeletal and VOB/shadow instance rings live in CPU-writable VRAM (GPU_UPLOAD /
     // ReBAR) instead of system memory. Read when the rings are created, so it takes effect after a restart.
     bool UseGpuUploadRings;
+    // D3D12/Vulkan, temporary A/B: the world mesh is read by vertex pulling instead of the input assembler.
+    // Live (latched per frame). To be removed after measuring (VERTEX_PULLING_PLAN.md phase 1).
+    bool VertexPulling;
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;

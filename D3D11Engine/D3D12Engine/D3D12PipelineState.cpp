@@ -64,6 +64,29 @@ bool D3D12PipelineState::Init( Rhi::Device* device, D3D12ShaderBackend* shaders 
     return m_Device != nullptr && m_Shaders != nullptr;
 }
 
+// [Debug] VertexPulling A/B: the pulled VS variants (Shaders/D3D12/include/WorldVertexPull.hlsl).
+static const D3D_SHADER_MACRO kVertexPullDefines[] = { { "VERTEX_PULL", "1" }, { nullptr, nullptr } };
+
+void D3D12PipelineState::CreatePullTwin( Rhi::GraphicsPipelineStateDesc desc, ID3DBlob* pulledVs, Rhi::PipelineState** out, const char* what ) {
+    desc.InputLayout = { nullptr, 0 };
+    if ( pulledVs ) desc.VS = { pulledVs->GetBufferPointer(), pulledVs->GetBufferSize() };
+    if ( !pulledVs || FAILED( m_Device->CreateGraphicsPipelineState( &desc, out ) ) ) {
+        Logging::Wrn( "D3D12: vertex-pulling PSO unavailable ({}); geometry stays on the input assembler.", what );
+        VertexPullFailed = true;
+    }
+}
+
+// Records the outcome of a pulled Vob.hlsl VS compile and validates it against the World root signature; a failure keeps the frame on the IA.
+bool D3D12PipelineState::VobPullCompiled( bool compiled, const Microsoft::WRL::ComPtr<ID3DBlob>& blob, const char* name ) {
+    if ( !compiled ) {
+        VertexPullFailed = true;
+        return false;
+    }
+    if ( D3D12RootLayout* layout = GetLayout( "World" ) )
+        layout->ValidateShaders( { { blob.Get(), name, D3D12_SHADER_VISIBILITY_VERTEX } } );
+    return true;
+}
+
 D3D12RootLayout& D3D12PipelineState::Layout( const char* name ) {
     D3D12RootLayout& layout = m_Layouts[name];
     layout.Reset( name );
@@ -95,7 +118,8 @@ bool D3D12PipelineState::CreateWorld() {
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 light StructuredBuffer
     // LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowDynIndex, RtShadowMaskIndex,
     //           ProjA, ProjB, NearZ, FarZ } — the last 4 feed PBRLighting.hlsl's ComputeZSlice.
-    rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB
+    // A root CBV (2 DWORDs, not 9 constants); BindFrameLights allocates it from the per-frame LightCB ring.
+    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );   // 5: t2 per-cluster LightGrid (64-bit mask)
     // 6: b8 OpaqueSceneAddCB, read only by PSAlphaBlendBindless.
     rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );
@@ -144,6 +168,13 @@ bool D3D12PipelineState::CreateWorld() {
     // RootDataStatic: UploadMotionConstants writes this once per frame, well before the G-buffer
     // prepass — the only consumer — records anything.
     rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 13: b5 MotionCB
+    // 14 = b9 WorldPullCB { stream-table base = world VB heap index, PackedVobInfo }, set once per pass by the pulled VSs
+    // (include/WorldVertexPull.hlsl). 15 = b10 { VertexBase, InstanceBase } per draw and 16 = t6 the instance buffer, for the
+    // pulled VOB / attachment arena draws (include/VobVertexPull.hlsl); 15 is a command-signature argument, so it stays last of those.
+    World.PullRootParam = rs.AddConstants( 9, 2, D3D12_SHADER_VISIBILITY_VERTEX );
+    World.VobPull.Cb = World.PullRootParam;
+    World.VobPull.Draw = rs.AddPerDrawConstants( 10, 2, D3D12_SHADER_VISIBILITY_VERTEX );
+    World.VobPull.InstSrv = rs.AddSRV( 6, D3D12_SHADER_VISIBILITY_VERTEX );
 
     // s0 diffuse: anisotropic per RendererSettings.AnisotropicFiltering (matches D3D11's main texture sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -170,6 +201,9 @@ bool D3D12PipelineState::CreateWorld() {
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSMain", Shadermodel_VS, World.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+    VertexPullFailed = false;
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSMain", Shadermodel_VS, World.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSMain", Shadermodel_PS, World.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
@@ -191,6 +225,7 @@ bool D3D12PipelineState::CreateWorld() {
 
     rs.ValidateShaders( {
         { World.VsBlob.Get(),        "World.hlsl:VSMain",     D3D12_SHADER_VISIBILITY_VERTEX },
+        { World.VsBlobPull.Get(),    "World.hlsl:VSMain[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
         { World.PsBlob.Get(),        "World.hlsl:PSMain",     D3D12_SHADER_VISIBILITY_PIXEL  },
         { World.OpaquePsBlob.Get(),  "World.hlsl:PSMainOpaque", D3D12_SHADER_VISIBILITY_PIXEL },
         { World.QuadMarkVsBlob.Get(),"World.hlsl:VSQuadMark", D3D12_SHADER_VISIBILITY_VERTEX },
@@ -256,6 +291,7 @@ bool D3D12PipelineState::CreateWorld() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world)." );
         return false;
     }
+    CreatePullTwin( pso, World.VsBlobPull.Get(), World.PSOPull.ReleaseAndGetAddressOf(), "world lit" );
 
     // Opaque run: EQUAL is safe because VSMain and the prepass VSs compute a `precise` SV_Position from the same
     // expression. The prepass already cut alpha holes, so no clip and forced early depth.
@@ -266,6 +302,8 @@ bool D3D12PipelineState::CreateWorld() {
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, World.OpaquePSO.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world opaque EQUAL) — opaque world draws keep the alpha-test PSO." );
             World.OpaquePSO.Reset();
+        } else {
+            CreatePullTwin( pso, World.VsBlobPull.Get(), World.OpaquePSOPull.ReleaseAndGetAddressOf(), "world opaque" );
         }
     }
     return true;
@@ -294,6 +332,8 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     rs.AddPerDrawConstants( 6, 4, D3D12_SHADER_VISIBILITY_ALL );      // 2: b6 MaterialCB { normal, orm, diffuse, normalStrength }
     // 3: b4 TransparencyViewCB { float4x4 View } — portal VS only
     rs.AddConstants( 4, 16, D3D12_SHADER_VISIBILITY_VERTEX );
+    // 4: b9 WorldPullCB { world VB heap index } — [Debug] VertexPulling A/B (include/WorldVertexPull.hlsl)
+    WorldTransparency.PullRootParam = rs.AddConstants( 9, 2, D3D12_SHADER_VISIBILITY_VERTEX );
 
     // s0 diffuse: same 16x anisotropic wrap sampler the opaque world pass uses.
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -305,6 +345,8 @@ bool D3D12PipelineState::CreateWorldTransparency() {
         return false;
     WorldTransparency.RootSig = rs.RootSig();
     WorldTransparency.BlendPipelines.clear();   // built on the old root sig; DepthFillPSO below comes from this cache
+    WorldTransparency.BlendPipelinesPull.clear();
+    WorldTransparency.DepthFillPSOPull.Reset();
 
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparent", Shadermodel_VS, WorldTransparency.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -334,7 +376,15 @@ bool D3D12PipelineState::CreateWorldTransparency() {
         WorldTransparency.EnvPsBlob.Reset();
     }
 
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparent", Shadermodel_VS, WorldTransparency.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines )
+      || !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparentPortal", Shadermodel_VS, WorldTransparency.PortalVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines )
+      || !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparentEnv", Shadermodel_VS, WorldTransparency.EnvVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
+        { WorldTransparency.VsBlobPull.Get(),       "World.hlsl:VSTransparent[pull]",       D3D12_SHADER_VISIBILITY_VERTEX },
+        { WorldTransparency.PortalVsBlobPull.Get(), "World.hlsl:VSTransparentPortal[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
+        { WorldTransparency.EnvVsBlobPull.Get(),    "World.hlsl:VSTransparentEnv[pull]",    D3D12_SHADER_VISIBILITY_VERTEX },
         { WorldTransparency.VsBlob.Get(),       "World.hlsl:VSTransparent",       D3D12_SHADER_VISIBILITY_VERTEX },
         { WorldTransparency.PsBlob.Get(),       "World.hlsl:PSTransparent",       D3D12_SHADER_VISIBILITY_PIXEL  },
         { WorldTransparency.FoamPsBlob.Get(),   "World.hlsl:PSTransparentFoam",   D3D12_SHADER_VISIBILITY_PIXEL  },
@@ -361,6 +411,14 @@ bool D3D12PipelineState::CreateWorldTransparency() {
         Logging::Wrn( "D3D12: failed to create the world-transparency depth-fill pipeline." );
         return false;
     }
+    {
+        const bool prev = VertexPullActive;
+        VertexPullActive = true;   // warm the pulled twins too
+        GetOrCreateWorldTransparencyPipeline( alpha, false );
+        WorldTransparency.DepthFillPSOPull = GetOrCreateWorldTransparencyPipeline( depthOnly, true );
+        VertexPullActive = prev;
+        if ( VertexPullFailed ) WorldTransparency.DepthFillPSOPull.Reset();
+    }
     return true;
 }
 
@@ -368,23 +426,25 @@ Rhi::PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( co
     WorldTransparencyPipeline::EKind kind ) {
     // BlendKey occupies bits 0..28, so the material kind takes 29..30 and the depth-write flag the top bit.
     const uint32_t key = BlendKey( blend ) | (static_cast<uint32_t>(kind) << 29) | (depthWrite ? (1u << 31) : 0u);
-    auto it = WorldTransparency.BlendPipelines.find( key );
-    if ( it != WorldTransparency.BlendPipelines.end() ) return it->second.Get();
+    const bool pulled = VertexPullActive && !VertexPullFailed;   // [Debug] VertexPulling A/B
+    auto& cache = pulled ? WorldTransparency.BlendPipelinesPull : WorldTransparency.BlendPipelines;
+    auto it = cache.find( key );
+    if ( it != cache.end() ) return it->second.Get();
     if ( !WorldTransparency.RootSig || !WorldTransparency.VsBlob || !WorldTransparency.PsBlob ) return nullptr;
 
     // Per-kind shader selection; a kind whose blobs failed to compile degrades to the plain variant rather
     // than dropping the geometry (the portal caller checks the blobs itself and skips instead).
-    ID3DBlob* vs = WorldTransparency.VsBlob.Get();
+    ID3DBlob* vs = pulled ? WorldTransparency.VsBlobPull.Get() : WorldTransparency.VsBlob.Get();
     ID3DBlob* ps = WorldTransparency.PsBlob.Get();
     if ( kind == WorldTransparencyPipeline::EKind::Foam && WorldTransparency.FoamPsBlob ) {
         ps = WorldTransparency.FoamPsBlob.Get();
     } else if ( kind == WorldTransparencyPipeline::EKind::Portal
         && WorldTransparency.PortalVsBlob && WorldTransparency.PortalPsBlob ) {
-        vs = WorldTransparency.PortalVsBlob.Get();
+        vs = pulled ? WorldTransparency.PortalVsBlobPull.Get() : WorldTransparency.PortalVsBlob.Get();
         ps = WorldTransparency.PortalPsBlob.Get();
     } else if ( kind == WorldTransparencyPipeline::EKind::Env
         && WorldTransparency.EnvVsBlob && WorldTransparency.EnvPsBlob ) {
-        vs = WorldTransparency.EnvVsBlob.Get();
+        vs = pulled ? WorldTransparency.EnvVsBlobPull.Get() : WorldTransparency.EnvVsBlob.Get();
         ps = WorldTransparency.EnvPsBlob.Get();
     }
 
@@ -405,7 +465,7 @@ Rhi::PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( co
     pso.pRootSignature = WorldTransparency.RootSig.Get();
     pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
+    pso.InputLayout = pulled ? D3D12_INPUT_LAYOUT_DESC{ nullptr, 0 } : D3D12_INPUT_LAYOUT_DESC{ layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
     pso.RTVFormats[0] = kSceneColorFormat;
@@ -443,7 +503,7 @@ Rhi::PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( co
         return nullptr;
     }
     Rhi::PipelineState* raw = state.Get();
-    WorldTransparency.BlendPipelines.emplace( key, std::move( state ) );
+    cache.emplace( key, std::move( state ) );
     return raw;
 }
 
@@ -779,8 +839,7 @@ bool D3D12PipelineState::CreateGrass() {
     rs.AddConstants( 2, 8, D3D12_SHADER_VISIBILITY_ALL );      // 4: b2 fog — VS: CamPosWS; PS: color/near/far
     // t2 + b4 carry World.RootSig's RootDataStatic promises; the GPU-written grid (t3) stays volatile.
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 5: t2 light StructuredBuffer (root SRV)
-    // 6: b3 LightCB, grown 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (ComputeZSlice).
-    rs.AddConstants( 3, 9, D3D12_SHADER_VISIBILITY_PIXEL );   // b3 LightCB
+    rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL );   // 6: b3 LightCB (root CBV, see World)
     rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );   // 7: t3 per-cluster LightGrid (64-bit mask)
     // 8 = b6 MotionCB (root CBV), read ONLY by the G-buffer depth-prepass entry points (VSDepthGBuf); every
     // other PSO on this root signature leaves it unbound, which is legal for a parameter no shader references.
@@ -1055,6 +1114,12 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (depth prepass)." );
         return false;
     }
+    // [Debug] VertexPulling A/B twins; the same blob also builds the CSM / rain world casters (D3D12ShadowMap).
+    if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "VSWorld", Shadermodel_VS, World.DepthPrepassVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+    else if ( GetLayout( "World" ) )
+        GetLayout( "World" )->ValidateShaders( { { World.DepthPrepassVsBlobPull.Get(), "DepthPrepass.hlsl:VSWorld[pull]", D3D12_SHADER_VISIBILITY_VERTEX } } );
+    CreatePullTwin( pso, World.DepthPrepassVsBlobPull.Get(), World.DepthPrepassPSOPull.ReleaseAndGetAddressOf(), "world prepass" );
 
     // ...and the same with NO pixel shader, for the majority of materials that don't need the cutout. PSClip
     // can `discard`, forcing the draw onto the late-Z path; with no PS the rasterizer runs depth-only at
@@ -1065,6 +1130,8 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, World.DepthPrepassNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (depth prepass, no-alpha) — the world prepass keeps alpha-clipping every material." );
             World.DepthPrepassNoAlphaPSO.Reset();
+        } else {
+            CreatePullTwin( noAlpha, World.DepthPrepassVsBlobPull.Get(), World.DepthPrepassNoAlphaPSOPull.ReleaseAndGetAddressOf(), "world prepass no-alpha" );
         }
     }
 
@@ -1133,12 +1200,18 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass)." );
         return false;
     }
+    // Pulled twins (VertexPulling A/B): the arena VOB / attachment draws, with the same VS body fed from the arena and the instance buffer.
+    const bool pullAttach = VobPullCompiled( m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepthAttach", Shadermodel_VS, World.DepthPrepassVobAttachVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ), World.DepthPrepassVobAttachVsBlobPull, "Vob.hlsl:VSDepthAttach[pull]" );
+    if ( pullAttach )
+        CreatePullTwin( pso, World.DepthPrepassVobAttachVsBlobPull.Get(), World.DepthPrepassVobAttachPSOPull.ReleaseAndGetAddressOf(), "VOB attachment depth prepass" );
     {
         Rhi::GraphicsPipelineStateDesc noAlpha = pso;
         noAlpha.PS = {};
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, World.DepthPrepassVobAttachNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass, no-alpha)." );
             World.DepthPrepassVobAttachNoAlphaPSO.Reset();
+        } else if ( pullAttach ) {
+            CreatePullTwin( noAlpha, World.DepthPrepassVobAttachVsBlobPull.Get(), World.DepthPrepassVobAttachNoAlphaPSOPull.ReleaseAndGetAddressOf(), "VOB attachment depth prepass no-alpha" );
         }
     }
 
@@ -1152,12 +1225,17 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, indirect)." );
         return false;
     }
+    const bool pullVobDepth = VobPullCompiled( m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepth", Shadermodel_VS, World.DepthPrepassVobVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ), World.DepthPrepassVobVsBlobPull, "Vob.hlsl:VSDepth[pull]" );
+    if ( pullVobDepth )
+        CreatePullTwin( pso, World.DepthPrepassVobVsBlobPull.Get(), World.DepthPrepassVobIndirectPSOPull.ReleaseAndGetAddressOf(), "VOB depth prepass" );
     {
         Rhi::GraphicsPipelineStateDesc noAlpha = pso;
         noAlpha.PS = {};
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, World.DepthPrepassVobNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, no-alpha)." );
             World.DepthPrepassVobNoAlphaPSO.Reset();
+        } else if ( pullVobDepth ) {
+            CreatePullTwin( noAlpha, World.DepthPrepassVobVsBlobPull.Get(), World.DepthPrepassVobNoAlphaPSOPull.ReleaseAndGetAddressOf(), "VOB depth prepass no-alpha" );
         }
     }
 
@@ -1226,6 +1304,9 @@ bool D3D12PipelineState::CreateDepthPrepassGBuf() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world G-buffer prepass)." );
         return false;
     }
+    if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "VSWorldGBuf", Shadermodel_VS, World.DepthPrepassGBufVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+    CreatePullTwin( pso, World.DepthPrepassGBufVsBlobPull.Get(), World.DepthPrepassGBufPSOPull.ReleaseAndGetAddressOf(), "world G-buffer prepass" );
 
     // Instanced VOBs + node attachments share one layout: the full ExVertexStruct (stride 60) triple plus the
     // instance world matrix @0, the PREVIOUS-frame world matrix @64 and the wind/fatness pair @132. prevWorld has
@@ -1250,11 +1331,15 @@ bool D3D12PipelineState::CreateDepthPrepassGBuf() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB G-buffer prepass)." );
         return false;
     }
+    if ( VobPullCompiled( m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepthGBuf", Shadermodel_VS, World.DepthPrepassVobGBufVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ), World.DepthPrepassVobGBufVsBlobPull, "Vob.hlsl:VSDepthGBuf[pull]" ) )
+        CreatePullTwin( pso, World.DepthPrepassVobGBufVsBlobPull.Get(), World.DepthPrepassVobGBufPSOPull.ReleaseAndGetAddressOf(), "VOB G-buffer prepass" );
     pso.VS = { World.DepthPrepassVobAttachGBufVsBlob->GetBufferPointer(), World.DepthPrepassVobAttachGBufVsBlob->GetBufferSize() };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, World.DepthPrepassVobAttachGBufPSO.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment G-buffer prepass)." );
         return false;
     }
+    if ( VobPullCompiled( m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepthAttachGBuf", Shadermodel_VS, World.DepthPrepassVobAttachGBufVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ), World.DepthPrepassVobAttachGBufVsBlobPull, "Vob.hlsl:VSDepthAttachGBuf[pull]" ) )
+        CreatePullTwin( pso, World.DepthPrepassVobAttachGBufVsBlobPull.Get(), World.DepthPrepassVobAttachGBufPSOPull.ReleaseAndGetAddressOf(), "VOB attachment G-buffer prepass" );
     return true;
 }
 
@@ -1334,6 +1419,8 @@ bool D3D12PipelineState::CreateVob() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment)." );
         return false;
     }
+    if ( VobPullCompiled( m_Shaders->CompileFromFile( "Vob.hlsl", "VSMainAttach", Shadermodel_VS, World.VobAttachVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ), World.VobAttachVsBlobPull, "Vob.hlsl:VSMainAttach[pull]" ) )
+        CreatePullTwin( pso, World.VobAttachVsBlobPull.Get(), World.VobAttachPSOPull.ReleaseAndGetAddressOf(), "VOB attachment" );
 
     // Bindless-diffuse instanced-VOB color PSO (ExecuteIndirect, P2.12): identical to VobPSO (VSMain + the
     // wind-carrying `layout` + lit reversed-Z state) except for that same PSMainBindless PS. Lets the whole
@@ -1345,6 +1432,8 @@ bool D3D12PipelineState::CreateVob() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB, indirect)." );
         return false;
     }
+    if ( VobPullCompiled( m_Shaders->CompileFromFile( "Vob.hlsl", "VSMain", Shadermodel_VS, World.VobVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ), World.VobVsBlobPull, "Vob.hlsl:VSMain[pull]" ) )
+        CreatePullTwin( pso, World.VobVsBlobPull.Get(), World.VobIndirectPSOPull.ReleaseAndGetAddressOf(), "VOB lit" );
 
     // Unlit blended instanced VOBs (cobwebs, hanging cloth) — D3D11's DrawFrameAlphaMeshes. Same VSMain + wind
     // layout as the indirect color PSO above (so a peeled material sways exactly as it did in the opaque set),
@@ -1668,9 +1757,7 @@ bool D3D12PipelineState::CreateDecal() {
     // t1/t2 + b3 + t4/t5 carry World.RootSig's promises verbatim — same buffers, same frame ordering
     // (DrawDecalList runs well after the light cull and FinishShadowPasses).
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 light StructuredBuffer
-    // LightCB grew 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (PBRLighting.hlsl's
-    // ComputeZSlice).
-    rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 LightCB
+    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 LightCB (root CBV, see World)
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );   // 5: t2 per-cluster LightGrid (64-bit mask)
     rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 6: b7 AOCB { AoMaskIndex }
     rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 7: b3 shadow CB
@@ -1828,8 +1915,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
     // t1 carries World.RootSig's RootDataStatic promise; the GPU-written grid (t2) does not (see there).
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 4: t1 light StructuredBuffer (root SRV)
-    // LightCB grew 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (ComputeZSlice).
-    rs.AddConstants( 4, 9, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 LightCB
+    rs.AddCBV( 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 LightCB (root CBV, see World)
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );   // 6: t2 per-cluster LightGrid (64-bit mask)
     // 7 = motion-vector CB (b9 — b5 is the shadow CB here), root CBV read ONLY by Skeletal.hlsl's VSDepthGBuf.
     rs.AddCBV( 9, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 7: b9 MotionCB (see World's b5)
@@ -1979,6 +2065,12 @@ bool D3D12PipelineState::CreatePointShadow() {
     rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 0: b0 PCR_ViewProj[6]
     // Per draw, so the skinned/attachment casters' command signature stays DGC-able on Vulkan.
     rs.AddPerDrawConstants( 1, 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 1: b1 CasterCB { DiffuseIndex }
+    // 2: b9 WorldPullCB { stream-table base, PackedVobInfo } for the pulled casters, A/B-only. Not per draw.
+    PointShadow.PullRootParam = rs.AddConstants( 9, 2, D3D12_SHADER_VISIBILITY_VERTEX );
+    PointShadow.VobPull.Cb = PointShadow.PullRootParam;
+    // 3: b10 { VertexBase, InstanceBase } per draw (the cube command signature writes it), 4: t6 the instance buffer (VSCubeVobPull).
+    PointShadow.VobPull.Draw = rs.AddPerDrawConstants( 10, 2, D3D12_SHADER_VISIBILITY_VERTEX );
+    PointShadow.VobPull.InstSrv = rs.AddSRV( 6, D3D12_SHADER_VISIBILITY_VERTEX );
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );   // s0
 
@@ -1997,7 +2089,15 @@ bool D3D12PipelineState::CreatePointShadow() {
     if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "PSCubeClip", Shadermodel_PS, PointShadow.PsBlob.ReleaseAndGetAddressOf() ) )
         return false;
 
+    // The skinned casters keep VSCube over the posed IA stream; the world caster pulls.
+    if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "VSCubeWorldPull", Shadermodel_VS, PointShadow.WorldVsBlobPull.ReleaseAndGetAddressOf() ) )
+        VertexPullFailed = true;
+    if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "VSCubeVobPull", Shadermodel_VS, PointShadow.VobVsBlobPull.ReleaseAndGetAddressOf() ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
+        { PointShadow.WorldVsBlobPull.Get(), "PointShadow.hlsl:VSCubeWorldPull", D3D12_SHADER_VISIBILITY_VERTEX },
+        { PointShadow.VobVsBlobPull.Get(), "PointShadow.hlsl:VSCubeVobPull", D3D12_SHADER_VISIBILITY_VERTEX },
         { PointShadow.VsBlob.Get(),    "PointShadow.hlsl:VSCube",     D3D12_SHADER_VISIBILITY_VERTEX },
         { PointShadow.VobVsBlob.Get(), "PointShadow.hlsl:VSCubeVob",  D3D12_SHADER_VISIBILITY_VERTEX },
         { PointShadow.PsBlob.Get(),    "PointShadow.hlsl:PSCubeClip", D3D12_SHADER_VISIBILITY_PIXEL  },
@@ -2043,6 +2143,12 @@ bool D3D12PipelineState::CreatePointShadow() {
             PointShadow.CasterWorldNoAlphaPSO.Reset();
         }
     }
+    CreatePullTwin( pso, PointShadow.WorldVsBlobPull.Get(), PointShadow.CasterWorldPSOPull.ReleaseAndGetAddressOf(), "point-shadow world caster" );
+    {
+        Rhi::GraphicsPipelineStateDesc noAlpha = pso;
+        noAlpha.PS = {};
+        CreatePullTwin( noAlpha, PointShadow.WorldVsBlobPull.Get(), PointShadow.CasterWorldNoAlphaPSOPull.ReleaseAndGetAddressOf(), "point-shadow world caster no-alpha" );
+    }
 
     // --- VOB caster PSO (P2.10e): same root sig (per-instance world rides the vertex stream, not the root) + the
     // same caster state, but VSCubeVob and a two-stream layout whose instance rows carry InstanceDataStepRate=6 —
@@ -2068,12 +2174,15 @@ bool D3D12PipelineState::CreatePointShadow() {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster)." );
             return false;
         }
+        CreatePullTwin( pso, PointShadow.VobVsBlobPull.Get(), PointShadow.CasterVobPSOPull.ReleaseAndGetAddressOf(), "point-shadow VOB caster" );
         {
             Rhi::GraphicsPipelineStateDesc noAlpha = pso;
             noAlpha.PS = {};
             if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, PointShadow.CasterVobNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
                 Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster, no-alpha)." );
                 PointShadow.CasterVobNoAlphaPSO.Reset();
+            } else {
+                CreatePullTwin( noAlpha, PointShadow.VobVsBlobPull.Get(), PointShadow.CasterVobNoAlphaPSOPull.ReleaseAndGetAddressOf(), "point-shadow VOB caster no-alpha" );
             }
         }
     }
@@ -2492,6 +2601,8 @@ bool D3D12PipelineState::CreateWater() {
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: b1 AtmosphereConstantBuffer
     rs.AddConstants( 3, 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 4: b3 IsOcean, per texture batch
+    // 5: b9 WorldPullCB { world VB heap index }, A/B-only (include/WorldVertexPull.hlsl)
+    Water.PullRootParam = rs.AddConstants( 9, 2, D3D12_SHADER_VISIBILITY_VERTEX );
 
     // s0 — diffuse + the world-space distortion lookups.
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL,   // the ocean's domain shader samples the FFT
@@ -2513,7 +2624,11 @@ bool D3D12PipelineState::CreateWater() {
             return false;
     }
 
+    if ( !m_Shaders->CompileFromFile( "Water.hlsl", "VSMain", Shadermodel_VS, Water.VsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        VertexPullFailed = true;
+
     rs.ValidateShaders( {
+        { Water.VsBlobPull.Get(), "Water.hlsl:VSMain[pull]", D3D12_SHADER_VISIBILITY_VERTEX },
         { Water.VsBlob.Get(), "Water.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
         { Water.PsBlob.Get(), "Water.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
     } );
@@ -2572,6 +2687,7 @@ bool D3D12PipelineState::CreateWater() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (water)." );
         return false;
     }
+    CreatePullTwin( pso, Water.VsBlobPull.Get(), Water.PSOPull.ReleaseAndGetAddressOf(), "water" );
     const Rhi::GraphicsPipelineStateDesc colorDesc = pso;
 
     // Water depth-only prepass PSO (mirrors D3D11's DrawWaterSurfaces Z-prepass). Everything about the color
@@ -2596,10 +2712,13 @@ bool D3D12PipelineState::CreateWater() {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (water depth prepass)." );
         return false;
     }
+    CreatePullTwin( pso, Water.VsBlobPull.Get(), Water.DepthPrepassPSOPull.ReleaseAndGetAddressOf(), "water prepass" );
 
     // Simulated ocean variants (optional): the same state, tessellated
     Water.OceanPSO.Reset();
     Water.OceanDepthPrepassPSO.Reset();
+    Water.OceanPSOPull.Reset();
+    Water.OceanDepthPrepassPSOPull.Reset();
     if ( device->GetCaps().Tessellation
         && m_Shaders->CompileFromFile( "Water.hlsl", "VSOcean", Shadermodel_VS, Water.OceanVsBlob.ReleaseAndGetAddressOf() )
         && m_Shaders->CompileFromFile( "Water.hlsl", "HSOcean", Shadermodel_HS, Water.OceanHsBlob.ReleaseAndGetAddressOf() )
@@ -2624,6 +2743,15 @@ bool D3D12PipelineState::CreateWater() {
             Logging::Wrn( "D3D12: tessellated ocean pipelines failed; the sea keeps the vertex waves." );
             Water.OceanPSO.Reset();
             Water.OceanDepthPrepassPSO.Reset();
+        } else if ( !m_Shaders->CompileFromFile( "Water.hlsl", "VSOcean", Shadermodel_VS, Water.OceanVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) ) {
+            VertexPullFailed = true;
+        } else {
+            // od still holds the prepass state; the color twin restores PS/blend/depth from colorDesc.
+            CreatePullTwin( od, Water.OceanVsBlobPull.Get(), Water.OceanDepthPrepassPSOPull.ReleaseAndGetAddressOf(), "ocean prepass" );
+            od.PS = colorDesc.PS;
+            od.BlendState = colorDesc.BlendState;
+            od.DepthStencilState = colorDesc.DepthStencilState;
+            CreatePullTwin( od, Water.OceanVsBlobPull.Get(), Water.OceanPSOPull.ReleaseAndGetAddressOf(), "ocean" );
         }
     }
     return true;

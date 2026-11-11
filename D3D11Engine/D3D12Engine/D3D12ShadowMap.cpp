@@ -214,6 +214,30 @@ bool D3D12ShadowMap::Init() {
 }
 
 
+Rhi::PipelineState* D3D12ShadowMap::GetWorldCasterPSO() const {
+	return m_E->PullPick( m_CasterWorldPSO.Get(), m_CasterWorldPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetWorldCasterNoAlphaPSO() const {
+	return m_E->PullPick( m_CasterWorldNoAlphaPSO.Get(), m_CasterWorldNoAlphaPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetVobIndirectCasterPSO() const {
+	return m_E->PullPick( m_CasterVobIndirectPSO.Get(), m_CasterVobIndirectPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetVobIndirectCasterNoAlphaPSO() const {
+	return m_E->PullPick( m_CasterVobIndirectNoAlphaPSO.Get(), m_CasterVobIndirectNoAlphaPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetVobAttachCasterPSO() const {
+	return m_E->PullPick( m_CasterVobAttachPSO.Get(), m_CasterVobAttachPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetVobAttachCasterNoAlphaPSO() const {
+	return m_E->PullPick( m_CasterVobAttachNoAlphaPSO.Get(), m_CasterVobAttachNoAlphaPSOPull.Get() );
+}
+
 /** The caster PSOs, built on m_Pipelines.World/Skeletal root signatures: rebuilt whenever those are. */
 bool D3D12ShadowMap::CreateCasterPipelines() {
 	// Caster PSO. Void PS (PSShadowClip) so no RTV is needed; front-face cull + slope-scaled depth bias fight
@@ -260,6 +284,40 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 			m_CasterWorldNoAlphaPSO.Reset();
 		}
 	}
+
+	// [Debug] VertexPulling A/B twins of the two world casters.
+	{
+		Rhi::GraphicsPipelineStateDesc pull = pso;
+		pull.InputLayout = { nullptr, 0 };
+		bool ok = m_E->m_Pipelines.World.DepthPrepassVsBlobPull != nullptr;
+		if ( ok ) {
+			pull.VS = { m_E->m_Pipelines.World.DepthPrepassVsBlobPull->GetBufferPointer(), m_E->m_Pipelines.World.DepthPrepassVsBlobPull->GetBufferSize() };
+			ok = SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &pull, m_CasterWorldPSOPull.ReleaseAndGetAddressOf() ) );
+			pull.PS = {};
+			ok = ok && SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &pull, m_CasterWorldNoAlphaPSOPull.ReleaseAndGetAddressOf() ) );
+		}
+		if ( !ok ) {
+			Logging::Wrn( "D3D12: vertex-pulling PSO unavailable (shadow world casters); the world mesh stays on the input assembler." );
+			m_E->m_Pipelines.VertexPullFailed = true;
+		}
+	}
+
+	// [Debug] VertexPulling A/B twins of the arena VOB casters: `desc` with the pulled VS and no input layout, plus its no-PS twin.
+	auto pullCaster = [this]( Rhi::GraphicsPipelineStateDesc desc, ID3DBlob* pulledVs, ComPtr<Rhi::PipelineState>& clip,
+		ComPtr<Rhi::PipelineState>& noAlpha, const char* what ) {
+		desc.InputLayout = { nullptr, 0 };
+		bool ok = pulledVs != nullptr;
+		if ( ok ) {
+			desc.VS = { pulledVs->GetBufferPointer(), pulledVs->GetBufferSize() };
+			ok = SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &desc, clip.ReleaseAndGetAddressOf() ) );
+			desc.PS = {};
+			ok = ok && SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &desc, noAlpha.ReleaseAndGetAddressOf() ) );
+		}
+		if ( !ok ) {
+			Logging::Wrn( "D3D12: vertex-pulling PSO unavailable (shadow {} casters); geometry stays on the input assembler.", what );
+			m_E->m_Pipelines.VertexPullFailed = true;
+		}
+	};
 
 	// VOB caster PSO (P2.9c-2): reuse the VOB depth-prepass VSDepth (two-stream: packed vertex + per-instance
 	// world matrix) + m_Pipelines.World.RootSig, with the same caster state (front cull, bias, LESS_EQUAL, no RTV). Also
@@ -309,6 +367,7 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 				m_CasterVobIndirectNoAlphaPSO.Reset();
 			}
 		}
+		pullCaster( pso, m_E->m_Pipelines.World.DepthPrepassVobVsBlobPull.Get(), m_CasterVobIndirectPSOPull, m_CasterVobIndirectNoAlphaPSOPull, "VOB" );
 	}
 
 	// Node-attachment CSM caster variant (VSDepthAttach: Fatness/Scaling inflate-along-normal instead of wind —
@@ -346,6 +405,7 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 				m_CasterVobAttachNoAlphaPSO.Reset();
 			}
 		}
+		pullCaster( pso, m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlobPull.Get(), m_CasterVobAttachPSOPull, m_CasterVobAttachNoAlphaPSOPull, "VOB attachment" );
 	}
 
 	// Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth + m_Pipelines.Skeletal.RootSig over the
@@ -1223,7 +1283,9 @@ void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
 			cmd.Draw.InstanceCount = 1;
 			cmd.Draw.StartIndexLocation = range->StartIndex;
 			cmd.Draw.BaseVertexLocation = static_cast<INT>( range->BaseVertex );
+			cmd.VertexBase = range->BaseVertex;
 			cmd.Draw.StartInstanceLocation = a.instIndex;
+			cmd.InstanceBase = a.instIndex;
 			cmd.VisualIndex = 0xFFFFFFFFu;   // not GPU-culled
 			cmd.LodBucket = D3D12GraphicsEngine::kLodBucketNear;
 			if ( a.alphaTested ) alphaAttach.push_back( cmd );
@@ -1438,8 +1500,9 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		// draws with no pixel shader bound (double-rate depth); only the tail pays for PSShadowClip.
 		const bool splitAlpha = m_CasterWorldNoAlphaPSO != nullptr;
 
-		cmdList->SetPipelineState( splitAlpha ? m_CasterWorldNoAlphaPSO.Get() : m_CasterWorldPSO.Get() );
+		cmdList->SetPipelineState( splitAlpha ? GetWorldCasterNoAlphaPSO() : GetWorldCasterPSO() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
+		m_E->BindWorldPull( cmdList, m_E->m_Pipelines.World.PullRootParam );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 
 		const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
@@ -1449,7 +1512,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 		if ( gpuWorld ) {
 			m_E->m_GpuWorld->Draw( cmdList, c + 1, false );
-			if ( splitAlpha ) cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
+			if ( splitAlpha ) cmdList->SetPipelineState( GetWorldCasterPSO() );
 			m_E->m_GpuWorld->Draw( cmdList, c + 1, true );
 		} else if ( !splitAlpha ) {
 			cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldDrawCount[c],
@@ -1468,7 +1531,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 					m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
 			}
 			if ( m_WorldDrawCount[c] > m_WorldOpaqueDrawCount[c] ) {
-				cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
+				cmdList->SetPipelineState( GetWorldCasterPSO() );
 				cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(),
 					m_WorldDrawCount[c] - m_WorldOpaqueDrawCount[c], m_WorldDrawArgs[c][frame].Get(),
 					static_cast<UINT64>( m_WorldOpaqueDrawCount[c] ) * sizeof( D3D12GraphicsEngine::WorldDrawCommand ),
@@ -1485,7 +1548,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		// Same alpha-test split as the world casters above — BuildVobDrawCommands partitioned this cascade's
 		// command set (its outOpaqueCount landed in m_VobOpaqueDrawCount[c]).
 		const bool splitAlpha = m_CasterVobIndirectNoAlphaPSO != nullptr;
-		cmdList->SetPipelineState( splitAlpha ? m_CasterVobIndirectNoAlphaPSO.Get() : m_CasterVobIndirectPSO.Get() );
+		cmdList->SetPipelineState( splitAlpha ? GetVobIndirectCasterNoAlphaPSO() : GetVobIndirectCasterPSO() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );   // b4 frame-global wind baseline
@@ -1493,7 +1556,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		// CPU-culled and never GPU-compacted, so this is the raw upload ring, and each command's
 		// StartInstanceLocation is the absolute element index UploadVobs handed it).
 		m_E->BindVobArenaIA( cmdList, m_E->m_ShadowVobInstanceBuffer[frame].Get(),
-			m_E->m_ShadowInstanceSliceCapacity * D3D12GraphicsEngine::kShadowInstanceRingSlots );
+			m_E->m_ShadowInstanceSliceCapacity * D3D12GraphicsEngine::kShadowInstanceRingSlots, 0, &m_E->m_Pipelines.World.VobPull );
 		if ( !splitAlpha ) {
 			cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(), m_VobDrawCount[c],
 				m_VobDrawArgs[c][frame].Get(), 0, nullptr, 0 );
@@ -1503,7 +1566,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 					m_VobDrawArgs[c][frame].Get(), 0, nullptr, 0 );
 			}
 			if ( m_VobDrawCount[c] > m_VobOpaqueDrawCount[c] ) {
-				cmdList->SetPipelineState( m_CasterVobIndirectPSO.Get() );
+				cmdList->SetPipelineState( GetVobIndirectCasterPSO() );
 				cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(),
 					m_VobDrawCount[c] - m_VobOpaqueDrawCount[c], m_VobDrawArgs[c][frame].Get(),
 					static_cast<UINT64>( m_VobOpaqueDrawCount[c] ) * sizeof( D3D12GraphicsEngine::VobDrawCommand ),
@@ -1518,14 +1581,14 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		TracyD3D12ZoneCGX( cmdList.Get(), "Scene Vobs" );
 		const D3D12GpuScene& scene = *m_E->m_GpuScene;
 		const bool splitAlpha = m_CasterVobIndirectNoAlphaPSO != nullptr;
-		cmdList->SetPipelineState( splitAlpha ? m_CasterVobIndirectNoAlphaPSO.Get() : m_CasterVobIndirectPSO.Get() );
+		cmdList->SetPipelineState( splitAlpha ? GetVobIndirectCasterNoAlphaPSO() : GetVobIndirectCasterPSO() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );
 		if ( m_E->BindVobArenaIA( cmdList, scene.CasterInstances(), scene.CasterInstanceBytes(),
-			D3D12GpuScene::kCasterInstanceStride ) ) {
+			D3D12GpuScene::kCasterInstanceStride, &m_E->m_Pipelines.World.VobPull ) ) {
 			m_E->DrawGpuSceneCasters( cmdList, c, false );
-			if ( splitAlpha ) cmdList->SetPipelineState( m_CasterVobIndirectPSO.Get() );
+			if ( splitAlpha ) cmdList->SetPipelineState( GetVobIndirectCasterPSO() );
 			m_E->DrawGpuSceneCasters( cmdList, c, true );
 		}
 	}
@@ -1554,10 +1617,10 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		// The signature also writes b4[4..5]; bind the frame wind baseline so the rest of b4 is defined.
 		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );
-		if ( m_E->BindAttachArenaIA( cmdList ) ) {
+		if ( m_E->BindAttachArenaIA( cmdList, &m_E->m_Pipelines.World.VobPull ) ) {
 			ExecuteIndirectAlphaSplit( cmdList, m_E->m_VobIndirectCmdSig.Get(), m_AttachDrawArgs[c][frame].Get(), 0,
 				sizeof( D3D12GraphicsEngine::VobDrawCommand ), m_AttachDrawCount[c], m_AttachOpaqueDrawCount[c],
-				m_CasterVobAttachPSO.Get(), m_CasterVobAttachNoAlphaPSO.Get() );
+				GetVobAttachCasterPSO(), GetVobAttachCasterNoAlphaPSO() );
 		}
 	}
 

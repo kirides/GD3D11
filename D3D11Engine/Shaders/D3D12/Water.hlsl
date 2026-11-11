@@ -95,6 +95,21 @@ float3 DecodeOctNormal( float2 e )
 }
 
 struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; float2 scroll : TEXCOORD1; float4 col : DIFFUSE; };
+// VERTEX_PULL: the VS entry points take only the vertex id and read the same fields from the world VB (include/WorldVertexPull.hlsl).
+#ifdef VERTEX_PULL
+#include "include/WorldVertexPull.hlsl"
+struct VS_ENTRY_IN { uint vid : SV_VertexID; };
+VS_IN FetchWaterVertex( VS_ENTRY_IN e )
+{
+    const WorldRawVertex v = LoadWorldRaw( e.vid );
+    VS_IN i;
+    i.pos = v.pos; i.nrm = v.nrm; i.uv = v.uv; i.scroll = v.scroll; i.col = v.col;
+    return i;
+}
+#else
+typedef VS_IN VS_ENTRY_IN;
+VS_IN FetchWaterVertex( VS_ENTRY_IN e ) { return e; }
+#endif
 struct VS_OUT
 {
     float4 clip    : SV_POSITION;
@@ -106,8 +121,9 @@ struct VS_OUT
     float2 oxz     : TEXCOORD5;   // undisplaced world xz (simulated ocean only; the FFT is sampled there)
 };
 
-VS_OUT VSMain( VS_IN i )
+VS_OUT VSMain( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWaterVertex( e );
     VS_OUT o;
     float3 pos = i.pos;
     [branch] if ( WaveAnimation != WATER_WAVES_OFF ) pos += WaterWaveOffset( pos, i.col, RI_TotalTime, WaveAnimation );
@@ -448,8 +464,9 @@ struct TessVertex
     float4 col  : TEXCOORD1;
 };
 
-TessVertex VSOcean( VS_IN i )
+TessVertex VSOcean( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWaterVertex( e );
     TessVertex o;
     o.pos = i.pos;
     o.wnrm = DecodeOctNormal( i.nrm );
