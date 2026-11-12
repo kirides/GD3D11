@@ -303,6 +303,59 @@ namespace {
     constexpr float kTessMaxCurvature = 1.0f / 50.0f;  // clamp |k| (radius >= 50 cm)
     constexpr float kTessDominantQuant = 0.05f;        // dominance dot quantization, so coplanar ties fall to the mesh index
 
+
+    /** Returns 1 per welded group (numbered in `order` run order) that ends an open edge (used by one triangle). Those
+        positions tessellate flat so T-junctions and unwelded seams stay closed. Transient memory only. */
+    std::vector<uint8_t> FindOpenEdgePins( const std::vector<ExVertexStruct>& vertices, const std::vector<unsigned int>& indices,
+        const std::vector<uint32_t>& order ) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const size_t count = vertices.size();
+        const auto same = []( const float3& a, const float3& b ) {
+            return std::bit_cast<uint32_t>( a.x ) == std::bit_cast<uint32_t>( b.x ) && std::bit_cast<uint32_t>( a.y ) == std::bit_cast<uint32_t>( b.y )
+                && std::bit_cast<uint32_t>( a.z ) == std::bit_cast<uint32_t>( b.z );
+        };
+
+        std::vector<uint32_t> groupOf( count );
+        std::vector<float3> gpos;
+        for ( size_t i = 0; i < count; ++i ) {
+            if ( i == 0 || !same( vertices[order[i]].Position, vertices[order[i - 1]].Position ) ) gpos.push_back( vertices[order[i]].Position );
+            groupOf[order[i]] = static_cast<uint32_t>( gpos.size() - 1 );
+        }
+        std::vector<uint8_t> pinned( gpos.size(), 0 );
+
+        // Unique undirected group edges as (min << 32 | max).
+        std::vector<uint64_t> edges;
+        edges.reserve( indices.size() );
+        for ( size_t t = 0; t + 2 < indices.size(); t += 3 ) {
+            const unsigned int idx[3] = { indices[t], indices[t + 1], indices[t + 2] };
+            if ( idx[0] >= count || idx[1] >= count || idx[2] >= count ) continue;
+            for ( int e = 0; e < 3; ++e ) {
+                const uint32_t a = groupOf[idx[e]], b = groupOf[idx[( e + 1 ) % 3]];
+                if ( a != b ) edges.push_back( ( static_cast<uint64_t>( std::min( a, b ) ) << 32 ) | std::max( a, b ) );
+            }
+        }
+        std::sort( edges.begin(), edges.end() );
+        // An edge only one triangle uses is open: a T-junction side, near-duplicate (unwelded) vertices or a border
+        // against separate geometry. Displacing or rounding there tears the surface, so its endpoints are pinned flat.
+        size_t openEdges = 0;
+        for ( size_t i = 0; i < edges.size(); ) {
+            size_t j = i + 1;
+            while ( j < edges.size() && edges[j] == edges[i] ) ++j;
+            if ( j - i == 1 ) {
+                pinned[static_cast<uint32_t>( edges[i] >> 32 )] = 1;
+                pinned[static_cast<uint32_t>( edges[i] )] = 1;
+                ++openEdges;
+            }
+            i = j;
+        }
+        const size_t edgeCount = static_cast<size_t>( std::unique( edges.begin(), edges.end() ) - edges.begin() );
+
+        const size_t pinCount = static_cast<size_t>( std::count( pinned.begin(), pinned.end(), uint8_t{ 1 } ) );
+        Logging::Inf( "World tessellation pins: {} unique edges, {} open edges, {} pinned positions, {:.0f} ms", edgeCount, openEdges, pinCount,
+            std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - t0 ).count() );
+        return pinned;
+    }
+
     /** Builds the welded tessellation side stream (kWorldTessStreamStride bytes per wrapped vertex): smoothing normal
         (oct snorm2x16), roundness (unorm8, bits 0-7 of dword1; bits 8-31 = WorldTessOverrides table index of the owning
         mesh or boundary entry), the dominant vertex's UV (dwords 2-3) and per-vertex curvature half kT | half kB << 16.
@@ -326,10 +379,11 @@ namespace {
             return static_cast<uint32_t>( std::upper_bound( meshStarts.begin(), meshStarts.end(), v ) - meshStarts.begin() ) - 1;
         };
         std::vector<uint32_t> groupOwner;                                // table index per welded group
-        std::map<std::tuple<std::vector<uint32_t>, bool, uint32_t>, uint32_t> boundaryIds;  // (mesh set, UV seam, canonical mesh) -> boundary id
+        std::map<std::tuple<std::vector<uint32_t>, bool, uint32_t, bool>, uint32_t> boundaryIds;  // (mesh set, UV seam, canonical mesh, pinned) -> boundary id
         size_t seamEntries = 0;
         std::vector<const std::vector<uint32_t>*> boundarySets;
         std::vector<uint32_t> boundaryCanon;
+        std::vector<uint8_t> boundaryPinned;
         std::vector<float2> groupUv;      // canonical (dominant vertex) UV per group
         std::vector<float> groupRound;    // roundness 0..1 per group
         const float dl = 1.0f / std::sqrt( 0.57f * 0.57f + 0.31f * 0.31f + 0.76f * 0.76f );
@@ -351,6 +405,9 @@ namespace {
             ox = x * inv; oy = y * inv; oz = z * inv;
             return true;
         };
+
+        // Ends of open edges (T-junctions, unwelded seams, borders) tessellate flat (pinned), per group in run order.
+        const std::vector<uint8_t> groupPinned = meshCount > 0 ? FindOpenEdgePins( vertices, indices, order ) : std::vector<uint8_t>();
 
         std::vector<uint32_t> groupOf( count );
         std::vector<float3> groupN;
@@ -403,14 +460,16 @@ namespace {
                         seam = std::bit_cast<uint32_t>( t.x ) != std::bit_cast<uint32_t>( t0.x ) || std::bit_cast<uint32_t>( t.y ) != std::bit_cast<uint32_t>( t0.y );
                     }
                 }
-                if ( runMeshes.size() == 1 && !seam ) {
+                const bool pin = groupPinned[groupN.size()] != 0;
+                if ( runMeshes.size() == 1 && !seam && !pin ) {
                     owner = runMeshes[0];
                 } else {
                     std::sort( runMeshes.begin(), runMeshes.end() );
-                    auto [bit, inserted] = boundaryIds.try_emplace( std::make_tuple( runMeshes, seam, domMesh ), static_cast<uint32_t>( boundarySets.size() ) );
+                    auto [bit, inserted] = boundaryIds.try_emplace( std::make_tuple( runMeshes, seam, domMesh, pin ), static_cast<uint32_t>( boundarySets.size() ) );
                     if ( inserted ) {
                         boundarySets.push_back( &std::get<0>( bit->first ) );
                         boundaryCanon.push_back( domMesh );
+                        boundaryPinned.push_back( pin ? 1 : 0 );
                         if ( seam ) ++seamEntries;
                     }
                     owner = meshCount + bit->second;
@@ -485,7 +544,7 @@ namespace {
             float ox, oy;
             VertexPacking::EncodeOctNormal( groupN[g], ox, oy );
             groupWord0[g] = q( ox ) | (q( oy ) << 16);
-            const float r = TessSmoothstep( kTessCreaseFlat, kTessCreaseSmooth, minVertDot[g] ) * TessSmoothstep( kTessFaceFlat, kTessFaceSmooth, minFaceDot[g] );
+            const float r = !groupPinned.empty() && groupPinned[g] ? 0.0f : TessSmoothstep( kTessCreaseFlat, kTessCreaseSmooth, minVertDot[g] ) * TessSmoothstep( kTessFaceFlat, kTessFaceSmooth, minFaceDot[g] );
             groupRound.push_back( std::clamp( r, 0.0f, 1.0f ) );
             uint32_t owner = groupOwner[g];
             if ( owner > 0xFFFFFFu ) {
@@ -545,7 +604,7 @@ namespace {
             }
             sectionRefs[i].UvDensity = posLen > 0.0 ? static_cast<float>( uvLen / posLen ) : 0.0f;
         }
-        GetWorldTessOverrides().Build( std::move( sectionRefs ), bOffsets, bMeshes, boundaryCanon );
+        GetWorldTessOverrides().Build( std::move( sectionRefs ), bOffsets, bMeshes, boundaryCanon, boundaryPinned );
     }
 
     // --- MikkTSpace tangent generation ---------------------------------------------------
