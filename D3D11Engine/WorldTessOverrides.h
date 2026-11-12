@@ -40,7 +40,7 @@ class WorldTessOverrides {
 public:
     /** Called by the world converter. boundaryOffsets/boundaryMeshes is CSR: boundary b owns meshes [off[b], off[b+1]). */
     void Build( std::vector<WorldTessMeshRef>&& meshes, const std::vector<uint32_t>& boundaryOffsets, const std::vector<uint32_t>& boundaryMeshes,
-        const std::vector<uint32_t>& boundaryCanonical );
+        const std::vector<uint32_t>& boundaryCanonical, const std::vector<uint8_t>& boundaryPinned );
 
     /** Drops everything (world reset). */
     void Reset();
@@ -84,6 +84,7 @@ private:
     std::vector<WorldTessParams> m_Params;          // parallel to m_Meshes
     std::vector<uint32_t> m_BoundaryOffsets;        // CSR, boundaryCount + 1 entries (empty without boundaries)
     std::vector<uint32_t> m_BoundaryCanonical;      // canonical mesh per boundary entry
+    std::vector<uint8_t> m_BoundaryPinned;          // open-edge pinned entries: flat (roundness 0, displacement 0)
     std::vector<uint16_t> m_BoundaryMeshes16;      // used while meshCount <= 65535
     std::vector<uint32_t> m_BoundaryMeshes32;
     std::vector<std::string> m_UnknownLines;        // .wts lines that matched no mesh, rewritten on save

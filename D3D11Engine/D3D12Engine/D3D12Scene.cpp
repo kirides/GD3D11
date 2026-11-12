@@ -4952,7 +4952,8 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // Opaque prefix, no pixel shader bound — the run that gets double-rate Z. Prefer the coalesced mirror of
     // it (m_WorldDepthMergedFirst): identical index coverage, far fewer commands, and the per-material
     // constants it drops are dead with no PS bound.
-    if ( m_WorldDepthMergedCount > 0 ) {
+    // Not while tessellating: the merged commands drop b6, and the tess VS/HS read the material (height slot, factors)
+    if ( m_WorldDepthMergedCount > 0 && !m_WorldTessActive ) {
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDepthMergedCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
             static_cast<UINT64>( m_WorldDepthMergedFirst ) * sizeof( WorldDrawCommand ), nullptr, 0 );

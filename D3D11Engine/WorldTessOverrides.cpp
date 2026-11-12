@@ -58,8 +58,9 @@ WorldTessOverrides& GetWorldTessOverrides() {
 }
 
 void WorldTessOverrides::Build( std::vector<WorldTessMeshRef>&& meshes, const std::vector<uint32_t>& boundaryOffsets, const std::vector<uint32_t>& boundaryMeshes,
-    const std::vector<uint32_t>& boundaryCanonical ) {
+    const std::vector<uint32_t>& boundaryCanonical, const std::vector<uint8_t>& boundaryPinned ) {
     m_Meshes = std::move( meshes );
+    m_BoundaryPinned = boundaryPinned;
     m_BoundaryCanonical = boundaryCanonical;
     m_Params.assign( m_Meshes.size(), WorldTessParams{} );
     m_BoundaryOffsets = boundaryOffsets;
@@ -75,7 +76,8 @@ void WorldTessOverrides::Build( std::vector<WorldTessMeshRef>&& meshes, const st
 
     const size_t bytes = m_Meshes.capacity() * sizeof( WorldTessMeshRef ) + m_Params.capacity() * sizeof( WorldTessParams )
         + m_BoundaryOffsets.capacity() * 4 + m_BoundaryMeshes16.capacity() * 2 + m_BoundaryMeshes32.capacity() * 4 + m_BoundaryCanonical.capacity() * 4;
-    Logging::Inf( "World tessellation overrides: {} meshes, {} boundary entries, {} KB retained", m_Meshes.size(), GetBoundaryCount(), bytes / 1024 );
+    const size_t pinnedEntries = static_cast<size_t>( std::count( m_BoundaryPinned.begin(), m_BoundaryPinned.end(), uint8_t{ 1 } ) );
+    Logging::Inf( "World tessellation overrides: {} meshes, {} boundary entries ({} pinned), {} KB retained", m_Meshes.size(), GetBoundaryCount(), pinnedEntries, bytes / 1024 );
 }
 
 void WorldTessOverrides::Reset() {
@@ -83,6 +85,7 @@ void WorldTessOverrides::Reset() {
     m_Params = {};
     m_BoundaryOffsets = {};
     m_BoundaryCanonical = {};
+    m_BoundaryPinned = {};
     m_BoundaryMeshes16 = {};
     m_BoundaryMeshes32 = {};
     m_UnknownLines = {};
@@ -155,6 +158,7 @@ const std::vector<XMFLOAT4>& WorldTessOverrides::GetGpuTable() {
             r.x = std::min( r.x, v.x ); r.y = std::min( r.y, v.y );
         }
         if ( m_BoundaryOffsets[b] == m_BoundaryOffsets[b + 1] ) r = XMFLOAT4( 1, 1, r.z, 0 );
+        if ( b < m_BoundaryPinned.size() && m_BoundaryPinned[b] ) { r.x = 0.0f; r.z = 0.0f; }
         m_Table[meshCount + b] = r;
     }
     return m_Table;
