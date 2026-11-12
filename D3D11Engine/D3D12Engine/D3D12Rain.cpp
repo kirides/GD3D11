@@ -14,6 +14,7 @@
 #include "../GSky.h"
 #include "../zCSkyController_Outdoor.h"
 #include "../DDSArrayLoader.h"
+#include "../ThreadPool.h"
 #include "../Toolbox.h"
 #include "../zCMaterial.h"
 #include "../zCTexture.h"
@@ -181,10 +182,6 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
         m_RainDynamicNeedsInitialBarrier = true;
     }
 
-    // Non-fatal: DrawRainParticles falls back to the step-2 flat-white placeholder (m_RainTexturesLoaded
-    // guard) if this fails, e.g. missing/unreadable DDS files.
-    if ( !m_RainTexturesLoaded ) LoadRainTextures();
-
     m_RainParticleCount = alignedCount;
     m_RainBuffersReady = true;
     return true;
@@ -198,6 +195,7 @@ void D3D12GraphicsEngine::AdvanceRain() {
     // off RainFXWeight alone. RendererSettings.EnableRain is a DIFFERENT, Gothic-engine-side toggle
     // (GothicAPI.cpp:601, native rain spawn/sound suppression) — not the GD3D11 GPU rain draw's switch.
     if ( Engine::GAPI->GetRainFXWeight() <= 0.0f ) return;
+    PollRainTextures( IsSnowWeather() );   // the weight ramps up from 0, so the async load hides behind it
 
     const UINT numParticles = state.RendererSettings.RainNumParticles;
     if ( numParticles == 0 ) return;
@@ -267,7 +265,7 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     if ( !m_FrameOpen || !m_Pipelines.RainDraw.PSO || !m_Pipelines.RainDraw.RootSig || !m_DepthBuffer ) return;
 
     auto& state = Engine::GAPI->GetRendererState();
-    if ( !m_RainBuffersReady || !m_RainTexturesLoaded ) return;
+    if ( !m_RainBuffersReady ) return;
     if ( !m_RainShadowResourcesReady ) return;   // VSMain unconditionally samples the rain shadowmap now
     if ( Engine::GAPI->GetRainFXWeight() <= 0.0f ) return;   // matches D3D11's actual gate (D3D11GraphicsEngine.cpp:4274) — RendererSettings.EnableRain is a different, Gothic-engine-side toggle (see AdvanceRain's comment)
 
@@ -413,21 +411,49 @@ bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, C
     return true;
 }
 
-bool D3D12GraphicsEngine::LoadRainTextures() {
-    if ( m_RainTexturesLoaded ) return true;
+// Worker-side result; the render thread adopts the array once State leaves Running.
+struct D3D12RainTextureJob {
+    enum : int { Running, Done, Failed, Cancelled };
+    std::atomic<int> State{ Running };
+    ComPtr<Rhi::Resource> Tex;
+    UINT Slot = UINT_MAX;
+};
 
-    // Same VFS paths as D3D11Effect::LoadRainResources; parsed via the DDSArrayLoader.h helper both
-    // backends share.
-    Logging::Inf( "D3D12: loading rain-drop textures" );
-    const bool rainOk = LoadRainTextureArray( R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370,
-        m_RainTextureArray, m_RainTextureArraySrvSlot );
+void D3D12GraphicsEngine::PollRainTextures( bool snow ) {
+    ComPtr<Rhi::Resource>& tex = snow ? m_SnowTextureArray : m_RainTextureArray;
+    UINT& slot = snow ? m_SnowTextureArraySrvSlot : m_RainTextureArraySrvSlot;
+    std::shared_ptr<D3D12RainTextureJob>& pending = snow ? m_SnowTextureJob : m_RainTextureJob;
+    if ( slot != UINT_MAX ) return;
 
-    Logging::Inf( "D3D12: loading snow-flake textures" );
-    const bool snowOk = LoadRainTextureArray( R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256,
-        m_SnowTextureArray, m_SnowTextureArraySrvSlot );
+    if ( !pending ) {
+        if ( !Engine::WorkerThreadPool ) return;
+        auto job = std::make_shared<D3D12RainTextureJob>();
+        pending = job;
+        // Device creation and the batched upload are free-threaded (D3D12Texture::Init runs on workers too).
+        Engine::WorkerThreadPool->enqueue( [this, job, snow]( const std::stop_token& token ) {
+            if ( token.stop_requested() ) { job->State.store( D3D12RainTextureJob::Cancelled, std::memory_order_release ); return; }
+            ZoneScopedN( "LoadRainSnowTextures" );
+            Logging::Inf( "D3D12: loading {} textures (async)", snow ? "snow-flake" : "rain-drop" );
+            const bool ok = snow
+                ? LoadRainTextureArray( R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256, job->Tex, job->Slot )
+                : LoadRainTextureArray( R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370, job->Tex, job->Slot );
+            job->State.store( ok ? D3D12RainTextureJob::Done : D3D12RainTextureJob::Failed, std::memory_order_release );
+        } );
+        return;
+    }
 
-    m_RainTexturesLoaded = rainOk && snowOk;
-    return m_RainTexturesLoaded;
+    switch ( pending->State.load( std::memory_order_acquire ) ) {
+    case D3D12RainTextureJob::Done:
+        tex = std::move( pending->Tex );
+        slot = pending->Slot;
+        pending.reset();
+        break;
+    case D3D12RainTextureJob::Cancelled:
+        pending.reset();   // pool flushed (world change) before it ran: retry next frame
+        break;
+    default:
+        break;   // Running, or Failed (logged; kept so it is not retried every frame)
+    }
 }
 
 void D3D12GraphicsEngine::UploadWetnessConstants() {
