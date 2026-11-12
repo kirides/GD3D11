@@ -1204,6 +1204,11 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Checkbox( "Water tessellation (D3D12/Vulkan)", &settings.WaterTessellation );
             ImGui::SetItemTooltip( "Tessellates water in the DX11 wave mode; the edge presplit needs a world reload." );
             ImGui::SliderInt( "Water tess max factor", &settings.WaterTessellationMaxFactor, 4, 64 );
+            ImGui::Checkbox( "World tessellation (D3D12/Vulkan)", &settings.WorldTessellation );
+            ImGui::SetItemTooltip( "PN-smoothed main-view world mesh; needs Vertex Pulling." );
+            ImGui::SliderInt( "World tess max factor", &settings.WorldTessellationMaxFactor, 1, 16 );
+            ImGui::SliderFloat( "World tess range", &settings.WorldTessellationRange, 500.0f, 20000.0f, "%.0f" );
+            ImGui::SliderFloat( "World tess strength", &settings.WorldTessellationStrength, 0.0f, 1.0f );
             {
                 const char* simLevels[] = { "Off", "Low", "Medium", "High" };   // E_WaterSimulation
                 int sim = settings.WaterSimulation;

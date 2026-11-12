@@ -13,6 +13,8 @@ static_assert( D3D12GraphicsEngine::kBackBufferMax == 3, "D3D12GeometryStreams::
 // include/SkinnedVertexPull.hlsl hard-codes these stream offsets.
 static_assert( static_cast<UINT>( D3D12GeometryStreams::Stream::SkelVB ) == 6 && static_cast<UINT>( D3D12GeometryStreams::Stream::SkinnedPosUv ) == 8
     && static_cast<UINT>( D3D12GeometryStreams::Stream::SkinnedNrmPrev ) == 9, "SkinnedVertexPull.hlsl stream offsets" );
+static_assert( static_cast<UINT>( D3D12GeometryStreams::Stream::WorldTess ) == 10, "WorldTess.hlsl kWorldTessStreamOffset" );
+static_assert( static_cast<UINT>( D3D12GeometryStreams::Stream::WorldTessParams ) == 11 && static_cast<UINT>( D3D12GeometryStreams::Stream::Count ) == 12, "WorldTess.hlsl kWorldTessParamsStreamOffset" );
 
 namespace {
     constexpr UINT kCount = static_cast<UINT>( D3D12GeometryStreams::Stream::Count );
@@ -63,6 +65,8 @@ void D3D12GeometryStreams::Update() {
     RawSrv( E, base + static_cast<UINT>( Stream::SkelIB ), skelOk ? skel->GetIndexBuffer() : nullptr );
     RawSrv( E, base + static_cast<UINT>( Stream::SkinnedPosUv ), E.m_SkinnedPosUv.Get() );
     RawSrv( E, base + static_cast<UINT>( Stream::SkinnedNrmPrev ), E.m_SkinnedNrmPrev.Get() );
+    RawSrv( E, base + static_cast<UINT>( Stream::WorldTess ), wm ? VbResource( wm->GetMeshTessBuffer() ) : nullptr );
+    RawSrv( E, base + static_cast<UINT>( Stream::WorldTessParams ), E.m_WorldTessTable.Get() );
 }
 
 UINT D3D12GeometryStreams::Slot( Stream s ) const {

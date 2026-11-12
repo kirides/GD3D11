@@ -107,6 +107,37 @@ VS_GBUF_OUT VSWorldGBuf( VS_GBUF_ENTRY_IN e )
     return o;
 }
 
+#ifdef VERTEX_PULL
+// Tessellated main-view prepass: the HS blob comes from World.hlsl (same WorldTessCP), position from the shared WorldTessPosition.
+#include "include/WorldTess.hlsl"
+
+[domain( "tri" )]
+VS_OUT DSWorldDepth( WorldTessPatch t, float3 bary : SV_DomainLocation, const OutputPatch<WorldTessCP, 3> p )
+{
+    const float3 rest = WorldTessPosition( p, t, bary );
+    const float3 wpos = rest + MaterialWaveOffset( rest, p[0].mat, false );
+    VS_OUT o;
+    o.clip = mul( float4( wpos, 1.0 ), ViewProj );
+    o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
+    return o;
+}
+
+[domain( "tri" )]
+VS_GBUF_OUT DSWorldGBuf( WorldTessPatch t, float3 bary : SV_DomainLocation, const OutputPatch<WorldTessCP, 3> p )
+{
+    const float3 rest = WorldTessPosition( p, t, bary );
+    const float3 wpos = rest + MaterialWaveOffset( rest, p[0].mat, false );
+    const float3 prevPos = rest + MaterialWaveOffset( rest, p[0].mat, true );
+    VS_GBUF_OUT o;
+    o.clip     = mul( float4( wpos, 1.0 ), ViewProj );
+    o.uv       = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
+    o.wnrm     = normalize( p[0].nrm * bary.x + p[1].nrm * bary.y + p[2].nrm * bary.z );
+    o.currClip = mul( float4( wpos, 1.0 ), UnjitteredViewProj );
+    o.prevClip = mul( float4( prevPos, 1.0 ), PrevViewProj );
+    return o;
+}
+#endif
+
 GBUF_OUT PSClipGBuf( VS_GBUF_OUT i )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );

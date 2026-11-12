@@ -172,6 +172,7 @@ protected:
     void RenderVegetationTab();
     void RenderSelectionTab();
     void RenderTextureSelectionPanel();
+    void RenderWorldTessellationGroup();
     void RenderVegetationSelectionPanel();
     void RenderVobSettingsDialog();
 
@@ -234,9 +235,14 @@ protected:
     float SelectedTexNrmStr;
     float SelectedTexSpecIntens;
     float SelectedTexSpecPower;
-    float SelectedTexDisplacement;
+
+    /** World tessellation overrides of the selected world mesh (SelectedTessMesh == UINT_MAX: none) */
     float SelectedMeshTessAmount;
     float SelectedMeshRoundness;
+    unsigned int SelectedTessMesh;
+    int SelectedTessSectionX;
+    int SelectedTessSectionY;
+    std::string SelectedTessKey;
 
     /** Tab state */
     int MainTabIndex;

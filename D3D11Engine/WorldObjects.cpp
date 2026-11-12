@@ -107,6 +107,7 @@ MeshInfo::~MeshInfo() {
 
     MeshVertexBuffer.reset();
     MeshPositionBuffer.reset();
+    MeshTessBuffer.reset();
     MeshIndexBuffer.reset();
     MeshShadowIndexBuffer.reset();
 }

@@ -87,6 +87,30 @@ bool D3D12PipelineState::VobPullCompiled( bool compiled, const Microsoft::WRL::C
     return true;
 }
 
+bool D3D12PipelineState::CreateWorldTessPso( Rhi::GraphicsPipelineStateDesc desc, ID3DBlob* ds, Rhi::PipelineState** out, const char* what ) {
+    if ( !World.TessVsBlob || !World.TessHsBlob || !ds ) return false;
+    desc.InputLayout = { nullptr, 0 };
+    desc.VS = { World.TessVsBlob->GetBufferPointer(), World.TessVsBlob->GetBufferSize() };
+    desc.HS = { World.TessHsBlob->GetBufferPointer(), World.TessHsBlob->GetBufferSize() };
+    desc.DS = { ds->GetBufferPointer(), ds->GetBufferSize() };
+    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+    if ( FAILED( m_Device->CreateGraphicsPipelineState( &desc, out ) ) ) {
+        Logging::Wrn( "D3D12: world tessellation PSO failed ({}).", what );
+        return false;
+    }
+    return true;
+}
+
+void D3D12PipelineState::FailWorldTess( const char* what ) {
+    Logging::Wrn( "D3D12: world tessellation unavailable ({}); the world stays flat.", what );
+    World.TessPSO.Reset();
+    World.TessOpaquePSO.Reset();
+    World.TessDepthPrepassPSO.Reset();
+    World.TessDepthPrepassNoAlphaPSO.Reset();
+    World.TessDepthPrepassGBufPSO.Reset();
+    World.TessFailed = true;
+}
+
 D3D12RootLayout& D3D12PipelineState::Layout( const char* name ) {
     D3D12RootLayout& layout = m_Layouts[name];
     layout.Reset( name );
@@ -104,7 +128,13 @@ bool D3D12PipelineState::CreateWorld() {
     // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); t0 = diffuse SRV table (PS);
     // b1 = fog (8 root 32-bit constants, VS reads CamPosWS, PS reads color/near/far); static sampler s0.
     D3D12RootLayout& rs = Layout( "World" );
-    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );                 // 0: b0 ViewProj (float4x4)
+    World.TessFailed = false;
+    World.TessPSO.Reset();
+    World.TessOpaquePSO.Reset();
+    World.TessDepthPrepassPSO.Reset();
+    World.TessDepthPrepassNoAlphaPSO.Reset();
+    World.TessDepthPrepassGBufPSO.Reset();
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_ALL );                    // 0: b0 ViewProj (float4x4); ALL: the tessellation DS transforms
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 1: t0 diffuse
     rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );                     // 2: b1 fog — VS: CamPosWS; PS: color/near/far
 
@@ -167,7 +197,7 @@ bool D3D12PipelineState::CreateWorld() {
     // silently renumber every existing bind site and both ExecuteIndirect command signatures anchored here.
     // RootDataStatic: UploadMotionConstants writes this once per frame, well before the G-buffer
     // prepass — the only consumer — records anything.
-    rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 13: b5 MotionCB
+    rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 13: b5 MotionCB (ALL: DSWorldGBuf)
     // 14 = b9 WorldPullCB { stream-table base = world VB heap index, PackedVobInfo }, set once per pass by the pulled VSs
     // (include/WorldVertexPull.hlsl). 15 = b10 { VertexBase, InstanceBase } per draw and 16 = t6 the instance buffer, for the
     // pulled VOB / attachment arena draws (include/VobVertexPull.hlsl); 15 is a command-signature argument, so it stays last of those.
@@ -175,6 +205,8 @@ bool D3D12PipelineState::CreateWorld() {
     World.VobPull.Cb = World.PullRootParam;
     World.VobPull.Draw = rs.AddPerDrawConstants( 10, 2, D3D12_SHADER_VISIBILITY_VERTEX );
     World.VobPull.InstSrv = rs.AddSRV( 6, D3D12_SHADER_VISIBILITY_VERTEX );
+    // 17 = b11 WorldTessCB root CBV (HS/DS/VS read it); appended last so no existing index moves. Total 63 of 64 DWORDs.
+    World.TessRootParam = rs.AddCBV( 11, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );
 
     // s0 diffuse: anisotropic per RendererSettings.AnisotropicFiltering (matches D3D11's main texture sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -305,6 +337,31 @@ bool D3D12PipelineState::CreateWorld() {
         } else {
             CreatePullTwin( pso, World.VsBlobPull.Get(), World.OpaquePSOPull.ReleaseAndGetAddressOf(), "world opaque" );
         }
+    }
+
+    // World tessellation (non-fatal): VSWorldTess + HSWorldTess shared by every tess PSO, DSWorld for the lit pair.
+    World.TessVsBlob.Reset();
+    World.TessHsBlob.Reset();
+    World.TessDsBlob.Reset();
+    if ( !device->GetCaps().Tessellation || VertexPullFailed || !World.OpaquePSO ) {
+        World.TessFailed = true;
+    } else if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSWorldTess", Shadermodel_VS, World.TessVsBlob.ReleaseAndGetAddressOf(), kVertexPullDefines )
+             || !m_Shaders->CompileFromFile( "World.hlsl", "HSWorldTess", Shadermodel_HS, World.TessHsBlob.ReleaseAndGetAddressOf(), kVertexPullDefines )
+             || !m_Shaders->CompileFromFile( "World.hlsl", "DSWorld", Shadermodel_DS, World.TessDsBlob.ReleaseAndGetAddressOf(), kVertexPullDefines ) ) {
+        FailWorldTess( "World.hlsl shaders" );
+    } else {
+        rs.ValidateShaders( {
+            { World.TessVsBlob.Get(), "World.hlsl:VSWorldTess", D3D12_SHADER_VISIBILITY_VERTEX },
+            { World.TessHsBlob.Get(), "World.hlsl:HSWorldTess", D3D12_SHADER_VISIBILITY_HULL },
+            { World.TessDsBlob.Get(), "World.hlsl:DSWorld",     D3D12_SHADER_VISIBILITY_DOMAIN },
+        } );
+        pso.PS = { World.PsBlob->GetBufferPointer(), World.PsBlob->GetBufferSize() };
+        pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+        bool ok = CreateWorldTessPso( pso, World.TessDsBlob.Get(), World.TessPSO.ReleaseAndGetAddressOf(), "world lit" );
+        pso.PS = { World.OpaquePsBlob->GetBufferPointer(), World.OpaquePsBlob->GetBufferSize() };
+        pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
+        ok = ok && CreateWorldTessPso( pso, World.TessDsBlob.Get(), World.TessOpaquePSO.ReleaseAndGetAddressOf(), "world opaque" );
+        if ( !ok ) FailWorldTess( "world lit" );
     }
     return true;
 }
@@ -1160,6 +1217,21 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         }
     }
 
+    // World tessellation depth prepass (non-fatal): DSWorldDepth with PSClip, and with no pixel shader.
+    World.TessDepthDsBlob.Reset();
+    if ( !World.TessFailed && World.TessVsBlob && World.TessHsBlob ) {
+        if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "DSWorldDepth", Shadermodel_DS, World.TessDepthDsBlob.ReleaseAndGetAddressOf(), kVertexPullDefines ) ) {
+            FailWorldTess( "DepthPrepass.hlsl DSWorldDepth" );
+        } else {
+            GetLayout( "World" )->ValidateShaders( { { World.TessDepthDsBlob.Get(), "DepthPrepass.hlsl:DSWorldDepth", D3D12_SHADER_VISIBILITY_DOMAIN } } );
+            Rhi::GraphicsPipelineStateDesc noAlpha = pso;
+            noAlpha.PS = {};
+            if ( !CreateWorldTessPso( pso, World.TessDepthDsBlob.Get(), World.TessDepthPrepassPSO.ReleaseAndGetAddressOf(), "world prepass" )
+              || !CreateWorldTessPso( noAlpha, World.TessDepthDsBlob.Get(), World.TessDepthPrepassNoAlphaPSO.ReleaseAndGetAddressOf(), "world prepass no-alpha" ) )
+                FailWorldTess( "world prepass" );
+        }
+    }
+
     // Instanced-VOB depth prepass PSO (P2.9b-4a): same depth-only state, but the VOB two-stream input layout
     // (packed vertex slot 0 + per-instance world matrix slot 1) and the VOB shader's VSDepth/PSDepthClip.
     if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepth", Shadermodel_VS, World.DepthPrepassVobVsBlob.ReleaseAndGetAddressOf() ) ) {
@@ -1332,6 +1404,18 @@ bool D3D12PipelineState::CreateDepthPrepassGBuf() {
     if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "VSWorldGBuf", Shadermodel_VS, World.DepthPrepassGBufVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
         VertexPullFailed = true;
     CreatePullTwin( pso, World.DepthPrepassGBufVsBlobPull.Get(), World.DepthPrepassGBufPSOPull.ReleaseAndGetAddressOf(), "world G-buffer prepass" );
+
+    // World tessellation G-buffer prepass (non-fatal): DSWorldGBuf + PSClipGBuf.
+    World.TessGBufDsBlob.Reset();
+    if ( !World.TessFailed && World.TessVsBlob && World.TessHsBlob ) {
+        if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "DSWorldGBuf", Shadermodel_DS, World.TessGBufDsBlob.ReleaseAndGetAddressOf(), kVertexPullDefines ) ) {
+            FailWorldTess( "DepthPrepass.hlsl DSWorldGBuf" );
+        } else {
+            GetLayout( "World" )->ValidateShaders( { { World.TessGBufDsBlob.Get(), "DepthPrepass.hlsl:DSWorldGBuf", D3D12_SHADER_VISIBILITY_DOMAIN } } );
+            if ( !CreateWorldTessPso( pso, World.TessGBufDsBlob.Get(), World.TessDepthPrepassGBufPSO.ReleaseAndGetAddressOf(), "world G-buffer prepass" ) )
+                FailWorldTess( "world G-buffer prepass" );
+        }
+    }
 
     // Instanced VOBs + node attachments share one layout: the full ExVertexStruct (stride 60) triple plus the
     // instance world matrix @0, the PREVIOUS-frame world matrix @64 and the wind/fatness pair @132. prevWorld has

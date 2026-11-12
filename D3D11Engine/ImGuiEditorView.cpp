@@ -17,6 +17,7 @@
 #include "WorldConverter.h"
 #include "D3D12Engine/D3D12Texture.h"
 #include "WorldMeshSection.h"
+#include "WorldTessOverrides.h"
 
 static XMFLOAT3 GetCameraPosition() {
     if (oCGame::GetGame() && oCGame::GetGame()->_zCSession_camVob) {
@@ -97,9 +98,10 @@ ImGuiEditorView::ImGuiEditorView() {
     SelectedTexNrmStr = 1.0f;
     SelectedTexSpecIntens = 1.0f;
     SelectedTexSpecPower = 90.0f;
-    SelectedTexDisplacement = 1.0f;
-    SelectedMeshTessAmount = 0.0f;
+    SelectedMeshTessAmount = 1.0f;
     SelectedMeshRoundness = 1.0f;
+    SelectedTessMesh = UINT_MAX;
+    SelectedTessSectionX = SelectedTessSectionY = 0;
     SelectedImageThumbnail = nullptr;
 
     MainTabIndex = 0;
@@ -320,25 +322,62 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
         }
     }
 
-    /* per (World) Mesh settings are obsolete and not used. (tesselation  etc.) 
+    RenderWorldTessellationGroup();
+}
+
+void ImGuiEditorView::RenderWorldTessellationGroup() {
+    auto& overrides = GetWorldTessOverrides();
+    if (!Selection.SelectedMesh || SelectedTessMesh >= overrides.GetMeshCount()) {
+        return;
+    }
+
     ImGui::Separator();
-    ImGui::Text("WorldMesh-Settings:");
+    ImGui::TextUnformatted("World tessellation");
+    ImGui::Text("Section %d/%d  %s", SelectedTessSectionX, SelectedTessSectionY, SelectedTessKey.c_str());
 
-    ImGui::Text("Displacement:");
+    const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    if (!Engine::IsModernBackend()) {
+        ImGui::TextWrapped("Needs the D3D12 or Vulkan backend.");
+    } else if (!rs.VertexPulling) {
+        ImGui::TextWrapped("Needs Vertex Pulling to be enabled.");
+    } else if (!rs.WorldTessellation) {
+        ImGui::TextWrapped("World Tessellation is off in the settings; values are stored but not visible.");
+    }
+
+    // Applied on slider release: every change rebuilds the GPU table.
+    ImGui::TextUnformatted("Roundness:");
     ImGui::SameLine(80);
-    ImGui::SliderFloat("##Displacement", &SelectedTexDisplacement, -2.0f, 2.0f, "%.2f");
+    ImGui::SliderFloat("##TessRoundness", &SelectedMeshRoundness, 0.0f, 1.0f, "%.2f");
+    bool changed = ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::Text("Tesselation:");
+    ImGui::TextUnformatted("Tessellation:");
     ImGui::SameLine(80);
-    ImGui::SliderFloat("##TessAmount", &SelectedMeshTessAmount, 0.0f, 2.0f, "%.2f");
+    ImGui::SliderFloat("##TessFactor", &SelectedMeshTessAmount, 0.0f, 2.0f, "%.2f");
+    changed |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::Text("Roundness:");
-    ImGui::SameLine(80);
-    ImGui::SliderFloat("##Roundness", &SelectedMeshRoundness, 0.0f, 1.0f, "%.2f");
+    if (changed) {
+        WorldTessParams p = overrides.Get(SelectedTessMesh);
+        p.Roundness = SelectedMeshRoundness;
+        p.Factor = SelectedMeshTessAmount;
+        overrides.Set(SelectedTessMesh, p);
+    }
 
-    ImGui::Spacing();
-    ImGui::TextWrapped("Press Space to subdivide the selected surface. (Not saved yet)");
-    */
+    zCTexture* tex = Selection.SelectedMaterial ? Selection.SelectedMaterial->GetTextureSingle() : nullptr;
+    if (tex && ImGui::Button("Apply to all meshes with this texture")) {
+        WorldTessParams p = overrides.Get(SelectedTessMesh);
+        p.Roundness = SelectedMeshRoundness;
+        p.Factor = SelectedMeshTessAmount;
+        overrides.SetForTexture(tex, p);
+    }
+    if (ImGui::Button("Reset mesh")) {
+        overrides.ResetMesh(SelectedTessMesh);
+        SelectedMeshRoundness = 1.0f;
+        SelectedMeshTessAmount = 1.0f;
+    }
+
+    if (overrides.IsDirty()) {
+        ImGui::TextWrapped("Unsaved changes: press Save Level.");
+    }
 }
 
 void ImGuiEditorView::RenderVegetationSelectionPanel() {
@@ -876,11 +915,17 @@ void ImGuiEditorView::UpdateSelectionPanel() {
         }
     }
 
-    if (Selection.SelectedMesh) {
-        // Reset mesh settings
-        SelectedTexDisplacement = 0.f;
-        SelectedMeshRoundness = 0.f;
-        SelectedMeshTessAmount = 0.f;
+    // World tessellation overrides of the selected mesh (looked up once per selection, not per frame)
+    SelectedTessMesh = UINT_MAX;
+    if (auto* worldMesh = dynamic_cast<WorldMeshInfo*>(Selection.SelectedMesh)) {
+        auto& overrides = GetWorldTessOverrides();
+        if (worldMesh->TessMeshIndex < overrides.GetMeshCount()
+            && overrides.GetMeshInfo(worldMesh->TessMeshIndex, SelectedTessSectionX, SelectedTessSectionY, SelectedTessKey)) {
+            SelectedTessMesh = worldMesh->TessMeshIndex;
+            const WorldTessParams p = overrides.Get(SelectedTessMesh);
+            SelectedMeshRoundness = p.Roundness;
+            SelectedMeshTessAmount = p.Factor;
+        }
     }
 }
 
