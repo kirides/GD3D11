@@ -94,11 +94,17 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	//float cloudsAlpha = TX_Texture0.SampleLevel(SS_Linear, Input.vWorldPosition.xz / 700000.0f + frac(AC_Time * 0.001f), 5).a;
 	//atmoColor = lerp(atmoColor, clouds.r * lerp(atmoColor, 1.0f, 0.5f), cloudsAlpha / 2);
 	
+	// Overcast: grey veil over the clear sky (daytime only), clouds greyer, darker and more opaque
+	float overcast = AC_Weather.x;
+	float dayVeil = 0.5f * overcast * saturate(AC_LightPos.y);
+	atmoColor = lerp(atmoColor, dot(atmoColor, float3(0.2126f, 0.7152f, 0.0722f)) * AC_Weather.yzw, dayVeil);
+
 	clouds.rgb *= lerp(atmoColor, 1.0f, saturate(AC_LightPos.y));
+	clouds.rgb = lerp(clouds.rgb, dot(clouds.rgb, float3(0.2126f, 0.7152f, 0.0722f)) * AC_Weather.yzw, 0.6f * overcast) * (1.0f - 0.25f * overcast);
 	night.rgb = lerp(0.0f, night, saturate(-AC_LightPos.y * 4)); // Make sure stars are only visible at night
-	
-	
-	atmoColor = lerp(atmoColor, clouds.rgb, clouds.a * 0.4f);
+
+
+	atmoColor = lerp(atmoColor, clouds.rgb, clouds.a * lerp(0.4f, 0.85f, overcast));
 	
 	// Apply stars
 	atmoColor += night * 0.4f;

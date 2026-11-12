@@ -14,6 +14,9 @@
 #include "zCWorld.h"
 #include "zCBspTree.h"
 #include "corecrt_io.h"
+#include "SkyWeather.h"
+
+#include <chrono>
 
 GSky::GSky() {
     Atmosphere.Kr = 0.0075f;
@@ -236,6 +239,8 @@ XRESULT GSky::RenderSky() {
         XLE( LoadSkyResources() );
     }
 
+    UpdateWeather();
+
     XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
     // Default to the last known-good direction rather than zero: a zero light direction
     // normalizes to the zero vector, which later blows up XMMatrixLookToLH in the shadow
@@ -276,10 +281,15 @@ XRESULT GSky::RenderSky() {
     AtmosphereCB.AC_nSamples = Atmosphere.Samples;
     AtmosphereCB.AC_fSamples = static_cast<float>(AtmosphereCB.AC_nSamples);
 
+    // Overcast thickens the haze (Km) and dims the sun (ESun); the persistent settings stay untouched
+    const float overcast = GetOvercast();
+    const float km = Atmosphere.Km * ( 1.0f + 2.0f * overcast );
+    const float eSun = Atmosphere.ESun * ( 1.0f - 0.4f * overcast );
     AtmosphereCB.AC_Kr4PI = Atmosphere.Kr * 4 * XM_PI;
-    AtmosphereCB.AC_Km4PI = Atmosphere.Km * 4 * XM_PI;
-    AtmosphereCB.AC_KrESun = Atmosphere.Kr * Atmosphere.ESun;
-    AtmosphereCB.AC_KmESun = Atmosphere.Km * Atmosphere.ESun;
+    AtmosphereCB.AC_Km4PI = km * 4 * XM_PI;
+    AtmosphereCB.AC_KrESun = Atmosphere.Kr * eSun;
+    AtmosphereCB.AC_KmESun = km * eSun;
+    AtmosphereCB.AC_Weather = float4( overcast, GetWeatherTint().x, GetWeatherTint().y, GetWeatherTint().z );
 
     AtmosphereCB.AC_Scale = 1.0f / (AtmosphereCB.AC_OuterRadius - AtmosphereCB.AC_InnerRadius);
     AtmosphereCB.AC_RayleighScaleDepth = Atmosphere.RayleightScaleDepth;
@@ -536,12 +546,15 @@ void GSky::FillLowCloudConstants( LowCloudConstantBuffer& cb ) {
     const float fogOverride = std::clamp( Engine::GAPI->GetFogOverride(), 0.0f, 1.0f );
     cb.LC_FogHeight = settings.FogHeight;
     cb.LC_FogOverride = fogOverride;
-    XMStoreFloat3( &cb.LC_FogColor, fogOverride > 0.0f ? Engine::GAPI->GetFogColor() : XMLoadFloat3( &settings.FogColorMod ) );
+    const XMFLOAT3 weatherFog = GetWeatherFogColorMod( settings.FogColorMod );
+    XMStoreFloat3( &cb.LC_FogColor, fogOverride > 0.0f ? Engine::GAPI->GetFogColor() : XMLoadFloat3( &weatherFog ) );
 
     cb.LC_DayColor = settings.LowCloudDayColor;
     cb.LC_RainColor = XMFLOAT3( 0.70f, 0.70f, 0.70f );
     cb.LC_NightColor = XMFLOAT3( 0.50f, 0.55f, 0.55f );
-    cb.LC_Density = settings.LowCloudDensity;
+    // Clear days thin the clouds only while the weather model runs; otherwise density is the user's
+    cb.LC_Density = settings.LowCloudDensity * ( IsWeatherActive() ? 0.6f + 1.6f * GetOvercast() : 1.0f );
+    cb.LC_Overcast = GetOvercast();
     cb.LC_Scale = settings.LowCloudScale;
     cb.LC_HeightScale = settings.LowCloudHeight;
     cb.LC_DistanceScale = settings.LowCloudDistance;
@@ -708,4 +721,155 @@ MoonSpriteInfo GSky::ResolveMoonSprite( const INT2& resolution ) {
     out.Color[2] = res.z / 255.0f;
     out.Color[3] = std::min( res.w / 255.0f, 1.0f );
     return out;
+}
+
+namespace {
+    float Saturate( float v ) { return std::clamp( v, 0.0f, 1.0f ); }
+    float Smoothstep( float a, float b, float x ) {
+        float t = Saturate( ( x - a ) / ( b - a ) );
+        return t * t * ( 3.0f - 2.0f * t );
+    }
+
+    /** 0 or 1 for the layer a sky texture name belongs to ("LAYER0"/"LAYER1"), -1 if unknown. */
+    int SkyLayerOfName( std::string_view name ) {
+        std::string up( name );
+        for ( char& c : up ) c = static_cast<char>( toupper( static_cast<unsigned char>( c ) ) );
+        if ( up.find( "LAYER1" ) != std::string::npos ) return 1;
+        if ( up.find( "LAYER0" ) != std::string::npos ) return 0;
+        return -1;
+    }
+}
+
+float GSky::GetSunDimWeight( float rainWeight ) const {
+    return std::max( std::min( 1.0f, rainWeight * 2.0f ), 0.7f * Overcast );
+}
+
+XMFLOAT3 GSky::GetWeatherFogColorMod( const XMFLOAT3& fogColorMod ) const {
+    const float lum = 0.2126f * fogColorMod.x + 0.7152f * fogColorMod.y + 0.0722f * fogColorMod.z;
+    const float desat = 0.6f * Overcast, dim = 1.0f - 0.35f * Overcast;
+    return XMFLOAT3( ( fogColorMod.x + ( lum - fogColorMod.x ) * desat ) * dim,
+        ( fogColorMod.y + ( lum - fogColorMod.y ) * desat ) * dim,
+        ( fogColorMod.z + ( lum - fogColorMod.z ) * desat ) * dim );
+}
+
+/** Overcast model: day-seed target blended overnight, biased by the sky textures, raised by rain, smoothed. */
+void GSky::UpdateWeather() {
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    // Overrides set through SetWeatherOverride are not touched here.
+    SetWeatherEnabled( settings.DynamicWeather );
+    SetWeatherVariety( settings.WeatherVariety );
+    SetWeatherBias( settings.WeatherBias );
+    zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
+        ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+    auto* worldInfo = Engine::GAPI->GetLoadedWorldInfo();
+    const bool outdoor = worldInfo && worldInfo->BspTree && worldInfo->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
+
+    if ( !WeatherEnabled || !settings.AtmosphericScattering || !sc || !outdoor ) {
+        Overcast = 0.0f;
+        WeatherTint = XMFLOAT3( 1, 1, 1 );
+        WeatherSmoothingValid = false;
+        WeatherDebug = {};
+        return;
+    }
+
+    const float master = sc->GetMasterTime();
+    if ( WeatherLastMaster - master > 0.95f ) WeatherLocalDays++;
+    WeatherLastMaster = master;
+    const float dayCounter = GothicMemoryLocations::zCSkyController_Outdoor::Offset_DayCounter != 0
+        ? sc->GetDayCounter() : static_cast<float>( WeatherLocalDays );
+
+    // Seed: calendar day d is stable around its noon, then blends to d+1 over masterTime 0.30..0.70.
+    const float t = dayCounter + master;
+    const int d = static_cast<int>( std::floor( t ) );
+    const float variety = Saturate( WeatherVariety );
+    auto seedOf = [variety]( int day ) { return std::lerp( 0.2f, SkyWeather::DaySeedTarget( day ), variety ); };
+    const float seed = std::lerp( seedOf( d ), seedOf( d + 1 ), Smoothstep( 0.30f, 0.70f, t - float( d ) ) );
+
+    // Bias from the active sky textures (Layer1 over Layer0), recomputed only when they or the alpha change.
+    // masterState carries no textures: sky layer c draws skyLayerState[c]->Layer[c]. tex[0] = LAYER0 file, tex[1] = LAYER1.
+    zCTexture* tex[2] = {};
+    float alpha[2] = {};
+    for ( int c = 0; c < 2; c++ ) {
+        if ( zCSkyState* st = sc->GetSkyLayerState( c ) ) {
+            tex[c] = st->Layer[c].Tex;
+            alpha[c] = st->Layer[c].TexAlpha;
+        }
+    }
+    for ( zCTexture*& tx : tex ) {
+        if ( tx ) tx = tx->GetAniTexture();
+    }
+    if ( tex[0] && tex[1] && SkyLayerOfName( tex[0]->GetNameView() ) == 1 && SkyLayerOfName( tex[1]->GetNameView() ) == 0 ) {
+        std::swap( tex[0], tex[1] );
+        std::swap( alpha[0], alpha[1] );
+    }
+    const float layer1Alpha = Saturate( alpha[1] > 1.5f ? alpha[1] / 255.0f : alpha[1] );
+
+    const int alphaKey = static_cast<int>( layer1Alpha * 255.0f + 0.5f );
+    if ( WeatherRetryFrames > 0 ) WeatherRetryFrames--;
+    if ( ( tex[0] != WeatherKeyTex[0] || tex[1] != WeatherKeyTex[1] || alphaKey != WeatherKeyAlpha ) && WeatherRetryFrames == 0 ) {
+        bool supported = true, ready = true;
+        SkyWeather::SkyTexStats stats[2];
+        for ( int c = 0; c < 2; c++ ) {
+            if ( !tex[c] ) continue;
+            if ( !SkyWeather::IsSkyDayTexture( tex[c]->GetNameWithoutExtView() ) ) { supported = false; break; }
+            if ( SkyWeather::GetSkyTexStats( tex[c]->GetNameWithoutExtView(), stats[c] ) ) continue;
+            ready = false;
+            // Scattering never binds the sky layers, so they may not be loaded: queue each once.
+            if ( tex[c]->GetCacheState() != zRES_CACHED_IN ) {
+                bool tried = false;
+                for ( const zCTexture* p : WeatherCacheInTried ) tried |= p == tex[c];
+                if ( !tried ) {
+                    static int slot = 0;
+                    WeatherCacheInTried[slot++ & 3] = tex[c];
+                    tex[c]->CacheIn( -1 );
+                }
+            }
+        }
+        if ( !supported ) {
+            WeatherKeyTex[0] = tex[0]; WeatherKeyTex[1] = tex[1]; WeatherKeyAlpha = alphaKey;   // keep the last bias
+        } else if ( ready ) {
+            const SkyWeather::SkyComposite comp = SkyWeather::CompositeSky( stats[0], stats[1], layer1Alpha );
+            WeatherTexBias = comp.Bias;
+            WeatherTexTint = XMFLOAT3( comp.Tint[0], comp.Tint[1], comp.Tint[2] );
+            WeatherKeyTex[0] = tex[0]; WeatherKeyTex[1] = tex[1]; WeatherKeyAlpha = alphaKey;
+        } else {
+            WeatherRetryFrames = 30;
+        }
+    }
+
+    const float bias = std::clamp( WeatherTexBias + WeatherBias, -1.0f, 1.0f );
+    float o = WeatherOverride >= 0.0f ? Saturate( WeatherOverride )
+        : Saturate( std::lerp( seed, 1.0f, std::max( bias, 0.0f ) ) + std::min( bias, 0.0f ) );
+
+    // Clouds build ~1.5 h before rain and break ~1 h after.
+    float ramp = Engine::GAPI->GetRainFXWeight();
+    if ( settings.EnableRain ) {
+        const float start = sc->GetTimeStartRain(), stop = sc->GetTimeStopRain();
+        ramp = std::max( ramp, std::min( Saturate( ( master - ( start - 0.06f ) ) / 0.06f ), Saturate( 1.0f - ( master - stop ) / 0.04f ) ) );
+    }
+    o = std::max( o, Saturate( ramp ) );
+
+    // Low-pass over real time (~3 s) so teleports and world changes fade instead of popping.
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>( std::chrono::steady_clock::now().time_since_epoch() ).count();
+    if ( !WeatherSmoothingValid ) {
+        Overcast = o;
+        WeatherSmoothingValid = true;
+    } else {
+        const float dt = std::clamp( float( now - WeatherLastTickNs ) * 1e-9f, 0.0f, 0.25f );
+        Overcast += ( o - Overcast ) * ( 1.0f - std::exp( -dt / 3.0f ) );
+    }
+    WeatherLastTickNs = now;
+
+    auto subtle = []( float v ) { return std::clamp( v - 1.0f, -0.1f, 0.1f ); };
+    WeatherTint = XMFLOAT3( 1.0f + subtle( WeatherTexTint.x ) * Overcast, 1.0f + subtle( WeatherTexTint.y ) * Overcast,
+        1.0f + subtle( WeatherTexTint.z ) * Overcast );
+
+    WeatherDebug.Active = true;
+    WeatherDebug.DayCounter = dayCounter;
+    WeatherDebug.K = static_cast<int>( std::floor( t + 0.5f ) );
+    WeatherDebug.SeedTarget = seed;
+    WeatherDebug.TextureBias = bias;
+    WeatherDebug.RainRamp = Saturate( ramp );
+    WeatherDebug.Raw = o;
+    WeatherDebug.Overcast = Overcast;
 }

@@ -240,6 +240,8 @@ struct GothicMemoryLocations {
         // float resultFogScale — fades the planets out on foggy days (zCSkyControler_Outdoor::RenderPlanets).
         static const unsigned int Offset_ResultFogScale = 0x574;
         static const unsigned int Offset_MasterTime = 0x80;
+        // float dayCounter (zCSkyControler_Outdoor::dayCounter), 0 = unknown offset
+        static const unsigned int Offset_DayCounter = 0x534;
         static const unsigned int Offset_LastMasterTime = 0x84;
         static const unsigned int Offset_MasterState = 0x88;
         static const unsigned int Offset_SkyLayer1 = 0x5A8;

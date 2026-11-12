@@ -677,6 +677,12 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
     CheckRow( "Low Clouds", &settings.EnableLowClouds,
         "Drifting cloud banks above the valleys and along the horizon. Costs a half-resolution ray march.", "LowClouds" );
 
+    CheckRow( "Dynamic Weather", &settings.DynamicWeather,
+        "Each day gets its own weather - clear, cloudy or overcast - derived from the game's sky. Needs Atmospheric Scattering." );
+    ImGui::BeginDisabled( !settings.DynamicWeather );
+    SliderFloatRow( "Weather Variety", "##WeatherVariety", &settings.WeatherVariety, 0.0f, 1.0f );
+    ImGui::EndDisabled();
+
     CheckRow( "Rain", &settings.EnableRain, nullptr, "Rain" );
     ImGui::BeginDisabled( !settings.EnableRain );
     CheckRow( "Rain Effects", &settings.EnableRainEffects,

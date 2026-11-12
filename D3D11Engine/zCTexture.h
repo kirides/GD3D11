@@ -106,16 +106,16 @@ public:
 
     static constexpr int zTEX_MAX_ANIS = 3;
     
-    // offset into zTEX_MAX_ANIS-count of animation frames
+    // Inline zTEX_MAX_ANIS-sized member arrays (numAniFrames, actAniFrame, nextAni), not pointers to them.
     int* GetNumAniFrames() {
-        return *reinterpret_cast<int**>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_AniFrames));
+        return reinterpret_cast<int*>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_AniFrames));
     }
-    
+
     int* GetActAniFrame() {
-        return *reinterpret_cast<int**>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_ActAniFrame));
+        return reinterpret_cast<int*>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_ActAniFrame));
     }
     zCTexture** GetNextAni() {
-        return *reinterpret_cast<zCTexture***>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_NextFrame));
+        return reinterpret_cast<zCTexture**>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_NextFrame));
     }
     
     zCTexture* GetAniTexture() {

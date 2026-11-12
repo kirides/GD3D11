@@ -718,6 +718,9 @@ void GothicAPI::OnWorldUpdate() {
                 skyController->SetTimeStartRain( timeStartRain );
                 skyController->SetTimeStopRain( timeStopRain );
                 skyController->SetRenderLighting( renderLightning );
+
+                // RenderSkyPre's dice also advances the day, which picks the sky texture variant.
+                skyController->SetDayCounter( skyController->GetDayCounter() + 1.0f );
             }
 
             // RenderSkyPre is skipped for the scattering dome; without this masterState (sky IBL colours) freezes.
@@ -6035,6 +6038,9 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "LowCloudDistance", float_to_string( s.LowCloudDistance, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "LowCloudSpeed", float_to_string( s.LowCloudSpeed, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "LowCloudSunLight", float_to_string( s.LowCloudSunLight, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DynamicWeather", to_string_locale_independent( s.DynamicWeather ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "WeatherVariety", float_to_string( s.WeatherVariety, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "WeatherBias", float_to_string( s.WeatherBias, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableHDR", to_string_locale_independent( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableBloom", to_string_locale_independent( s.EnableBloom ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6274,6 +6280,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.LowCloudDistance = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudDistance", ds.LowCloudDistance, ini.c_str() ), 0.45f, 4.0f );
         s.LowCloudSpeed = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudSpeed", ds.LowCloudSpeed, ini.c_str() ), 0.0f, 10.0f );
         s.LowCloudSunLight = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudSunLight", ds.LowCloudSunLight, ini.c_str() ), 0.0f, 4.0f );
+        s.DynamicWeather = GetPrivateProfileBoolA( "General", "DynamicWeather", ds.DynamicWeather, ini );
+        s.WeatherVariety = std::clamp( GetPrivateProfileFloatA( "General", "WeatherVariety", ds.WeatherVariety, ini.c_str() ), 0.0f, 1.0f );
+        s.WeatherBias = std::clamp( GetPrivateProfileFloatA( "General", "WeatherBias", ds.WeatherBias, ini.c_str() ), -1.0f, 1.0f );
         s.AtmosphericScattering = GetPrivateProfileBoolA( "General", "AtmosphericScattering", ds.AtmosphericScattering, ini );
         s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", ds.EnableHDR, ini );
         s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );

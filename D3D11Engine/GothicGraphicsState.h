@@ -806,6 +806,9 @@ struct GothicRendererSettings {
         LowCloudSpeed = 1.0f;
         LowCloudSunLight = 1.0f;
         LowCloudDayColor = SwitchG1G2( XMFLOAT3( 0.90f, 0.80f, 0.65f ), XMFLOAT3( 1.05f, 1.15f, 1.15f ) );
+        DynamicWeather = true;
+        WeatherVariety = 1.0f;
+        WeatherBias = 0.0f;
         FogRange = SwitchG1G2(1.0f, 3.0f);
         EnableHDR = false;
         HDRToneMap = E_HDRToneMap::ToneMap_Simple;
@@ -1232,6 +1235,9 @@ struct GothicRendererSettings {
     float LowCloudSpeed;
     float LowCloudSunLight;     // sun glow on cloud tops and through thin cloud
     XMFLOAT3 LowCloudDayColor;  // per world, not persisted (SetupXWorldSpecificValues)
+    bool DynamicWeather;        // each day gets clear, cloudy or overcast weather (needs AtmosphericScattering)
+    float WeatherVariety;       // 0..1: how far the daily weather can range
+    float WeatherBias;          // -1..1: shifts the overcast estimate (+ = gloomier)
     float FogRange;
     int WindQuality;
     bool HeroAffectsObjects;

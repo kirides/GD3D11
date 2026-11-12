@@ -50,6 +50,18 @@ struct MoonLightInfo {
     bool IsMainLight = false;                   // the moon drives the shadow cascades instead of the sun
 };
 
+/** Dynamic-weather internals for the dev ImGui column. See GSky::UpdateWeather. */
+struct WeatherDebugInfo {
+    bool Active = false;        // model running (setting on, outdoor scattering world)
+    float DayCounter = 0.0f;    // Gothic's day number (own wrap count where the offset is unknown)
+    int K = 0;                  // round( dayCounter + masterTime ): the calendar day
+    float SeedTarget = 0.0f;    // seed target blended across the night
+    float TextureBias = 0.0f;   // from the sky layer textures (+ WeatherBias)
+    float RainRamp = 0.0f;
+    float Raw = 0.0f;           // overcast before smoothing
+    float Overcast = 0.0f;      // final, smoothed
+};
+
 class zCTexture;
 class zCSkyLayer;
 class zCSkyState;
@@ -131,6 +143,40 @@ public:
     /** Constants for Shaders/include/LowClouds.hlsl, shared by both backends. */
     void FillLowCloudConstants( LowCloudConstantBuffer& cb );
 
+    /** Per-frame dynamic-weather step (called at the start of RenderSky). Overcast stays 0 with scattering
+        off, indoors or WeatherEnabled false. */
+    void UpdateWeather();
+
+    /** 0 = clear, 1 = fully overcast; smoothed over real time. */
+    float GetOvercast() const { return Overcast; }
+
+    /** Subtle cloud tint, (1,1,1) = neutral, at most +-10% per channel. */
+    XMFLOAT3 GetWeatherTint() const { return WeatherTint; }
+
+    /** Weight for the RainSunLightStrength lerps: max( min( 1, rain * 2 ), 0.7 * overcast ). */
+    float GetSunDimWeight( float rainWeight ) const;
+
+    /** fogColorMod desaturated toward its luminance and darkened (up to 35%) by the overcast. */
+    XMFLOAT3 GetWeatherFogColorMod( const XMFLOAT3& fogColorMod ) const;
+
+    /** Weight (0.3 * overcast) for lerping the fog density toward the rain fog density. */
+    float GetWeatherFogDensityWeight() const { return 0.3f * Overcast; }
+
+    WeatherDebugInfo GetWeatherDebug() const { return WeatherDebug; }
+    bool IsWeatherActive() const { return WeatherDebug.Active; }
+
+    /** Tunables; the settings layer wires them up. Override < 0 = off, otherwise it replaces the
+        seed+bias overcast (rain still raises it). */
+    void SetWeatherEnabled( bool enabled ) { WeatherEnabled = enabled; }
+    void SetWeatherVariety( float variety ) { WeatherVariety = std::clamp( variety, 0.0f, 1.0f ); }
+    void SetWeatherBias( float bias ) { WeatherBias = std::clamp( bias, -1.0f, 1.0f ); }
+    void SetWeatherOverride( float overcast ) { WeatherOverride = overcast; }
+
+    bool WeatherEnabled = true;
+    float WeatherVariety = 1.0f;
+    float WeatherBias = 0.0f;
+    float WeatherOverride = -1.0f;
+
 protected:
     /** Loads the sky textures */
     XRESULT LoadSkyResources();
@@ -162,4 +208,19 @@ protected:
     /** Atmospheric variables */
     AtmosphereConstantBuffer AtmosphereCB;
     AtmosphereSettings Atmosphere;
+
+    /** Dynamic weather state */
+    float Overcast = 0.0f;
+    XMFLOAT3 WeatherTint = XMFLOAT3( 1, 1, 1 );
+    WeatherDebugInfo WeatherDebug;
+    bool WeatherSmoothingValid = false;
+    int64_t WeatherLastTickNs = 0;
+    float WeatherLastMaster = 0.0f;
+    int WeatherLocalDays = 0;           // own wrap count for builds without a dayCounter offset
+    float WeatherTexBias = 0.0f;        // last valid bias from the sky textures
+    XMFLOAT3 WeatherTexTint = XMFLOAT3( 1, 1, 1 );
+    const zCTexture* WeatherKeyTex[2] = {};
+    int WeatherKeyAlpha = -1;
+    int WeatherRetryFrames = 0;
+    const zCTexture* WeatherCacheInTried[4] = {};
 };

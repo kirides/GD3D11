@@ -1193,6 +1193,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="StaticLightFarField.h" />
     <ClInclude Include="D3D12Engine\D3D12GeometryStreams.h" />
     <ClInclude Include="D3D12Engine\D3D12VertexPullSelfTest.h" />
+    <ClInclude Include="SkyWeather.h" />
     <ClInclude Include="D3D12Engine\D3D12Device.h" />
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h" />
     <ClInclude Include="D3D12Engine\D3D12EngineCommon.h" />
@@ -1433,6 +1434,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12Barrier.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Engine2D.cpp" />
     <ClCompile Include="D3D11ShaderManager.cpp" />
+    <ClCompile Include="SkyWeather.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp" />
     <ClCompile Include="HookedFunctions.cpp" />
     <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">

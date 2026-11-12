@@ -3,6 +3,7 @@
 #include "BaseGraphicsEngine.h"
 #include "BaseLineRenderer.h"
 #include "GothicAPI.h"
+#include "GSky.h"
 
 #include "D3D11GraphicsEngine.h" // TODO: Needed for the UI-View. This should not be here!
 
@@ -157,6 +158,16 @@ extern "C"
     /** Sets rain use initial set */
     __declspec(dllexport) void __cdecl GDX_SetRainUseInitialSet( bool initial ) {
         Engine::GAPI->GetRendererState().RendererSettings.RainUseInitialSet = initial;
+    }
+
+    /** Overrides the weather overcast (0..1) on outdoor scattering worlds. A negative value turns the override off. */
+    __declspec(dllexport) void __cdecl GDX_SetWeatherOverride( float overcast ) {
+        if ( GSky* sky = Engine::GAPI->GetSky() ) sky->SetWeatherOverride( overcast );
+    }
+
+    /** Sets the weather bias (-1..1): negative is clearer, positive gloomier. */
+    __declspec(dllexport) void __cdecl GDX_SetWeatherBias( float bias ) {
+        Engine::GAPI->GetRendererState().RendererSettings.WeatherBias = std::clamp( bias, -1.0f, 1.0f );
     }
 
     /** Gets a ID3D11DeviceContext1 rendering context. Returns nullptr when the D3D12 backend is

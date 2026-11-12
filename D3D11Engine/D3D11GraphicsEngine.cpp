@@ -4086,7 +4086,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             float4 fogColor = isIndoorWorld
                 ? float4( 0.0f, 0.0f, 0.0f, 0.0f )
                 : float4( rendererState.RendererSettings.AtmosphericScattering
-                    ? rendererState.RendererSettings.FogColorMod
+                    ? Engine::GAPI->GetSky()->GetWeatherFogColorMod( rendererState.RendererSettings.FogColorMod )
                     : rendererState.GraphicsState.FF_FogColor, 0.0f );
             GetContext()->ClearRenderTargetView( graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&fogColor) );
         };
