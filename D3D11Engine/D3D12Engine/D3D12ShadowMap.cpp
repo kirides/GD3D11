@@ -289,9 +289,10 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 	{
 		Rhi::GraphicsPipelineStateDesc pull = pso;
 		pull.InputLayout = { nullptr, 0 };
-		bool ok = m_E->m_Pipelines.World.DepthPrepassVsBlobPull != nullptr;
+		ID3DBlob* vs = m_E->m_Pipelines.World.CasterVsBlobPull ? m_E->m_Pipelines.World.CasterVsBlobPull.Get() : m_E->m_Pipelines.World.DepthPrepassVsBlobPull.Get();
+		bool ok = vs != nullptr;
 		if ( ok ) {
-			pull.VS = { m_E->m_Pipelines.World.DepthPrepassVsBlobPull->GetBufferPointer(), m_E->m_Pipelines.World.DepthPrepassVsBlobPull->GetBufferSize() };
+			pull.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
 			ok = SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &pull, m_CasterWorldPSOPull.ReleaseAndGetAddressOf() ) );
 			pull.PS = {};
 			ok = ok && SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &pull, m_CasterWorldNoAlphaPSOPull.ReleaseAndGetAddressOf() ) );

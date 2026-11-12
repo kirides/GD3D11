@@ -238,6 +238,7 @@ protected:
 
     /** World tessellation overrides of the selected world mesh (SelectedTessMesh == UINT_MAX: none) */
     float SelectedMeshTessAmount;
+    float SelectedMeshDisplacement;
     float SelectedMeshRoundness;
     unsigned int SelectedTessMesh;
     int SelectedTessSectionX;

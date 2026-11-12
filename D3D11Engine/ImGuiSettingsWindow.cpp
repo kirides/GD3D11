@@ -724,6 +724,27 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         ImGui::EndDisabled();
     }
 
+    if ( IsD3D12() ) {
+        CheckRow( "Height Map Shading", &settings.HeightMapShading,
+            "Micro shadows from the sun, cavity occlusion, and normals for materials without a normal map, from <texture>_HEIGHT.DDS height maps (R channel, 0.5 = rest surface). Materials without a height map are unaffected." );
+        ImGui::BeginDisabled( !settings.HeightMapShading );
+        SliderFloatRow( "Height Map Depth (cm)", "##HeightMapDepth", &settings.HeightMapDepth, 0.0f, 50.0f, "%.1f",
+            "Peak-to-peak height of the height maps in cm. Also drives the displacement when World Tessellation is on. 0 disables height effects." );
+        SliderIntRow( "Height Map Shadow Quality", "##HeightMapShadowSteps", &settings.HeightMapShadowSteps, 0, 32, "%d",
+            "Ray steps for the sun's micro shadows. 0 turns them off; higher is smoother and slower." );
+        SliderFloatRow( "Height Map Range", "##HeightMapRange", &settings.HeightMapRange, 2000.0f, 20000.0f, "%.0f",
+            "How far height shading and parallax reach, in world units; they fade out over the last quarter." );
+        CheckRow( "Parallax", &settings.HeightMapPom,
+            "Parallax occlusion mapping: gives height maps apparent depth beyond the tessellation range (everywhere when World Tessellation is off)." );
+        ImGui::BeginDisabled( !settings.HeightMapPom );
+        SliderIntRow( "Parallax Steps", "##HeightMapPomSteps", &settings.HeightMapPomSteps, 8, 64, "%d",
+            "Ray steps of the parallax search. Higher is better quality and slower." );
+        CheckRow( "Parallax Silhouettes", &settings.HeightMapSilhouettes,
+            "Curved edges are cut out by the parallax ray. Needs Parallax." );
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+    }
+
     constexpr ListItem<GothicRendererSettings::E_WaterSimulation> waterSims[] = {
         { "Off", GothicRendererSettings::WATER_SIM_OFF, "The sea uses the Water Waves mode above." },
         { "Low", GothicRendererSettings::WATER_SIM_LOW, "Simulated ocean waves, 3 cascades of 128x128." },

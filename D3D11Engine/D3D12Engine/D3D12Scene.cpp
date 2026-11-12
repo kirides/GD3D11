@@ -62,6 +62,7 @@ using Microsoft::WRL::ComPtr;
 #include "../TransparencyQueue.h"
 #include "../StaticLightFarField.h"
 #include "../WorldTessOverrides.h"
+#include <DirectXPackedVector.h>
 
 
 // ---- The two per-frame record sets the shadow modules share with this TU (declared in D3D12EngineCommon.h) ----
@@ -420,6 +421,7 @@ void D3D12GraphicsEngine::OnWorldMeshReset() {
     // Not every load mode reaches OnLoadWorld, and the GPU world points into the sections being deleted.
     m_GpuWorld->Reset();
     m_WorldTessTableVersion = UINT32_MAX;   // re-evaluated next frame; an empty table releases the resource
+    m_MaterialMapsTexVersion = UINT32_MAX;
 }
 
 
@@ -428,6 +430,7 @@ void D3D12GraphicsEngine::OnLoadWorld()
     m_GpuScene->Reset();
     m_GpuWorld->Reset();
     m_WorldTessTableVersion = UINT32_MAX;
+    m_MaterialMapsTexVersion = UINT32_MAX;
     m_MenuBackdropValid = false;   // shows the old world
     g_vobInfoVisualToBucket.clear();
     g_vobInfoVisualIndexToVisualInfo.clear();
@@ -1214,10 +1217,17 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
 void D3D12GraphicsEngine::UploadWorldTessConstants() {
 	uint8_t* mapped = m_ShadowCBMapped[m_FrameIndex];
 	if ( !mapped ) return;
-	WorldTessCBData cb = {};   // zeroed while inactive: the HS then sees range 0 and factor 0
+	WorldTessCBData cb = {};   // tess fields zeroed while inactive: the HS then sees range 0 and factor 0
+	const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
+	cb.HeightDepth = std::max( s.HeightMapDepth, 0.0f );
+	cb.HeightShadowSteps = static_cast<float>( std::clamp( s.HeightMapShadowSteps, 0, 32 ) );
+	cb.HeightShading = s.HeightMapShading ? 1.0f : 0.0f;
+	cb.HeightRange = std::max( s.HeightMapRange, 0.0f );
+	cb.PomSteps = static_cast<float>( std::clamp( s.HeightMapPomSteps, 8, 64 ) );
+	cb.PomFlags = static_cast<float>( ( ( s.HeightMapPom && s.HeightMapShading ) ? 1 : 0 ) | ( s.HeightMapSilhouettes ? 2 : 0 ) );
+	cb.TessActive = m_WorldTessActive ? 1.0f : 0.0f;
 	if ( m_WorldTessActive ) {
 		constexpr float kTargetPixelsPerSegment = 10.0f;   // screen size one tessellated edge segment aims for
-		const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
 		const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
 		const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
 		cb.CamPos[0] = camPos.x; cb.CamPos[1] = camPos.y; cb.CamPos[2] = camPos.z;
@@ -1226,15 +1236,38 @@ void D3D12GraphicsEngine::UploadWorldTessConstants() {
 		cb.Range = std::max( s.WorldTessellationRange, 1.0f );
 		cb.Strength = std::clamp( s.WorldTessellationStrength, 0.0f, 1.0f );
 		cb.FadeStart = 0.75f * cb.Range;
+		cb.DispScale = cb.HeightDepth;
 	}
 	memcpy( mapped + kWorldTessCbOffset, &cb, sizeof( cb ) );
 }
 
 void D3D12GraphicsEngine::UpdateWorldTessTable() {
 	WorldTessOverrides& ov = GetWorldTessOverrides();
+	// Also rebuilt (by UpdateMaterialMaps) when a canonical mesh's height slot changed: m_WorldTessTableVersion reset to UINT32_MAX
 	if ( ov.GetVersion() == m_WorldTessTableVersion ) return;
 	m_WorldTessTableVersion = ov.GetVersion();
-	const std::vector<XMFLOAT4>& table = ov.GetGpuTable();
+
+	const uint32_t meshCount = ov.GetMeshCount();
+	const std::vector<XMFLOAT4>& gpuTable = ov.GetGpuTable();
+	m_WorldTessScratch.assign( gpuTable.begin(), gpuTable.end() );
+	// Height slot of a mesh's texture: 0xFFFE = none / not loaded
+	auto meshHeightSlot = [&]( uint32_t mesh ) -> uint32_t {
+		if ( mesh >= m_WorldTessMeshTex.size() || m_WorldTessMeshTex[mesh] >= m_WorldTessUniqueHeight.size() ) return 0xFFFEu;
+		const uint32_t slot = m_WorldTessUniqueHeight[m_WorldTessMeshTex[mesh]];
+		return slot < 0xFFFEu ? slot : 0xFFFEu;
+	};
+	for ( size_t e = 0; e < m_WorldTessScratch.size(); e++ ) {
+		// .w = low 16: 0xFFFF for meshes (own material's slot), else the canonical mesh's height slot / 0xFFFE; high 16: half UV density
+		uint32_t low = 0xFFFFu, densityMesh = static_cast<uint32_t>( e );
+		if ( e >= meshCount ) {
+			densityMesh = ov.GetBoundaryCanonicalMesh( static_cast<uint32_t>( e ) - meshCount );
+			low = densityMesh < meshCount ? meshHeightSlot( densityMesh ) : 0xFFFEu;
+		}
+		const uint32_t density = densityMesh < meshCount ? DirectX::PackedVector::XMConvertFloatToHalf( ov.GetMeshUvDensity( densityMesh ) ) : 0u;
+		const uint32_t bits = low | ( density << 16 );
+		memcpy( &m_WorldTessScratch[e].w, &bits, sizeof( bits ) );
+	}
+	const std::vector<XMFLOAT4>& table = m_WorldTessScratch;
 	// Frames still in flight read the old one: keep it alive until they retire
 	if ( m_WorldTessTable ) QueueResourceForRelease( std::move( m_WorldTessTable ) );
 	if ( table.empty() ) return;
@@ -1259,6 +1292,98 @@ void D3D12GraphicsEngine::UpdateWorldTessTable() {
 	}
 	FlushTextureUploads();
 	m_WorldTessTable = std::move( buffer );
+}
+
+void D3D12GraphicsEngine::UpdateMaterialMaps() {
+	const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
+	WorldTessOverrides& ov = GetWorldTessOverrides();
+	if ( ov.GetVersion() != m_MaterialMapsTexVersion ) {
+		m_MaterialMapsTexVersion = ov.GetVersion();
+		m_WorldTessUniqueTex.clear();
+		const uint32_t meshCount = ov.GetMeshCount();
+		m_WorldTessMeshTex.assign( meshCount, UINT32_MAX );
+		for ( uint32_t m = 0; m < meshCount; m++ ) {
+			zCMaterial* mat = ov.GetMeshMaterial( m );   // unique by material: its texture is read live each frame
+			if ( !mat ) continue;
+			const auto it = std::find( m_WorldTessUniqueTex.begin(), m_WorldTessUniqueTex.end(), mat );
+			m_WorldTessMeshTex[m] = static_cast<uint32_t>( it - m_WorldTessUniqueTex.begin() );
+			if ( it == m_WorldTessUniqueTex.end() ) m_WorldTessUniqueTex.push_back( mat );
+		}
+		m_WorldTessUniqueHeight.assign( m_WorldTessUniqueTex.size(), kMaterialMapsNone );
+		m_WorldTessTableVersion = UINT32_MAX;   // canonical slots must be re-resolved into the table
+	}
+
+	const bool pomState = s.HeightMapPom && s.HeightMapShading;
+	if ( pomState != m_HeightPomState ) { m_HeightPomState = pomState; m_HeightPartitionEpoch++; }
+
+	// Heights stream in asynchronously; resolve outside the lock, GetSrvSlot may not be lock-free everywhere
+	if ( s.HeightMapShading || s.WorldTessellation ) {
+		m_MaterialMapsPending.clear();
+		for ( size_t u = 0; u < m_WorldTessUniqueTex.size(); u++ ) {
+			zCTexture* tex = m_WorldTessUniqueTex[u]->GetAniTexture();
+			// A cached-out texture's surface pointer dangles (don't force a cache-in either): it has no height slot then
+			MyDirectDrawSurface7* surface = tex && tex->GetCacheState() == zRES_CACHED_IN ? tex->GetSurface() : nullptr;
+			GfxTexture* diffuse = surface ? surface->GetEngineTexture() : nullptr;
+			D3D12Texture* d3d12Diffuse = diffuse ? D3D12Texture::From( diffuse ) : nullptr;
+			const bool resident = d3d12Diffuse && d3d12Diffuse->HasSRV();
+			uint32_t height = kMaterialMapsNone;
+			if ( GfxTexture* h = resident ? surface->GetHeightmap() : nullptr ) {
+				D3D12Texture* d3d12Height = D3D12Texture::From( h );
+				if ( d3d12Height->HasSRV() ) height = d3d12Height->GetSrvSlot();
+			}
+			if ( m_WorldTessUniqueHeight[u] != height ) {
+				m_WorldTessUniqueHeight[u] = height;
+				m_WorldTessTableVersion = UINT32_MAX;   // boundary entries carry the canonical mesh's slot
+				m_HeightPartitionEpoch++;
+			}
+			if ( resident ) m_MaterialMapsPending.emplace_back( d3d12Diffuse->GetSrvSlot(), height );
+		}
+		std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+		for ( const auto& [diffuseSlot, height] : m_MaterialMapsPending ) {
+			if ( diffuseSlot >= kMaterialMapsSlot || m_MaterialMaps.size() < ( diffuseSlot + 1 ) * 2u ) continue;
+			uint32_t& entry = m_MaterialMaps[diffuseSlot * 2u];
+			if ( entry != height ) { entry = height; m_MaterialMapsDirty = true; }
+		}
+	}
+	UploadMaterialMaps();
+}
+
+void D3D12GraphicsEngine::UploadMaterialMaps() {
+	{
+		std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+		if ( !m_MaterialMapsDirty || m_MaterialMaps.empty() ) return;
+		m_MaterialMapsScratch = m_MaterialMaps;   // FreeSrvSlot writes the mirror off-thread
+		m_MaterialMapsDirty = false;
+	}
+	const UINT64 bytes = m_MaterialMapsScratch.size() * sizeof( uint32_t );
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = bytes;
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	Microsoft::WRL::ComPtr<Rhi::Resource> buffer;
+	if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, buffer.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Err( "D3D12: material-maps table could not be created; height maps off." );
+		return;
+	}
+	buffer->SetName( L"MaterialMaps" );
+	if ( !UploadBufferData( buffer.Get(), m_MaterialMapsScratch.data(), bytes ) ) {
+		Logging::Err( "D3D12: material-maps table upload failed; height maps off." );
+		return;
+	}
+	FlushTextureUploads();
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Buffer.NumElements = static_cast<UINT>( m_MaterialMapsScratch.size() / 2 );
+	srv.Buffer.StructureByteStride = 2 * sizeof( uint32_t );
+	m_Rhi->CreateShaderResourceView( buffer.Get(), &srv, GetSrvCpuHandle( kMaterialMapsSlot ) );
+	// Frames still in flight read the old one: keep it alive until they retire
+	if ( m_MaterialMapsBuffer ) QueueResourceForRelease( std::move( m_MaterialMapsBuffer ) );
+	m_MaterialMapsBuffer = std::move( buffer );
 }
 
 void D3D12GraphicsEngine::UpdateFarField() {
@@ -2870,6 +2995,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	m_AttachArena->Flush( this );
 	// Last arena flush/growth of the frame is behind us (VOB arena, BeginSkinningFrame, the two above) and no cascade
 	// job has launched yet: rewrite this frame slot's stream table here. Passes recorded after this point may read it.
+	UpdateMaterialMaps();     // before any pass reads the table (lit world, prepass tess VS); resolves the heights UpdateWorldTessTable bakes
 	UpdateWorldTessTable();   // before the stream table so its SRV sees the new resource this frame
 	m_GeometryStreams->Update();
 	{
@@ -3576,10 +3702,14 @@ D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(con
     // CacheIn also loads the normal/ORM side textures; cacheIn=false only reads the state.
     const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
                                          : ( tex->GetCacheState() == zRES_CACHED_IN ) );
+    const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    const bool pom = rs.HeightMapPom && rs.HeightMapShading;
+    bool heightPom = false;
     if ( cached ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+            heightPom = pom && s->GetHeightmap() != nullptr;
             if ( GfxTexture* gfx = s->GetEngineTexture() ) { D3D12Texture* d = D3D12Texture::From( gfx ); if ( d->HasSRV() ) m.Diffuse = d->GetSrvSlot(); }
-            if ( GfxTexture* n = s->GetNormalmap() )       { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) m.Normal = d->GetSrvSlot(); }
+            if ( GfxTexture* n = s->GetNormalmap() )    { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) m.Normal = d->GetSrvSlot(); }
             if ( GfxTexture* o = s->GetFxMap() )           { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) m.Orm = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
         }
     }
@@ -3591,6 +3721,8 @@ D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(con
     if ( m.AlphaTested ) m.Orm |= kBacklitFoliage;
     // Waving materials take the per-material depth run too, never a merged command: their VS reads b6
     m.AlphaTested |= MaterialFx::HasWaves( key.Material );
+    // POM discards/offsets UVs in the prepass PS, so height materials need the per-material PS run
+    m.AlphaTested |= heightPom;
     m.Diffuse = PackMaterialFx( m.Diffuse, key.Material );
     return m;
 }
@@ -4767,8 +4899,8 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     BindWorldPull( m_CmdList, m_Pipelines.World.PullRootParam );
     const WorldTessScope tessScope( m_CmdList, m_WorldTessActive );
-    if ( m_WorldTessActive )
-        m_CmdList->SetGraphicsRootConstantBufferView( wp.TessRootParam, m_ShadowCBGpu[m_FrameIndex] + kWorldTessCbOffset );   // b11
+    if ( wp.TessRootParam != UINT_MAX )   // b11: the tess HS/DS and PSClip's POM read it
+        m_CmdList->SetGraphicsRootConstantBufferView( wp.TessRootParam, m_ShadowCBGpu[m_FrameIndex] + kWorldTessCbOffset );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
     if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSWorldGBuf)
 
@@ -4939,6 +5071,8 @@ void D3D12GraphicsEngine::BindWorldFrameRootState( const XMFLOAT4X4& viewProj ) 
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );
     m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) );   // t5 point-shadow cubes
     m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
+    if ( m_Pipelines.World.TessRootParam != UINT_MAX )   // b11: tessellation stages and the height-map shading in ShadeWorld
+        m_CmdList->SetGraphicsRootConstantBufferView( m_Pipelines.World.TessRootParam, m_ShadowCBGpu[m_FrameIndex] + kWorldTessCbOffset );
 }
 
 
@@ -4982,8 +5116,6 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     m_CmdList->SetPipelineState( opaquePso );
     BindWorldFrameRootState( viewProj );
     const WorldTessScope tessScope( m_CmdList, m_WorldTessActive );
-    if ( m_WorldTessActive )
-        m_CmdList->SetGraphicsRootConstantBufferView( wp.TessRootParam, m_ShadowCBGpu[m_FrameIndex] + kWorldTessCbOffset );   // b11
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };

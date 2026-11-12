@@ -11,7 +11,7 @@
 using namespace DirectX;
 
 namespace {
-    constexpr const char* kWtsHeader = "GD3D11-WTS 1";
+    constexpr const char* kWtsHeader = "GD3D11-WTS 2";
 
     std::string LowerKey( std::string_view s ) {
         std::string r( s );
@@ -57,8 +57,10 @@ WorldTessOverrides& GetWorldTessOverrides() {
     return s_Instance;
 }
 
-void WorldTessOverrides::Build( std::vector<WorldTessMeshRef>&& meshes, const std::vector<uint32_t>& boundaryOffsets, const std::vector<uint32_t>& boundaryMeshes ) {
+void WorldTessOverrides::Build( std::vector<WorldTessMeshRef>&& meshes, const std::vector<uint32_t>& boundaryOffsets, const std::vector<uint32_t>& boundaryMeshes,
+    const std::vector<uint32_t>& boundaryCanonical ) {
     m_Meshes = std::move( meshes );
+    m_BoundaryCanonical = boundaryCanonical;
     m_Params.assign( m_Meshes.size(), WorldTessParams{} );
     m_BoundaryOffsets = boundaryOffsets;
     m_BoundaryMeshes16.clear();
@@ -72,7 +74,7 @@ void WorldTessOverrides::Build( std::vector<WorldTessMeshRef>&& meshes, const st
     m_Dirty = false;
 
     const size_t bytes = m_Meshes.capacity() * sizeof( WorldTessMeshRef ) + m_Params.capacity() * sizeof( WorldTessParams )
-        + m_BoundaryOffsets.capacity() * 4 + m_BoundaryMeshes16.capacity() * 2 + m_BoundaryMeshes32.capacity() * 4;
+        + m_BoundaryOffsets.capacity() * 4 + m_BoundaryMeshes16.capacity() * 2 + m_BoundaryMeshes32.capacity() * 4 + m_BoundaryCanonical.capacity() * 4;
     Logging::Inf( "World tessellation overrides: {} meshes, {} boundary entries, {} KB retained", m_Meshes.size(), GetBoundaryCount(), bytes / 1024 );
 }
 
@@ -80,6 +82,7 @@ void WorldTessOverrides::Reset() {
     m_Meshes = {};
     m_Params = {};
     m_BoundaryOffsets = {};
+    m_BoundaryCanonical = {};
     m_BoundaryMeshes16 = {};
     m_BoundaryMeshes32 = {};
     m_UnknownLines = {};
@@ -96,7 +99,8 @@ void WorldTessOverrides::Set( uint32_t mesh, const WorldTessParams& p ) {
     if ( mesh >= m_Params.size() ) return;
     WorldTessParams c = p;
     c.Roundness = std::clamp( c.Roundness, 0.0f, 1.0f );
-    c.Factor = std::clamp( c.Factor, 0.0f, 2.0f );
+    c.Factor = std::clamp( c.Factor, 0.0f, 8.0f );
+    c.Displacement = std::clamp( c.Displacement, 0.0f, 4.0f );
     m_Params[mesh] = c;
     Touch();
 }
@@ -104,10 +108,15 @@ void WorldTessOverrides::Set( uint32_t mesh, const WorldTessParams& p ) {
 void WorldTessOverrides::SetForTexture( zCTexture* texture, const WorldTessParams& p ) {
     if ( !texture ) return;
     for ( uint32_t i = 0; i < m_Meshes.size(); ++i ) {
-        const WorldTessMeshRef& m = m_Meshes[i];
-        zCTexture* tex = m.Texture ? m.Texture : (m.Material ? m.Material->GetTextureSingle() : nullptr);
-        if ( tex == texture ) Set( i, p );
+        zCMaterial* mat = m_Meshes[i].Material;
+        if ( mat && ( mat->GetTextureSingle() == texture || mat->GetAniTexture() == texture ) ) Set( i, p );
     }
+}
+
+zCTexture* WorldTessOverrides::GetMeshTexture( uint32_t mesh ) const {
+    if ( mesh >= m_Meshes.size() ) return nullptr;
+    zCMaterial* mat = m_Meshes[mesh].Material;
+    return mat ? mat->GetAniTexture() : nullptr;
 }
 
 void WorldTessOverrides::ResetMesh( uint32_t mesh ) {
@@ -119,14 +128,7 @@ bool WorldTessOverrides::GetMeshInfo( uint32_t mesh, int& sectionX, int& section
     const WorldTessMeshRef& m = m_Meshes[mesh];
     sectionX = m.SectionX;
     sectionY = m.SectionY;
-    zCTexture* tex = m.Texture ? m.Texture : (m.Material ? m.Material->GetTextureSingle() : nullptr);
-    if ( tex ) {
-        key = std::string( tex->GetNameWithoutExtView() );
-    } else if ( m.Material ) {
-        key = std::string( m.Material->GetNameView() );
-    } else {
-        key.clear();
-    }
+    key = m.Key;
     return !key.empty();
 }
 
@@ -142,16 +144,17 @@ const std::vector<XMFLOAT4>& WorldTessOverrides::GetGpuTable() {
     m_Table.resize( meshCount + boundaries );
     for ( size_t i = 0; i < meshCount; ++i ) {
         const WorldTessParams& p = m_Params[i];
-        m_Table[i] = XMFLOAT4( p.Roundness, p.Factor, p.Reserved[0], p.Reserved[1] );
+        m_Table[i] = XMFLOAT4( p.Roundness, p.Factor, p.Displacement, 0.0f );
     }
     for ( size_t b = 0; b < boundaries; ++b ) {
-        XMFLOAT4 r( FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX );
+        XMFLOAT4 r( FLT_MAX, FLT_MAX, 0.0f, 0.0f );
+        if ( b < m_BoundaryCanonical.size() && m_BoundaryCanonical[b] < meshCount ) r.z = m_Table[m_BoundaryCanonical[b]].z;
         for ( uint32_t k = m_BoundaryOffsets[b]; k < m_BoundaryOffsets[b + 1]; ++k ) {
             const uint32_t id = m_BoundaryMeshes16.empty() ? m_BoundaryMeshes32[k] : m_BoundaryMeshes16[k];
             const XMFLOAT4& v = m_Table[id];
-            r.x = std::min( r.x, v.x ); r.y = std::min( r.y, v.y ); r.z = std::min( r.z, v.z ); r.w = std::min( r.w, v.w );
+            r.x = std::min( r.x, v.x ); r.y = std::min( r.y, v.y );
         }
-        if ( m_BoundaryOffsets[b] == m_BoundaryOffsets[b + 1] ) r = XMFLOAT4( 1, 1, 0, 0 );
+        if ( m_BoundaryOffsets[b] == m_BoundaryOffsets[b + 1] ) r = XMFLOAT4( 1, 1, r.z, 0 );
         m_Table[meshCount + b] = r;
     }
     return m_Table;
@@ -177,16 +180,24 @@ bool WorldTessOverrides::Load( const std::string& file ) {
     size_t applied = 0;
     std::string line;
     bool first = true;
+    int version = 1; // headerless files are version 1
     while ( std::getline( f, line ) ) {
         std::string_view s = Trim( line );
         if ( s.empty() ) continue;
         if ( first ) {
             first = false;
-            if ( s.substr( 0, 10 ) == "GD3D11-WTS" ) continue;
+            if ( s.substr( 0, 10 ) == "GD3D11-WTS" ) {
+                std::string_view v = Trim( s.substr( 10 ) );
+                ParseNum( v, version );
+                continue;
+            }
         }
 
-        // "sx sy key roundness factor"; the key may contain spaces, so peel numbers off both ends.
+        // v1 "sx sy key roundness factor", v2 adds "displacement". The key may contain spaces, so peel numbers
+        // off both ends; the column count comes from the header version.
         std::string_view rest = s;
+        std::string_view dispTok;
+        if ( version >= 2 ) dispTok = PopToken( rest );
         const std::string_view factorTok = PopToken( rest );
         const std::string_view roundTok = PopToken( rest );
         const std::string_view sxTok = PopFrontToken( rest );
@@ -194,16 +205,19 @@ bool WorldTessOverrides::Load( const std::string& file ) {
         int sx = 0, sy = 0;
         WorldTessParams p;
         const std::string_view key = Trim( rest );
-        if ( key.empty() || !ParseNum( sxTok, sx ) || !ParseNum( syTok, sy ) || !ParseNum( roundTok, p.Roundness ) || !ParseNum( factorTok, p.Factor ) ) {
+        if ( key.empty() || !ParseNum( sxTok, sx ) || !ParseNum( syTok, sy ) || !ParseNum( roundTok, p.Roundness ) || !ParseNum( factorTok, p.Factor )
+            || (version >= 2 && !ParseNum( dispTok, p.Displacement )) ) {
             m_UnknownLines.emplace_back( s );
             continue;
         }
         p.Roundness = std::clamp( p.Roundness, 0.0f, 1.0f );
-        p.Factor = std::clamp( p.Factor, 0.0f, 2.0f );
+        p.Factor = std::clamp( p.Factor, 0.0f, 8.0f );
+        p.Displacement = std::clamp( p.Displacement, 0.0f, 4.0f );
 
         const auto range = byKey.equal_range( MatchKey( sx, sy, key ) );
         if ( range.first == range.second ) {
-            m_UnknownLines.emplace_back( s );
+            // Kept lines are re-written under the v2 header, so v1 lines get the default displacement column.
+            m_UnknownLines.emplace_back( version >= 2 ? std::string( s ) : std::string( s ) + " 1" );
             continue;
         }
         for ( auto it = range.first; it != range.second; ++it ) m_Params[it->second] = p;
@@ -234,7 +248,7 @@ bool WorldTessOverrides::Save( const std::string& file ) {
         if ( m_Params[i].IsDefault() ) continue;
         int sx, sy; std::string key;
         if ( !GetMeshInfo( i, sx, sy, key ) ) continue;
-        f << sx << ' ' << sy << ' ' << key << ' ' << m_Params[i].Roundness << ' ' << m_Params[i].Factor << '\n';
+        f << sx << ' ' << sy << ' ' << key << ' ' << m_Params[i].Roundness << ' ' << m_Params[i].Factor << ' ' << m_Params[i].Displacement << '\n';
     }
     for ( const std::string& l : m_UnknownLines ) f << l << '\n';
 

@@ -987,7 +987,8 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 	static_assert( kMaterialFxTableSlot == kSrvHeapCapacity - 1, "the MaterialFx table owns the heap's last slot" );
 	static_assert( kSrvHeapCapacity - 1 <= MaterialFx::kDiffuseSlotMask, "packed diffuse indices hold 16-bit slots" );
 	static_assert( D3D12HeapCheck::kReportSlot == kSrvHeapCapacity - 3 && D3D12HeapCheck::kLiveSlot == kSrvHeapCapacity - 2
-		&& kFarFieldVertexSlot == kSrvHeapCapacity - kReservedTopSlots && D3D12HeapCheck::kFirstReservedSlot == kFarFieldVertexSlot
+		&& kMaterialMapsSlot == kSrvHeapCapacity - kReservedTopSlots && kFarFieldVertexSlot == kMaterialMapsSlot + 1
+		&& D3D12HeapCheck::kFirstReservedSlot == kMaterialMapsSlot
 		&& D3D12HeapCheck::kHeapSize == kSrvHeapCapacity, "heap-check slots sit just below the MaterialFx table" );
 	m_SrvHeapCapacity = kSrvHeapCapacity - kReservedTopSlots;
 	m_SrvAllocated = 0;
@@ -1046,6 +1047,14 @@ bool D3D12GraphicsEngine::CreateMaterialFxTable() {
 	farSrv.Buffer.NumElements = 1;
 	farSrv.Buffer.StructureByteStride = sizeof( uint32_t );
 	m_Rhi->CreateShaderResourceView( m_FarFieldVertexBuffer.Get(), &farSrv, GetSrvCpuHandle( kFarFieldVertexSlot ) );
+
+	// Material maps: all "none"; the first world frame uploads the table (UpdateMaterialMaps) before any pass reads it
+	{
+		std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+		m_MaterialMaps.assign( static_cast<size_t>( kMaterialMapsSlot + kReservedTopSlots ) * 2, 0u );
+		for ( size_t i = 0; i < m_MaterialMaps.size(); i += 2 ) m_MaterialMaps[i] = kMaterialMapsNone;
+		m_MaterialMapsDirty = true;
+	}
 	return true;
 }
 
@@ -1141,6 +1150,12 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	device->CreateShaderResourceView( m_WhiteTexture->GetResource(), &nullDesc, cpuHandle );
 
 	m_FreeSrvSlots.push_back( slot );
+	// A recycled diffuse slot must not inherit the old texture's height map (the mirror is guarded by this lock)
+	if ( static_cast<size_t>( slot ) * 2 + 1 < m_MaterialMaps.size() && m_MaterialMaps[slot * 2] != kMaterialMapsNone ) {
+		m_MaterialMaps[slot * 2] = kMaterialMapsNone;
+		m_MaterialMaps[slot * 2 + 1] = 0;
+		m_MaterialMapsDirty = true;
+	}
 	if ( m_HeapCheck ) m_HeapCheck->SetLive( slot, false );
 	if ( m_GpuScene ) m_GpuScene->OnSrvSlotFreed( slot );
 	if ( m_GpuWorld ) m_GpuWorld->OnSrvSlotFreed( slot );

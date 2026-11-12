@@ -153,6 +153,7 @@ public:
         // PullRootParam = the b9 root constant carrying the world VB's heap index (appended last).
         UINT PullRootParam = UINT_MAX;
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobPull, DepthPrepassVsBlobPull, DepthPrepassGBufVsBlobPull;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CasterVsBlobPull;   // DepthPrepass.hlsl VSWorldCaster: the CSM world casters, without the POM loads
         Microsoft::WRL::ComPtr<Rhi::PipelineState> PSOPull, OpaquePSOPull;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthPrepassPSOPull, DepthPrepassNoAlphaPSOPull, DepthPrepassGBufPSOPull;
         // ...and of the VOB / attachment arena draws (VobVertexPull.hlsl); the per-mesh-VB paths keep the IA PSOs above.

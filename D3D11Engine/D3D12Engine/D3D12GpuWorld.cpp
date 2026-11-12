@@ -203,6 +203,7 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
         materials[i] = m_Materials[i].Gpu;
     }
     m_DirtyMaterials.clear();
+    m_HeightEpoch = m_E.m_HeightPartitionEpoch;
 
     Rhi::Device* rhi = m_E.GetRhi();
     auto make = [&]( UINT64 bytes, bool uav, D3D12_RESOURCE_STATES state, const wchar_t* name, ComPtr<Rhi::Resource>& out ) {
@@ -294,6 +295,12 @@ void D3D12GpuWorld::ProcessFeedback() {
                 Resolve( i, false );
         }
         m_FreedScratch.clear();
+    }
+
+    // A height map arrived or the POM setting flipped: the alpha-run partition bit changes, a few hundred cheap resolves
+    if ( m_HeightEpoch != m_E.m_HeightPartitionEpoch ) {
+        m_HeightEpoch = m_E.m_HeightPartitionEpoch;
+        for ( uint32_t i = 0; i < m_Materials.size(); ++i ) Resolve( i, false );
     }
 
     // The main view's seen flags, copied kBackBufferCount frames ago; that frame's fence was waited on.

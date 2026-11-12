@@ -741,7 +741,10 @@ private:
     // The two below it belong to D3D12HeapCheck (Shaders/D3D12/include/HeapCheck.hlsl), reserved whether it runs or not.
     // Below those, the static-light far field's per-vertex buffer (Shaders/D3D12/include/FarField.hlsl).
     static constexpr UINT kFarFieldVertexSlot = 65532;
-    static constexpr UINT kReservedTopSlots = 4;
+    // Below that, the per-material map table: StructuredBuffer<uint2> by diffuse slot (Shaders/D3D12/include/MaterialMaps.hlsl).
+    static constexpr UINT kMaterialMapsSlot = 65531;
+    static constexpr UINT kReservedTopSlots = 5;
+    static constexpr UINT kMaterialMapsNone = 0xFFFFFFFFu;
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxTable;    // DEFAULT, MaterialFx::Entry[kMaxSlots]
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxUpload;   // UPLOAD, one table per frame in flight
     uint8_t* m_MaterialFxUploadPtr = nullptr;
@@ -2223,18 +2226,43 @@ private:
         float Range;
         float Strength;
         float FadeStart;
-        float Reserved[4];   // future displacement params, zero
+        float DispScale;         // HeightMapDepth while tessellating, else 0
+        float HeightDepth;       // HeightMapDepth, world units peak-to-peak
+        float HeightShadowSteps; // HeightMapShadowSteps
+        float HeightShading;     // HeightMapShading as 0/1
+        float HeightRange;       // HeightMapRange, world units
+        float PomSteps;          // HeightMapPomSteps
+        float PomFlags;          // float of a bitmask: bit0 = HeightMapPom && HeightMapShading, bit1 = HeightMapSilhouettes
+        float TessActive;        // 1 while the world is tessellated
     };
-    static_assert( sizeof( WorldTessCBData ) == 48, "WorldTessCBData mirrors WorldTessCB" );
+    static_assert( sizeof( WorldTessCBData ) == 64, "WorldTessCBData mirrors WorldTessCB" );
     static constexpr UINT kShadowCbSize = 1024;
     static_assert( kFarFieldCbOffset + sizeof( FarFieldCBData ) <= kWorldTessCbOffset, "FarFieldCBData ends before the tessellation block" );
     static_assert( kWorldTessCbOffset % 256 == 0 && kWorldTessCbOffset + sizeof( WorldTessCBData ) <= kShadowCbSize, "WorldTessCBData ends the shadow CB" );
-    /** Once per frame once the camera is final: the camera/factor block the world tessellation HS/DS read. */
+    /** Every world frame once the camera is final: the camera/factor block (b11) the HS/DS and the lit world PS read. */
     void UploadWorldTessConstants();
     /** Edit-rate: re-uploads the per-mesh override table (WorldTessOverrides) as geometry stream WorldTessParams; empty table releases it. */
     void UpdateWorldTessTable();
+    /** Per frame while height shading or tessellation is on: height SRV slot per diffuse slot into m_MaterialMaps. */
+    void UpdateMaterialMaps();
+    /** At most once per frame, when dirty: re-uploads m_MaterialMaps to the kMaterialMapsSlot buffer. */
+    void UploadMaterialMaps();
     Microsoft::WRL::ComPtr<Rhi::Resource> m_WorldTessTable;
     uint32_t m_WorldTessTableVersion = UINT32_MAX;
+    uint32_t m_MaterialMapsTexVersion = UINT32_MAX;   // overrides version the unique-texture list was built for
+    std::vector<zCMaterial*> m_WorldTessUniqueTex;   // unique world materials; textures are read from them per frame
+    std::vector<uint32_t> m_WorldTessUniqueHeight;   // resolved height SRV slot per unique texture (kMaterialMapsNone = none)
+    std::vector<uint32_t> m_WorldTessMeshTex;        // mesh -> index into m_WorldTessUniqueTex (UINT32_MAX = no texture)
+    bool m_HeightPomState = false;                   // HeightMapPom && HeightMapShading as last seen
+    /** Bumped when the POM setting combo or any world height slot changes; D3D12GpuWorld re-resolves its materials on a change. */
+    uint32_t m_HeightPartitionEpoch = 0;
+    std::vector<XMFLOAT4> m_WorldTessScratch;    // copy of GetGpuTable() with .w filled, reused
+    // uint2 per diffuse SRV slot (.x height slot, .y reserved), guarded by m_SrvHeapMutex: FreeSrvSlot resets entries off-thread
+    std::vector<uint32_t> m_MaterialMaps;
+    std::vector<uint32_t> m_MaterialMapsScratch;  // snapshot taken for the upload
+    std::vector<std::pair<UINT, uint32_t>> m_MaterialMapsPending;   // (diffuse slot, height slot) resolved outside the lock
+    bool m_MaterialMapsDirty = false;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialMapsBuffer;
     /** Every frame with the light buffer: the bake's vertex buffer (heap slot kFarFieldVertexSlot) and CB block. */
     void UpdateFarField();
     Microsoft::WRL::ComPtr<Rhi::Resource> m_FarFieldVertexBuffer;

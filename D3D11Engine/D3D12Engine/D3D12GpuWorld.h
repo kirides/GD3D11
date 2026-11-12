@@ -106,6 +106,7 @@ private:
     std::vector<uint32_t> m_DirtyMaterials;
     std::vector<uint32_t> m_Queue;
     uint32_t m_RefreshCursor = 0;
+    uint32_t m_HeightEpoch = 0;   // D3D12GraphicsEngine::m_HeightPartitionEpoch the materials were last resolved against
     size_t m_MeshCount = 0, m_ClusterCount = 0, m_SectionCount = 0;
 
     std::mutex m_FreedMutex;
