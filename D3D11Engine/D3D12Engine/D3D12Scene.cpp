@@ -1297,6 +1297,12 @@ void D3D12GraphicsEngine::UpdateWorldTessTable() {
 void D3D12GraphicsEngine::UpdateMaterialMaps() {
 	const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
 	WorldTessOverrides& ov = GetWorldTessOverrides();
+	// An edited MaterialInfo (roughness override) re-resolves the GPU world materials and the GPU VOB templates.
+	if ( const uint32_t mi = g_MaterialInfoEpoch.load( std::memory_order_relaxed ); mi != m_MaterialInfoEpochSeen ) {
+		m_MaterialInfoEpochSeen = mi;
+		m_HeightPartitionEpoch++;
+		if ( m_GpuScene ) m_GpuScene->InvalidateMaterials();
+	}
 	if ( ov.GetVersion() != m_MaterialMapsTexVersion ) {
 		m_MaterialMapsTexVersion = ov.GetVersion();
 		m_WorldTessUniqueTex.clear();
@@ -2440,7 +2446,8 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 				// b6 { normal, ORM, diffuse } — same bindless material block as the lit skeletal passes; PSGhost
 				// reads only the diffuse index, but sharing the block keeps every skeletal entry point on one
 				// SampleSkelDiffuse and off descriptor tables entirely.
-				BindMaterialMaps( tex, 4, PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat ) );
+				BindMaterialMaps( tex, 4, PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat ),
+					mat ? Engine::GAPI->GetMaterialInfoFrom( mat ) : nullptr );
 				for ( auto const& mesh : meshList ) {
 					D3D12_DRAW_INDEXED_ARGUMENTS draw;
 					if ( !BindSkinnedMesh( mesh.get(), draw, ghostPull ) ) continue;
@@ -3649,9 +3656,17 @@ namespace {
     }
 }
 
+UINT D3D12GraphicsEngine::DefaultOrmSlotFor( const MaterialInfo* info ) const {
+    if ( info && info->buffer.Roughness >= 0.0f ) {
+        const auto& t = m_DefaultOrmTextures[DefaultRoughness::StepFor( info->buffer.Roughness )];
+        if ( t && t->HasSRV() ) return t->GetSrvSlot();
+    }
+    return GetDefaultOrmSrvSlot();
+}
+
 D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const MeshKey& key, const std::string& visualName,
     bool cacheIn, bool resolveMaps ) const {
-    VobMaterial m{ m_BlackTexture->GetSrvSlot(), 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), true, false, false };
+    VobMaterial m{ m_BlackTexture->GetSrvSlot(), 0xFFFFFFFFu, DefaultOrmSlotFor( key.Info ), true, false, false };
     zCTexture* tex = key.Material->GetAniTexture();
     // cacheIn=false: a pure GetCacheState read, safe on a worker thread (CacheIn mutates Gothic's resource manager).
     const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
@@ -3696,7 +3711,7 @@ void D3D12GraphicsEngine::CullGpuWorldMain() {
 
 D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(const MeshKey& key, bool cacheIn ) const {
     // normal 0xFFFFFFFF = none (the PS skips the perturb), ORM = the 1x1 default when the material has no _FX.
-    WorldMaterial m{ 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), m_BlackTexture->GetSrvSlot(),
+    WorldMaterial m{ 0xFFFFFFFFu, DefaultOrmSlotFor( key.Info ), m_BlackTexture->GetSrvSlot(),
         key.Info ? key.Info->buffer.NormalmapStrength : 1.0f, false, true };
     zCTexture* tex = key.Material->GetAniTexture();
     // CacheIn also loads the normal/ORM side textures; cacheIn=false only reads the state.
@@ -4640,7 +4655,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                     // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig. The
                     // depth-prepass PS reads only the diffuse index (alpha clip) and ignores the other two, so one
                     // resolved material set serves both passes.
-                    ResolveMaterialMapSlots( tex, mats );
+                    ResolveMaterialMapSlots( tex, mats, mat ? Engine::GAPI->GetMaterialInfoFrom( mat ) : nullptr );
                     mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat );
                     // Alpha-test partition — same predicate as the world/VOB builds (see m_WorldOpaqueDrawCount).
                     alphaTested = ( tex && tex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() );
@@ -4725,7 +4740,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             if ( !range ) continue;   // requested this frame, not uploaded yet
 
             UINT mats[3];
-            ResolveMaterialMapSlots( a.tex, mats );
+            ResolveMaterialMapSlots( a.tex, mats, a.mat ? Engine::GAPI->GetMaterialInfoFrom( a.mat ) : nullptr );
             mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( a.tex ), a.mat );
             // Alpha-test partition, resolved at prepare: the prepass cutout is `clip(diffuse.a - 0.5)` and can
             // only discard where the diffuse actually has an alpha channel.
@@ -5012,31 +5027,31 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
 }
 
 
-void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam ) {
+void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam, const MaterialInfo* info ) {
     // Set the per-material bindless indices (b6 root consts) the PBR PS reads via ResourceDescriptorHeap[...]:
     // this material's normal + ORM map SRV heap slots (loaded onto the surface by LoadAdditionalResources).
     // No normal map -> 0xFFFFFFFF (PS skips the perturb); no _FX/ORM map -> the 1x1 default ORM slot.
     UINT idx[2];
-    ResolveMaterialMapSlots( tex, idx );
+    ResolveMaterialMapSlots( tex, idx, info );
     m_CmdList->SetGraphicsRoot32BitConstants( matRootParam, 2, idx, 0 );
 }
 
 
-void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam, UINT diffuseSlot ) {
+void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam, UINT diffuseSlot, const MaterialInfo* info ) {
     // Fully-bindless variant: the same normal/ORM indices plus the DIFFUSE heap slot as the third b6 constant.
     // Used by every pass on Skeletal.RootSig (which has no SRV table at all) — one 3-DWORD root-constant push
     // per material instead of a descriptor-table bind. The b6 layout matches World.RootSig's, so the world/VOB
     // bindless PS variants read the identical struct.
     UINT idx[3];
-    ResolveMaterialMapSlots( tex, idx );
+    ResolveMaterialMapSlots( tex, idx, info );
     idx[2] = diffuseSlot;
     m_CmdList->SetGraphicsRoot32BitConstants( matRootParam, 3, idx, 0 );
 }
 
 
-void D3D12GraphicsEngine::ResolveMaterialMapSlots( zCTexture* tex, UINT* outNormalOrm ) const {
+void D3D12GraphicsEngine::ResolveMaterialMapSlots( zCTexture* tex, UINT* outNormalOrm, const MaterialInfo* info ) const {
     outNormalOrm[0] = 0xFFFFFFFFu;
-    outNormalOrm[1] = GetDefaultOrmSrvSlot();
+    outNormalOrm[1] = DefaultOrmSlotFor( info );
     if ( tex ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* n = s->GetNormalmap() ) {

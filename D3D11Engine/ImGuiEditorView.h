@@ -235,6 +235,8 @@ protected:
     float SelectedTexNrmStr;
     float SelectedTexSpecIntens;
     float SelectedTexSpecPower;
+    bool SelectedTexRoughOverride = false;   // MaterialInfo::Buffer::Roughness >= 0
+    float SelectedTexRoughness = 0.65f;
 
     /** World tessellation overrides of the selected world mesh (SelectedTessMesh == UINT_MAX: none) */
     float SelectedMeshTessAmount;

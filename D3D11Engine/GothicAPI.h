@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pch.h"
+#include <atomic>
 #include "AlignedAllocator.h"
 #include "Frustum.h"
 #include "GothicGraphicsState.h"
@@ -233,7 +234,10 @@ struct CameraReplacement {
 };
 
 /** Version of this struct */
-const int MATERIALINFO_VERSION = 6;
+const int MATERIALINFO_VERSION = 7;
+
+/** Bumped whenever the editor changes a MaterialInfo; the D3D12 backend re-resolves material slots on change. */
+inline std::atomic<uint32_t> g_MaterialInfoEpoch{ 0 };
 
 struct MaterialInfo {
     enum EMaterialType {
@@ -275,6 +279,8 @@ struct MaterialInfo {
         float NormalmapStrength;
         float DisplacementFactor;
         float4 Color;
+        float Roughness;        // D3D12/Vulkan: < 0 = none, else override for materials without an _FX/_ORM map
+        float Pad[3];
 
         void SetDefault() {
             // -- Defaults for NON Normalmapped, NON FX-Mapped materials
@@ -285,6 +291,8 @@ struct MaterialInfo {
             NormalmapStrength = 1.0f;
             DisplacementFactor = 0.1f;
             Color = 0xFFFFFFFF;
+            Roughness = -1.0f;
+            Pad[0] = Pad[1] = Pad[2] = 0.0f;
         }
 
         static bool FloatEqualEps(float a, float b, float epsilon = 0.0001f) noexcept{
@@ -296,6 +304,7 @@ struct MaterialInfo {
                 FloatEqualEps(SpecularPower, other.SpecularPower) &&
                 FloatEqualEps(NormalmapStrength, other.NormalmapStrength) &&
                 FloatEqualEps(DisplacementFactor, other.DisplacementFactor) &&
+                FloatEqualEps(Roughness, other.Roughness) &&
                 Color == other.Color;
         }
     };

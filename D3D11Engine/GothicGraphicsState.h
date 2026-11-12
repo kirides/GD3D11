@@ -556,21 +556,13 @@ struct GTAOSettings {
     float DepthMIPSamplingOffset;       // [2.0, 6.0] bandwidth/quality trade-off in the MIP selection
 };
 
-/** D3D12 only: the discrete roughness values the default (no _FX/_ORM map) material can be set to.
-    The D3D12 backend can't sample an arbitrary roughness for these materials — it hands the shader a
-    bindless 1x1 ORM texture, so every selectable value needs its own texture created up front (see
-    D3D12GraphicsEngine::CreateWhiteTexture / m_DefaultOrmTextures). 14 steps of 0.05 from 0.25 to 0.90
-    is 14 1x1 textures, i.e. nothing, and covers everything from damp stone to chalky plaster. kMin is
-    floored at 0.25 deliberately: below that the GGX specular lobe (PBRLighting.hlsl's
-    PBR_DistributionGGX) gets so tight that a directional-light highlight almost never lines up with
-    a given pixel, and with no local reflection probes the lost specular energy has nowhere to go —
-    default (no-map) materials just read as uniformly darker rather than glossier. Real materials with
-    an authored _ORM map are unaffected; they aren't limited to this step table.
-    Kept here rather than in the D3D12 headers so ImGuiShim can drive the slider without including them. */
+/** D3D12 only: the discrete roughness values a material with no _FX/_ORM map can use (global default and
+    per-material override). The shader gets a bindless 1x1 ORM texture, so every value needs its own texture
+    up front (D3D12GraphicsEngine::m_DefaultOrmTextures). Kept here so ImGui can use it without the D3D12 headers. */
 namespace DefaultRoughness {
-    constexpr float kMin  = 0.25f;
+    constexpr float kMin  = 0.05f;
     constexpr float kStep = 0.05f;
-    constexpr int   kNumSteps = 14;                         // 0.25 0.30 ... 0.90
+    constexpr int   kNumSteps = 18;                         // 0.05 0.10 ... 0.90
     constexpr float kMax = kMin + kStep * ( kNumSteps - 1 );
 
     /** Roughness for step index i (clamped). */
