@@ -68,12 +68,16 @@ float4 DecodeTangent( float4 packed )
 // Wet-ground / scene-wetness (rain): tri-planar ripple normals, desaturate+darken, glossier roughness and
 // the additive wet sheen. Needs the ShadowCB wetness tail above plus `smp`/`shadowCmp`.
 #include "include/Wetness.hlsl"
+#include "include/WorldTessCB.hlsl"
+#include "include/MaterialMaps.hlsl"
+#include "include/HeightShading.hlsl"
 
 // vid indexes the static-light far field: the world mesh is one vertex buffer drawn with BaseVertexLocation 0
 struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float4 tan : TANGENT; float2 uv : TEXCOORD0; float4 col : DIFFUSE; uint vid : SV_VertexID; };
 // VERTEX_PULL: the VS entry points take only the vertex id and read the same fields from the world VB (include/WorldVertexPull.hlsl).
 #ifdef VERTEX_PULL
 #include "include/WorldVertexPull.hlsl"
+#include "include/WorldTessStream.hlsl"
 struct VS_ENTRY_IN { uint vid : SV_VertexID; };
 VS_IN FetchWorldVertex( VS_ENTRY_IN e )
 {
@@ -87,8 +91,9 @@ typedef VS_IN VS_ENTRY_IN;
 VS_IN FetchWorldVertex( VS_ENTRY_IN e ) { return e; }
 #endif
 // `precise` (here and in DepthPrepass.hlsl) keeps clip bit-identical to the prepass, which PSMainOpaque's EQUAL test needs.
-struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float4 wtan : TEXCOORD5;
-                float4 farField : TEXCOORD7; };   // baked static-light irradiance, w = 1 when present
+struct VS_OUT { precise float4 clip : SV_POSITION; precise float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; precise float3 wpos : TEXCOORD3; precise float3 wnrm : TEXCOORD4; precise float4 wtan : TEXCOORD5;
+                float4 farField : TEXCOORD7;      // baked static-light irradiance, w = 1 when present
+                precise float4 pom : TEXCOORD8; };        // x uvDensity, y borderFade (1 interior, 0 boundary), zw curvature kT, kB; zeros = no POM
 
 VS_OUT VSMain( VS_ENTRY_IN e )
 {
@@ -104,6 +109,11 @@ VS_OUT VSMain( VS_ENTRY_IN e )
     o.wtan = DecodeTangent( i.tan );         // already world-space, same basis as wnrm
     o.fogDist = distance(wpos, CamPosWS);
     o.farField = LoadWorldFarField( i.vid );
+#ifdef VERTEX_PULL
+    o.pom = LoadWorldPom( i.vid );
+#else
+    o.pom = 0.0;
+#endif
     return o;
 }
 
@@ -115,15 +125,30 @@ VS_OUT VSMain( VS_ENTRY_IN e )
 WorldTessCP VSWorldTess( uint vid : SV_VertexID )
 {
     const WorldRawVertex v = LoadWorldRaw( vid );
-    const ByteAddressBuffer s = GD_HEAP( WorldVbIndex + kWorldTessStreamOffset );
-    const uint2 w = s.Load2( vid * 8 );   // x = welded oct normal snorm2x16, y bits 0-7 = roundness unorm8, bits 8-31 = override table index
-    const ByteAddressBuffer table = GD_HEAP( WorldVbIndex + kWorldTessParamsStreamOffset );
-    const float4 prm = asfloat( table.Load4( ( w.y >> 8 ) * 16 ) );   // .x roundness scale, .y factor scale
+    const WorldTessRaw r = LoadWorldTessRaw( vid );
+    const float4 prm = asfloat( r.entry );   // .x roundness scale, .y factor scale, .z displacement, .w see WorldTessStream.hlsl
     WorldTessCP o;
     o.pos = v.pos;
-    o.tessN = VfDecodeOctNormal( VfUnpackSnorm2x16( w.x ) );
-    o.roundness = ( w.y & 0xFFu ) * ( 1.0 / 255.0 ) * prm.x;
+    o.tessN = VfDecodeOctNormal( VfUnpackSnorm2x16( r.nrmPacked ) );
+    o.roundness = r.roundness8 * ( 1.0 / 255.0 ) * prm.x;
     o.factorScale = prm.y;
+    o.heightSlot = MaterialHeightSlot( MatDiffuseIndex );
+    o.uvDensity = f16tof32( r.entry.w >> 16 );
+    o.boundary = WorldTessIsBoundary( r.entry ) ? 1u : 0u;
+    o.canonSlot = WorldTessCanonSlot( r.entry, o.heightSlot );
+    o.canonUv = r.canonUv;
+    o.curv = r.curv;
+    // Per position (rest position), so shared edges agree; the fade also gates the HS edge-factor test
+    const float dispFade = saturate( ( TessRange - length( v.pos - TessCamPos ) ) / max( TessRange - TessFadeStart, 1e-3 ) );
+    o.disp = ( TessDispScale > 0.0 && o.canonSlot != 0xFFFFFFFFu ) ? prm.z * dispFade : 0.0;
+    o.texelDensity = 0.0;   // per position like canonSlot/uvDensity, so the HS edge factors agree
+    [branch] if ( o.disp > 0.0 )
+    {
+        const Texture2D<float4> ht = GD_HEAP( o.canonSlot );
+        uint tw, th;
+        ht.GetDimensions( tw, th );
+        o.texelDensity = o.uvDensity * max( tw, th );
+    }
     o.nrm = DecodeOctNormal( v.nrm );
     o.tan = DecodeTangent( v.tan );
     o.uv = v.uv;
@@ -143,11 +168,11 @@ VS_OUT DSWorld( WorldTessPatch t, float3 bary : SV_DomainLocation, const OutputP
     o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
     o.col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;
     o.wpos = wpos;
-    o.wnrm = normalize( p[0].nrm * bary.x + p[1].nrm * bary.y + p[2].nrm * bary.z );
-    const float4 tan = p[0].tan * bary.x + p[1].tan * bary.y + p[2].tan * bary.z;
-    o.wtan = float4( normalize( tan.xyz ), tan.w >= 0.0 ? 1.0 : -1.0 );
+    o.wnrm = WorldTessInterpNormal( p, bary );
+    o.wtan = WorldTessInterpTangent( p, bary );
     o.fogDist = distance( wpos, CamPosWS );
     o.farField = p[0].farField * bary.x + p[1].farField * bary.y + p[2].farField * bary.z;
+    o.pom = WorldTessInterpPom( p, bary );
     return o;
 }
 #endif
@@ -194,6 +219,7 @@ VS_OUT_QUADMARK VSQuadMark( VS_IN_QUADMARK i )
                                       // to the derivative frame here, same as D3D11's untangented quad marks.
     o.fogDist = distance(wpos, CamPosWS);
     o.farField = 0.0;   // marks keep the real lights
+    o.pom = 0.0;
     VS_OUT_QUADMARK r;
     r.v = o;
     r.fade = i.col.a;
@@ -204,23 +230,31 @@ VS_OUT_QUADMARK VSQuadMark( VS_IN_QUADMARK i )
 float4 ShadeWorld( VS_OUT i, uniform bool alphaTest )
 {
     i.uv = TexAniUv( i.uv, MatDiffuseIndex );
-    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );   // bindless diffuse (ExecuteIndirect, P2.11)
-    float4 t = difTex.Sample( smp, i.uv );
-    if ( alphaTest ) clip( t.a - 0.5 );       // fixed alpha-test cutout (opaque textures have a==1 -> kept)
+    const float2 uvGx = ddx( i.uv ), uvGy = ddy( i.uv );   // of the original uv: POM shifts it per pixel
+    const uint heightSlot = MaterialHeightSlot( MatDiffuseIndex );
     float3 N = normalize( i.wnrm );
     float3 geomN = N;
+    if ( alphaTest ) i.uv = PomResolve( heightSlot, i.uv, i.wpos, geomN, i.wtan, i.pom );   // same call as the prepass PSClip; height materials run here
+    Texture2D difTex = GD_HEAP( DiffuseSlot( MatDiffuseIndex ) );   // bindless diffuse (ExecuteIndirect, P2.11)
+    float4 t = difTex.SampleGrad( smp, i.uv, uvGx, uvGy );
+    if ( alphaTest ) clip( t.a - 0.5 );       // fixed alpha-test cutout (opaque textures have a==1 -> kept)
+    const HeightCtx hc = HeightBegin( heightSlot, i.uv, uvGx, uvGy, i.wpos, geomN, i.wtan, i.pom.x, i.fogDist );   // derivatives before any branch
     if ( MatNormalIndex != 0xffffffff )       // bindless normal map (BC5/BC1, Z reconstructed) if this material has one
     {
         Texture2D nrmTex = GD_HEAP( MatNormalIndex );
         N = PerturbNormal( N, i.wpos, i.wtan, nrmTex, i.uv, smp, MatNormalStrength );
     }
+    else if ( hc.fade > 0.0 )
+        N = HeightNormal( hc, i.uv, N );      // no normal map: the height field supplies the bumps
     N = BendFoliageNormal( N, BacklitClassOf( MatOrmIndex ), difTex, smp );
     float3 orm = SampleOrm( MatOrmIndex, i.uv );   // AO/Roughness/Metallic, decoded per the material's FxMap layout
+    if ( hc.fade > 0.0 ) orm.r *= HeightCavity( hc, i.uv );
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
     uint2 rtMask = LoadRtShadowMask( i.clip.xy );
     float shadow = ComputeSunShadow( rtMask, i.wpos, geomN, vertLighting );
+    if ( hc.fade > 0.0 && shadow > 0.0 ) shadow *= HeightMicroShadow( hc, i.uv, SunDirWS );
     // Scene wetness (rain), after the cascade lookup like D3D11. Perturbs N/albedo/roughness in place.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );

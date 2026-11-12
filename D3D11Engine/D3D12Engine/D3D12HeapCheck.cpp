@@ -58,7 +58,7 @@ bool D3D12HeapCheck::Init( Rhi::Device* device, D3D12_CPU_DESCRIPTOR_HANDLE repo
     device->CreateUnorderedAccessView( m_Report.Get(), nullptr, &uav, reportUav );
 
     m_LiveCpu = static_cast<uint32_t*>( mapped );
-    SetLiveRange( kFirstReservedSlot, kHeapSize - kFirstReservedSlot );   // far field, the check's own slots and the MaterialFx table
+    SetLiveRange( kFirstReservedSlot, kHeapSize - kFirstReservedSlot );   // material maps, far field, the check's own slots and the MaterialFx table
     Logging::Wrn( "GPU heap check ON (-GPUHEAPCHECK): every bindless heap index is validated; expect lower GPU performance." );
     return true;
 }

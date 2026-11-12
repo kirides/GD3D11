@@ -15,7 +15,9 @@
 #include <array>
 #include <bit>
 #include <set>
+#include <tuple>
 #include <unordered_map>
+#include <DirectXPackedVector.h>
 #include "ConstantBufferStructs.h"
 #include "zCMesh.h"
 #include "zCLightmap.h"
@@ -298,9 +300,13 @@ namespace {
         return t * t * (3.0f - 2.0f * t);
     }
 
-    /** Builds the welded tessellation side stream (2 x uint32 per wrapped vertex): smoothing normal (oct snorm2x16)
-        and roundness (unorm8 in bits 0-7 of uint1; bits 8-31 = WorldTessOverrides table index of the owning mesh or
-        boundary entry). Every vertex at one exact position gets identical values, which keeps tessellated edges crack-free.
+    constexpr float kTessMaxCurvature = 1.0f / 50.0f;  // clamp |k| (radius >= 50 cm)
+    constexpr float kTessDominantQuant = 0.05f;        // dominance dot quantization, so coplanar ties fall to the mesh index
+
+    /** Builds the welded tessellation side stream (kWorldTessStreamStride bytes per wrapped vertex): smoothing normal
+        (oct snorm2x16), roundness (unorm8, bits 0-7 of dword1; bits 8-31 = WorldTessOverrides table index of the owning
+        mesh or boundary entry), the dominant vertex's UV (dwords 2-3) and per-vertex curvature half kT | half kB << 16.
+        Welded values are identical for every vertex at one exact position, which keeps tessellated edges crack-free.
         sectionRefs is parallel to allMeshes (the table's meshes, in wrapped vertex order). */
     void BuildWrappedTessStream( MeshInfo* meshInfo, const std::vector<ExVertexStruct>& vertices, const std::vector<unsigned int>& indices,
         const std::vector<WorldMeshInfo*>& allMeshes, std::vector<WorldTessMeshRef> sectionRefs ) {
@@ -320,8 +326,14 @@ namespace {
             return static_cast<uint32_t>( std::upper_bound( meshStarts.begin(), meshStarts.end(), v ) - meshStarts.begin() ) - 1;
         };
         std::vector<uint32_t> groupOwner;                                // table index per welded group
-        std::map<std::vector<uint32_t>, uint32_t> boundaryIds;           // distinct mesh sets -> boundary id
+        std::map<std::tuple<std::vector<uint32_t>, bool, uint32_t>, uint32_t> boundaryIds;  // (mesh set, UV seam, canonical mesh) -> boundary id
+        size_t seamEntries = 0;
         std::vector<const std::vector<uint32_t>*> boundarySets;
+        std::vector<uint32_t> boundaryCanon;
+        std::vector<float2> groupUv;      // canonical (dominant vertex) UV per group
+        std::vector<float> groupRound;    // roundness 0..1 per group
+        const float dl = 1.0f / std::sqrt( 0.57f * 0.57f + 0.31f * 0.31f + 0.76f * 0.76f );
+        const float domX = 0.57f * dl, domY = 0.31f * dl, domZ = 0.76f * dl;  // fixed skewed direction: axis-aligned walls never tie
         std::vector<uint32_t> runMeshes;
 
         // Sort by exact position bits; contiguous runs are one welded position.
@@ -360,6 +372,21 @@ namespace {
                 if ( !normalized( n.x, n.y, n.z, 1e-12f, gn.x, gn.y, gn.z ) ) gn = float3( 0, 1, 0 );
             }
 
+            // Dominant vertex: key ( -quantized dot( N, dominantDir ), mesh, uv bits ), lowest wins.
+            std::array<int64_t, 4> domKey{ INT64_MAX, 0, 0, 0 };
+            uint32_t domMesh = 0;
+            float2 domUv = vertices[order[i]].TexCoord;
+            for ( size_t k = i; k < j; ++k ) {
+                const ExVertexStruct& vx = vertices[order[k]];
+                float nx, ny, nz;
+                if ( !normalized( vx.Normal.x, vx.Normal.y, vx.Normal.z, 1e-12f, nx, ny, nz ) ) { nx = gn.x; ny = gn.y; nz = gn.z; }
+                const uint32_t m = meshCount > 0 ? meshOfVertex( order[k] ) : 0;
+                const std::array<int64_t, 4> key4{ -static_cast<int64_t>( std::floor( (nx * domX + ny * domY + nz * domZ) / kTessDominantQuant + 0.5f ) ),
+                    m, std::bit_cast<uint32_t>( vx.TexCoord.x ), std::bit_cast<uint32_t>( vx.TexCoord.y ) };
+                if ( key4 < domKey ) { domKey = key4; domMesh = m; domUv = vx.TexCoord; }
+            }
+            groupUv.push_back( domUv );
+
             uint32_t owner = 0;
             if ( meshCount > 0 ) {
                 runMeshes.clear();
@@ -367,12 +394,25 @@ namespace {
                     const uint32_t m = meshOfVertex( order[k] );
                     if ( std::find( runMeshes.begin(), runMeshes.end(), m ) == runMeshes.end() ) runMeshes.push_back( m );
                 }
+                // A UV seam: some vertex at this position carries different texcoords (displacement must be 0 there).
+                bool seam = false;
                 if ( runMeshes.size() == 1 ) {
+                    const float2& t0 = vertices[order[i]].TexCoord;
+                    for ( size_t k = i + 1; k < j && !seam; ++k ) {
+                        const float2& t = vertices[order[k]].TexCoord;
+                        seam = std::bit_cast<uint32_t>( t.x ) != std::bit_cast<uint32_t>( t0.x ) || std::bit_cast<uint32_t>( t.y ) != std::bit_cast<uint32_t>( t0.y );
+                    }
+                }
+                if ( runMeshes.size() == 1 && !seam ) {
                     owner = runMeshes[0];
                 } else {
                     std::sort( runMeshes.begin(), runMeshes.end() );
-                    auto [bit, inserted] = boundaryIds.try_emplace( runMeshes, static_cast<uint32_t>( boundarySets.size() ) );
-                    if ( inserted ) boundarySets.push_back( &bit->first );
+                    auto [bit, inserted] = boundaryIds.try_emplace( std::make_tuple( runMeshes, seam, domMesh ), static_cast<uint32_t>( boundarySets.size() ) );
+                    if ( inserted ) {
+                        boundarySets.push_back( &std::get<0>( bit->first ) );
+                        boundaryCanon.push_back( domMesh );
+                        if ( seam ) ++seamEntries;
+                    }
                     owner = meshCount + bit->second;
                 }
             }
@@ -406,7 +446,37 @@ namespace {
             }
         }
 
-        std::vector<uint32_t> stream( count * 2 );
+        // Per-vertex normal curvature along the vertex's own T and B: weighted mean of k_e over incident edges (transient).
+        std::vector<std::array<float, 4>> curvAcc( count, std::array<float, 4>{ 0, 0, 0, 0 } );  // numT, denT, numB, denB
+        const auto accumulate = [&]( uint32_t v, uint32_t w ) {
+            const float3 &pv = vertices[v].Position, &pw = vertices[w].Position;
+            const float dx = pv.x - pw.x, dy = pv.y - pw.y, dz = pv.z - pw.z;
+            const float l2 = dx * dx + dy * dy + dz * dz;
+            if ( l2 < 1e-6f ) return;
+            const float3 &nv = groupN[groupOf[v]], &nw = groupN[groupOf[w]];
+            const float k = ((nv.x - nw.x) * dx + (nv.y - nw.y) * dy + (nv.z - nw.z) * dz) / l2;
+            const float invL = -1.0f / std::sqrt( l2 );  // e = normalize( P_w - P_v )
+            const float ex = dx * invL, ey = dy * invL, ez = dz * invL;
+            const float4& tg = vertices[v].Tangent;
+            const float td = tg.x * nv.x + tg.y * nv.y + tg.z * nv.z;
+            float tx, ty, tz;
+            if ( !normalized( tg.x - nv.x * td, tg.y - nv.y * td, tg.z - nv.z * td, 1e-8f, tx, ty, tz ) ) return;
+            const float sgn = tg.w < 0.0f ? -1.0f : 1.0f;
+            const float bx = (nv.y * tz - nv.z * ty) * sgn, by = (nv.z * tx - nv.x * tz) * sgn, bz = (nv.x * ty - nv.y * tx) * sgn;
+            const float et = ex * tx + ey * ty + ez * tz, eb = ex * bx + ey * by + ez * bz;
+            auto& a = curvAcc[v];
+            a[0] += k * et * et; a[1] += et * et;
+            a[2] += k * eb * eb; a[3] += eb * eb;
+        };
+        for ( size_t t = 0; t + 2 < indices.size(); t += 3 ) {
+            const unsigned int i0 = indices[t], i1 = indices[t + 1], i2 = indices[t + 2];
+            if ( i0 >= count || i1 >= count || i2 >= count ) continue;
+            accumulate( i0, i1 ); accumulate( i1, i0 );
+            accumulate( i1, i2 ); accumulate( i2, i1 );
+            accumulate( i2, i0 ); accumulate( i0, i2 );
+        }
+
+        std::vector<uint32_t> stream( count * (kWorldTessStreamStride / 4) );
         const auto q = []( float v ) { return static_cast<uint32_t>( static_cast<uint16_t>( static_cast<int16_t>( std::lround( std::clamp( v, -1.0f, 1.0f ) * 32767.0f ) ) ) ); };
         size_t flat = 0;
         bool tableOverflow = false;
@@ -416,6 +486,7 @@ namespace {
             VertexPacking::EncodeOctNormal( groupN[g], ox, oy );
             groupWord0[g] = q( ox ) | (q( oy ) << 16);
             const float r = TessSmoothstep( kTessCreaseFlat, kTessCreaseSmooth, minVertDot[g] ) * TessSmoothstep( kTessFaceFlat, kTessFaceSmooth, minFaceDot[g] );
+            groupRound.push_back( std::clamp( r, 0.0f, 1.0f ) );
             uint32_t owner = groupOwner[g];
             if ( owner > 0xFFFFFFu ) {
                 if ( !tableOverflow ) Logging::Err( "World tessellation: table index {} exceeds 24 bits, falling back to entry 0", owner );
@@ -426,8 +497,16 @@ namespace {
         }
         for ( size_t v = 0; v < count; ++v ) {
             const uint32_t g = groupOf[v];
-            stream[v * 2] = groupWord0[g];
-            stream[v * 2 + 1] = groupWord1[g];
+            uint32_t* s = &stream[v * (kWorldTessStreamStride / 4)];
+            s[0] = groupWord0[g];
+            s[1] = groupWord1[g];
+            s[2] = std::bit_cast<uint32_t>( groupUv[g].x );
+            s[3] = std::bit_cast<uint32_t>( groupUv[g].y );
+            const auto& a = curvAcc[v];
+            const float r = groupRound[g];
+            const float kT = a[1] > 1e-6f ? std::clamp( a[0] / a[1], -kTessMaxCurvature, kTessMaxCurvature ) * r : 0.0f;
+            const float kB = a[3] > 1e-6f ? std::clamp( a[2] / a[3], -kTessMaxCurvature, kTessMaxCurvature ) * r : 0.0f;
+            s[4] = static_cast<uint32_t>( DirectX::PackedVector::XMConvertFloatToHalf( kT ) ) | (static_cast<uint32_t>( DirectX::PackedVector::XMConvertFloatToHalf( kB ) ) << 16);
             if ( (groupWord1[g] & 0xFF) < 128 ) ++flat;
         }
 
@@ -435,7 +514,8 @@ namespace {
         meshInfo->MeshTessBuffer->Init( stream.data(), static_cast<unsigned int>( stream.size() * sizeof( uint32_t ) ),
             D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
-        Logging::Inf( "World tessellation stream: {} vertices, {} welded positions, {:.1f}% with roundness < 0.5", count, groupN.size(), 100.0 * flat / count );
+        Logging::Inf( "World tessellation stream: {} vertices, {} welded positions, {:.1f}% with roundness < 0.5, {} UV-seam boundary entries",
+            count, groupN.size(), 100.0 * flat / count, seamEntries );
 
         // Boundary mesh sets as CSR; WorldTessOverrides keeps them and builds the GPU table from them.
         std::vector<uint32_t> bOffsets, bMeshes;
@@ -448,8 +528,24 @@ namespace {
             }
         }
         sectionRefs.resize( meshCount );
-        for ( uint32_t i = 0; i < meshCount; ++i ) sectionRefs[i].Mesh = allMeshes[i];
-        GetWorldTessOverrides().Build( std::move( sectionRefs ), bOffsets, bMeshes );
+        for ( uint32_t i = 0; i < meshCount; ++i ) {
+            sectionRefs[i].Mesh = allMeshes[i];
+            const std::vector<ExVertexStruct>& mv = allMeshes[i]->Vertices;
+            const std::vector<VERTEX_INDEX>& mi = allMeshes[i]->Indices;
+            double uvLen = 0.0, posLen = 0.0;
+            for ( size_t t = 0; t + 2 < mi.size(); t += 3 ) {
+                for ( int e = 0; e < 3; ++e ) {
+                    const VERTEX_INDEX a = mi[t + e], b = mi[t + ( e + 1 ) % 3];
+                    if ( a >= mv.size() || b >= mv.size() ) continue;
+                    const float du = mv[a].TexCoord.x - mv[b].TexCoord.x, dv = mv[a].TexCoord.y - mv[b].TexCoord.y;
+                    const float dx = mv[a].Position.x - mv[b].Position.x, dy = mv[a].Position.y - mv[b].Position.y, dz = mv[a].Position.z - mv[b].Position.z;
+                    uvLen += std::sqrt( du * du + dv * dv );
+                    posLen += std::sqrt( dx * dx + dy * dy + dz * dz );
+                }
+            }
+            sectionRefs[i].UvDensity = posLen > 0.0 ? static_cast<float>( uvLen / posLen ) : 0.0f;
+        }
+        GetWorldTessOverrides().Build( std::move( sectionRefs ), bOffsets, bMeshes, boundaryCanon );
     }
 
     // --- MikkTSpace tangent generation ---------------------------------------------------
@@ -1409,7 +1505,12 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
             for ( auto const& it : ity.second.WorldMeshes ) {
                 allMeshes.emplace_back( it.second );
-                tessRefs.push_back( { nullptr, it.first.Texture, it.first.Material, itx.first, ity.first } );
+                // .wts key from the material's texture: MeshKey::Texture is a tagged (+1) pointer for portal materials
+                zCMaterial* tessMat = it.first.Material;
+                zCTexture* tessTex = tessMat ? tessMat->GetTextureSingle() : nullptr;
+                std::string tessKey = tessTex ? std::string( tessTex->GetNameWithoutExtView() )
+                    : ( tessMat ? std::string( tessMat->GetNameView() ) : std::string() );
+                tessRefs.push_back( { nullptr, std::move( tessKey ), it.first.Material, itx.first, ity.first } );
             }
         }
     }

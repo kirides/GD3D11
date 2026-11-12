@@ -222,6 +222,8 @@ bool D3D12PipelineState::CreateWorld() {
     rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s3: alpha test of the blended VOBs' sun ray (RtSunInline.hlsl)
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 3, D3D12_SHADER_VISIBILITY_PIXEL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
+    // s4: height-map displacement in the tessellation domain shader
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 4, D3D12_SHADER_VISIBILITY_ALL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
 
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED enables SM6.6 ResourceDescriptorHeap[...] bindless sampling of the
     // per-material normal/ORM maps out of the shared SRV heap (tier-3; present on the target AMD GPU).
@@ -1202,6 +1204,8 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     else if ( GetLayout( "World" ) )
         GetLayout( "World" )->ValidateShaders( { { World.DepthPrepassVsBlobPull.Get(), "DepthPrepass.hlsl:VSWorld[pull]", D3D12_SHADER_VISIBILITY_VERTEX } } );
     CreatePullTwin( pso, World.DepthPrepassVsBlobPull.Get(), World.DepthPrepassPSOPull.ReleaseAndGetAddressOf(), "world prepass" );
+    if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "VSWorldCaster", Shadermodel_VS, World.CasterVsBlobPull.ReleaseAndGetAddressOf(), kVertexPullDefines ) )
+        World.CasterVsBlobPull.Reset();   // the casters fall back to the prepass VS
 
     // ...and the same with NO pixel shader, for the majority of materials that don't need the cutout. PSClip
     // can `discard`, forcing the draw onto the late-Z path; with no PS the rasterizer runs depth-only at

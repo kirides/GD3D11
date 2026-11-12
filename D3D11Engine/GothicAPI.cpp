@@ -6142,6 +6142,13 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WorldTessellationMaxFactor", to_string_locale_independent( s.WorldTessellationMaxFactor ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WorldTessellationRange", float_to_string( s.WorldTessellationRange, 0 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WorldTessellationStrength", float_to_string( s.WorldTessellationStrength, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapShading", to_string_locale_independent( s.HeightMapShading ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapDepth", float_to_string( s.HeightMapDepth, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapShadowSteps", to_string_locale_independent( s.HeightMapShadowSteps ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapRange", float_to_string( s.HeightMapRange, 0 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapPom", to_string_locale_independent( s.HeightMapPom ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapPomSteps", to_string_locale_independent( s.HeightMapPomSteps ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapSilhouettes", to_string_locale_independent( s.HeightMapSilhouettes ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSeaState", float_to_string( s.WaterSeaState, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveScale", float_to_string( s.WaterWaveScale, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterChoppiness", float_to_string( s.WaterChoppiness, 2 ).c_str(), ini.c_str() );
@@ -6472,6 +6479,13 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.WorldTessellationMaxFactor = std::clamp<INT>( GetPrivateProfileIntA( "Display", "WorldTessellationMaxFactor", ds.WorldTessellationMaxFactor, ini.c_str() ), 1, 16 );
         s.WorldTessellationRange = std::clamp( GetPrivateProfileFloatA( "Display", "WorldTessellationRange", ds.WorldTessellationRange, ini ), 500.0f, 20000.0f );
         s.WorldTessellationStrength = std::clamp( GetPrivateProfileFloatA( "Display", "WorldTessellationStrength", ds.WorldTessellationStrength, ini ), 0.0f, 1.0f );
+        s.HeightMapShading = GetPrivateProfileBoolA( "Display", "HeightMapShading", ds.HeightMapShading, ini );
+        s.HeightMapDepth = std::clamp( GetPrivateProfileFloatA( "Display", "HeightMapDepth", ds.HeightMapDepth, ini ), 0.0f, 50.0f );
+        s.HeightMapShadowSteps = std::clamp<INT>( GetPrivateProfileIntA( "Display", "HeightMapShadowSteps", ds.HeightMapShadowSteps, ini.c_str() ), 0, 32 );
+        s.HeightMapRange = std::clamp( GetPrivateProfileFloatA( "Display", "HeightMapRange", ds.HeightMapRange, ini ), 2000.0f, 20000.0f );
+        s.HeightMapPom = GetPrivateProfileBoolA( "Display", "HeightMapPom", ds.HeightMapPom, ini );
+        s.HeightMapPomSteps = std::clamp<INT>( GetPrivateProfileIntA( "Display", "HeightMapPomSteps", ds.HeightMapPomSteps, ini.c_str() ), 8, 64 );
+        s.HeightMapSilhouettes = GetPrivateProfileBoolA( "Display", "HeightMapSilhouettes", ds.HeightMapSilhouettes, ini );
         s.WaterSeaState = std::clamp( GetPrivateProfileFloatA( "Display", "WaterSeaState", ds.WaterSeaState, ini ), 0.0f, 3.0f );
         s.WaterWaveScale = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWaveScale", ds.WaterWaveScale, ini ), 0.0f, 3.0f );
         s.WaterChoppiness = std::clamp( GetPrivateProfileFloatA( "Display", "WaterChoppiness", ds.WaterChoppiness, ini ), 0.0f, 2.0f );

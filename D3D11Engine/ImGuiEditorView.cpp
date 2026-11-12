@@ -100,6 +100,7 @@ ImGuiEditorView::ImGuiEditorView() {
     SelectedTexSpecPower = 90.0f;
     SelectedMeshTessAmount = 1.0f;
     SelectedMeshRoundness = 1.0f;
+    SelectedMeshDisplacement = 1.0f;
     SelectedTessMesh = UINT_MAX;
     SelectedTessSectionX = SelectedTessSectionY = 0;
     SelectedImageThumbnail = nullptr;
@@ -352,14 +353,28 @@ void ImGuiEditorView::RenderWorldTessellationGroup() {
 
     ImGui::TextUnformatted("Tessellation:");
     ImGui::SameLine(80);
-    ImGui::SliderFloat("##TessFactor", &SelectedMeshTessAmount, 0.0f, 2.0f, "%.2f");
+    ImGui::SliderFloat("##TessFactor", &SelectedMeshTessAmount, 0.0f, 8.0f, "%.2f");
+    changed |= ImGui::IsItemDeactivatedAfterEdit();
+
+    ImGui::TextUnformatted("Displacement:");
+    ImGui::SameLine(80);
+    ImGui::SliderFloat("##TessDisplacement", &SelectedMeshDisplacement, 0.0f, 4.0f, "%.2f");
     changed |= ImGui::IsItemDeactivatedAfterEdit();
 
     if (changed) {
         WorldTessParams p = overrides.Get(SelectedTessMesh);
         p.Roundness = SelectedMeshRoundness;
         p.Factor = SelectedMeshTessAmount;
+        p.Displacement = SelectedMeshDisplacement;
         overrides.Set(SelectedTessMesh, p);
+    }
+
+    zCTexture* meshTex = overrides.GetMeshTexture(SelectedTessMesh);
+    MyDirectDrawSurface7* heightSurface = meshTex && meshTex->GetCacheState() == zRES_CACHED_IN ? meshTex->GetSurface() : nullptr;
+    if (!Engine::IsModernBackend() || !heightSurface || !heightSurface->HasHeightmapFile()) {
+        ImGui::TextUnformatted("Height map: none");
+    } else {
+        ImGui::TextUnformatted(heightSurface->GetHeightmap() ? "Height map: loaded" : "Height map: not loaded");
     }
 
     zCTexture* tex = Selection.SelectedMaterial ? Selection.SelectedMaterial->GetTextureSingle() : nullptr;
@@ -367,12 +382,14 @@ void ImGuiEditorView::RenderWorldTessellationGroup() {
         WorldTessParams p = overrides.Get(SelectedTessMesh);
         p.Roundness = SelectedMeshRoundness;
         p.Factor = SelectedMeshTessAmount;
+        p.Displacement = SelectedMeshDisplacement;
         overrides.SetForTexture(tex, p);
     }
     if (ImGui::Button("Reset mesh")) {
         overrides.ResetMesh(SelectedTessMesh);
         SelectedMeshRoundness = 1.0f;
         SelectedMeshTessAmount = 1.0f;
+        SelectedMeshDisplacement = 1.0f;
     }
 
     if (overrides.IsDirty()) {
@@ -925,6 +942,7 @@ void ImGuiEditorView::UpdateSelectionPanel() {
             const WorldTessParams p = overrides.Get(SelectedTessMesh);
             SelectedMeshRoundness = p.Roundness;
             SelectedMeshTessAmount = p.Factor;
+            SelectedMeshDisplacement = p.Displacement;
         }
     }
 }

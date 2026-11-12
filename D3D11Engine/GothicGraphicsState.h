@@ -1044,6 +1044,13 @@ struct GothicRendererSettings {
         WorldTessellationMaxFactor = 8;
         WorldTessellationRange = 4000.0f;
         WorldTessellationStrength = 1.0f;
+        HeightMapShading = true;
+        HeightMapDepth = 10.0f;
+        HeightMapShadowSteps = 12;
+        HeightMapRange = 8000.0f;
+        HeightMapPom = true;
+        HeightMapPomSteps = 24;
+        HeightMapSilhouettes = true;
         WaterSeaState = 1.0f;
         WaterWaveScale = 1.0f;
         WaterChoppiness = 1.0f;
@@ -1531,6 +1538,13 @@ struct GothicRendererSettings {
     int WorldTessellationMaxFactor;      // hull-shader cap, 1..16
     float WorldTessellationRange;        // world units; smoothing fades out over the last 25%, no tessellation beyond
     float WorldTessellationStrength;     // global roundness scale, 0..1
+    bool HeightMapShading;               // D3D12/Vulkan: per-pixel micro shadows, cavity AO and normals from _HEIGHT.DDS maps
+    float HeightMapDepth;                // height-map peak-to-peak range in cm, 0..50; shading and tessellation displacement (0 = off)
+    int HeightMapShadowSteps;            // micro-shadow ray steps, 0..32 (0 = no micro shadows)
+    float HeightMapRange;                // world units: how far height shading/POM reaches (full to 75%), 2000..20000
+    bool HeightMapPom;                   // parallax occlusion mapping beyond the tessellation range (everywhere without tessellation)
+    int HeightMapPomSteps;               // POM linear-search steps, 8..64
+    bool HeightMapSilhouettes;           // curved silhouettes cut by the POM ray (needs HeightMapPom)
     float WaterSeaState;                 // 0 calm .. 3 storm (interpolated)
     float WaterWaveScale;                // amplitude multiplier
     float WaterChoppiness;               // horizontal displacement multiplier

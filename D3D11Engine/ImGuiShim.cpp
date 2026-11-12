@@ -1209,6 +1209,20 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::SliderInt( "World tess max factor", &settings.WorldTessellationMaxFactor, 1, 16 );
             ImGui::SliderFloat( "World tess range", &settings.WorldTessellationRange, 500.0f, 20000.0f, "%.0f" );
             ImGui::SliderFloat( "World tess strength", &settings.WorldTessellationStrength, 0.0f, 1.0f );
+            ImGui::Checkbox( "Height map shading (D3D12/Vulkan)", &settings.HeightMapShading );
+            ImGui::SetItemTooltip( "Micro shadows, cavity AO and normals from <texture>_HEIGHT.DDS (R channel, 0.5 = rest)." );
+            ImGui::SliderFloat( "Height map depth (cm)", &settings.HeightMapDepth, 0.0f, 50.0f, "%.1f" );
+            ImGui::SetItemTooltip( "Peak-to-peak range; also the world tessellation displacement." );
+            ImGui::SliderInt( "Height map shadow steps", &settings.HeightMapShadowSteps, 0, 32 );
+            ImGui::SliderFloat( "Height map range", &settings.HeightMapRange, 2000.0f, 20000.0f, "%.0f" );
+            ImGui::SetItemTooltip( "How far height shading/POM reaches; full to 75%." );
+            ImGui::Checkbox( "Height map parallax (POM)", &settings.HeightMapPom );
+            ImGui::SetItemTooltip( "Parallax occlusion mapping beyond the tessellation range (everywhere when tessellation is off)." );
+            ImGui::BeginDisabled( !settings.HeightMapPom );
+            ImGui::SliderInt( "Height map POM steps", &settings.HeightMapPomSteps, 8, 64 );
+            ImGui::Checkbox( "Height map silhouettes", &settings.HeightMapSilhouettes );
+            ImGui::SetItemTooltip( "Curved edges cut out by the parallax ray; needs parallax." );
+            ImGui::EndDisabled();
             {
                 const char* simLevels[] = { "Off", "Low", "Medium", "High" };   // E_WaterSimulation
                 int sim = settings.WaterSimulation;
