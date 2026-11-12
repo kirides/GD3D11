@@ -218,8 +218,8 @@ namespace {
         }
 
         XMFLOAT3 fogColorBase = rs.RendererSettings.AtmosphericScattering
-            ? rs.RendererSettings.FogColorMod
-            : rs.GraphicsState.FF_FogColor;
+            ? Engine::GAPI->GetSky()->GetWeatherFogColorMod( rs.RendererSettings.FogColorMod )
+            : XMFLOAT3( rs.GraphicsState.FF_FogColor );
 
         if ( !rs.RendererSettings.DrawFog ) {
             return XMLoadFloat3( &rs.GraphicsState.FF_FogColor );

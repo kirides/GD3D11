@@ -3931,7 +3931,7 @@ bool D3D12PipelineState::CreateSky() {
 
     D3D12RootLayout& rs = Layout( "Sky" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProj
-    // 1: b1 Atmosphere — a real CBV, not root constants: AtmosphereConstantBuffer is 96 bytes (24 DWORDs) and
+    // 1: b1 Atmosphere — a real CBV, not root constants: AtmosphereConstantBuffer is 128 bytes (32 DWORDs) and
     // it is the same struct D3D11 uploads, filled once per frame by GSky::RenderSky() — i.e. final before
     // DrawSky binds it, and untouched for the rest of the frame.
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );

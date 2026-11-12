@@ -27,7 +27,8 @@ cbuffer LowCloudCB : register( LOW_CLOUD_CB_REGISTER )
     float4 LC_MoonScreen;
     float  LC_Frame;              // advances the march jitter per frame under TAA/FSR, 0 otherwise
     uint   LC_NoiseIndex;         // D3D12: bindless SRV of the 3D noise texture
-    float2 LC_Pad;
+    float  LC_Overcast;           // GSky::GetOvercast
+    float  LC_Pad;
 };
 
 static const float LOW_CLOUD_SKY_DEPTH = 0.00001f;
@@ -235,15 +236,19 @@ float4 ComputeLowCloudVolume( float3 cameraWorld, float3 endWorld, float cameraD
     float3 nightShadow = nightFog * 1.1f * max( LC_NightColor, 0.0f );
     float3 litColor = lerp( nightLit, lerp( dayLitClear, dayLitRain, rainWeight ), dayWeight );
     float3 shadowColor = lerp( nightShadow, lerp( dayShadowClear, dayShadowRain, rainWeight ), dayWeight );
+    // Weather overcast: greyer, darker cloud bodies by day
+    litColor = lerp( litColor, dot( litColor, float3( 0.2126f, 0.7152f, 0.0722f ) ), 0.4f * LC_Overcast * dayWeight );
+    shadowColor = lerp( shadowColor, dot( shadowColor, float3( 0.2126f, 0.7152f, 0.0722f ) ), 0.4f * LC_Overcast * dayWeight )
+        * ( 1.0f - 0.3f * LC_Overcast * dayWeight );
 
     // Sky light from above, darker bounce from below; overcast skies lean on it harder
-    float overcast = rainWeight * ( 1.0f - saturate( LC_SunVisibility ) );
+    float overcast = max( rainWeight * ( 1.0f - saturate( LC_SunVisibility ) ), LC_Overcast );
     float3 ambientBottom = LowCloudToLinear( shadowColor ) * 0.85f;
     float3 ambientTop = LowCloudToLinear( lerp( shadowColor, litColor, lerp( 0.35f, 0.85f, overcast ) ) );
     float3 hazeColor = LowCloudToLinear( lerp( shadowColor, litColor, 0.5f ) );
 
     // One main light: the sun (down to the horizon, for sunset light) or the moon
-    float rainDim = lerp( 1.0f, 0.45f, rainWeight );
+    float rainDim = lerp( 1.0f, 0.45f, rainWeight ) * ( 1.0f - 0.4f * LC_Overcast );
     float sunIntensity = saturate( LC_SunVisibility ) * smoothstep( -0.03f, 0.08f, AC_LightPos.y ) * max( 0.0f, LC_SunLight ) * rainDim;
     float moonIntensity = saturate( LC_MoonVisibility ) * smoothstep( 0.0f, 0.15f, LC_MoonDir.y ) * rainDim;
     bool moonIsMain = moonIntensity > sunIntensity;

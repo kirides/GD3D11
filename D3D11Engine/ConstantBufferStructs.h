@@ -496,7 +496,8 @@ struct LowCloudConstantBuffer {
     XMFLOAT4 LC_MoonScreen;
     float LC_Frame;               // march jitter phase under TAA/FSR, 0 otherwise
     uint32_t LC_NoiseIndex;       // D3D12: bindless SRV of the 3D noise texture
-    float LC_Pad[2];
+    float LC_Overcast;            // GSky::GetOvercast
+    float LC_Pad;
 };
 static_assert( sizeof( LowCloudConstantBuffer ) == 240 );
 
@@ -556,7 +557,10 @@ struct AtmosphereConstantBuffer {
 
     float3 AC_SpherePosition;
     float AC_RainFXWeight;
+
+    float4 AC_Weather;   // x = overcast, yzw = cloud tint rgb
 };
+static_assert( sizeof( AtmosphereConstantBuffer ) == 128 );
 
 struct CASConstantBuffer {
     FfxUInt32x4 const0;  // CasSetup output

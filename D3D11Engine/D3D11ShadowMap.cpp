@@ -1405,7 +1405,7 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
     float sunStrength = Toolbox::lerp(
         settings.SunLightStrength,
         settings.RainSunLightStrength,
-        std::min( 1.0f, rain * 2.0f ) );
+        sky->GetSunDimWeight( rain ) );
     scb.SQ_LightColor = float4( sunColor.x, sunColor.y, sunColor.z, sunStrength );
     scb.SQ_SunSpecularEnabled = ( settings.SpecularHighlightsFlags & GothicRendererSettings::SH_SUN ) ? 1.0f : 0.0f;
 
@@ -1549,7 +1549,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
     float sunStrength = Toolbox::lerp(
         settings.SunLightStrength,
         settings.RainSunLightStrength,
-        std::min( 1.0f, rain * 2.0f ) );// Scale the darkening-factor faster here, so it
+        sky->GetSunDimWeight( rain ) );// Scale the darkening-factor faster here, so it
     // matches more with the increasing fog-density
 
     scb.SQ_LightColor = float4( sunColor.x, sunColor.y, sunColor.z, sunStrength );
@@ -1631,7 +1631,8 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
 
     // Wet ground reflects the color the height fog fades distant geometry into (same formula as D3D11PfxRenderer).
     {
-        XMVECTOR skyColor = XMLoadFloat3( &settings.FogColorMod );
+        const XMFLOAT3 weatherFog = sky->GetWeatherFogColorMod( settings.FogColorMod );
+        XMVECTOR skyColor = XMLoadFloat3( &weatherFog );
         if ( Engine::GAPI->GetFogOverride() > 0.0f )
             skyColor = Engine::GAPI->GetFogColor();
         skyColor = XMVectorLerp( skyColor, XMLoadFloat3( &settings.RainFogColor ), std::min( 1.0f, rain * 2.0f ) );

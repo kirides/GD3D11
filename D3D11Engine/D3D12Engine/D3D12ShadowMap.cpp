@@ -847,7 +847,7 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 	// Rain dims the sun toward RainSunLightStrength (parity with D3D11's SQ_LightColor.a lerp).
 	const float rain = Engine::GAPI->GetRainFXWeight();
 	const float sunStrength = set.SunLightStrength
-		+ (set.RainSunLightStrength - set.SunLightStrength) * std::min( 1.0f, rain * 2.0f );
+		+ (set.RainSunLightStrength - set.SunLightStrength) * Engine::GAPI->GetSky()->GetSunDimWeight( rain );
 
 	// BSP-indoor override (parity with D3D11): interiors get NO direct sun at all — Prepare() forces sunUp
 	// false for indoor worlds, so the cascades are cleared to unshadowed and never rendered — and worldAO

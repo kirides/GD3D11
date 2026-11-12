@@ -256,7 +256,7 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     const bool sunUp = ( lp.y > 0.0f );
     const float rain = Engine::GAPI->GetRainFXWeight();
     const float sunStrength = set.SunLightStrength
-        + ( set.RainSunLightStrength - set.SunLightStrength ) * std::min( 1.0f, rain * 2.0f );
+        + ( set.RainSunLightStrength - set.SunLightStrength ) * Engine::GAPI->GetSky()->GetSunDimWeight( rain );
 
     p.SunDir = m_ShadowMap.GetSunDirWS();
     p.SunColor = SrgbToLinear3( XMFLOAT3( set.SunLightColor.x, set.SunLightColor.y, set.SunLightColor.z ) );
@@ -329,7 +329,7 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     p.Ground = MaxFloor3( groundLin, Scale3( floorCol, 0.5f ) );
 
     // Rain flattens the sky toward grey; the dome only drives the IBL while it is the sky actually drawn.
-    p.Overcast = kOvercastDesaturation * std::min( 1.0f, rain * 2.0f );
+    p.Overcast = kOvercastDesaturation * Engine::GAPI->GetSky()->GetSunDimWeight( rain );
     const AtmosphereConstantBuffer& atmo = Engine::GAPI->GetSky()->GetAtmosphereCB();
     p.Atmosphere = set.AtmosphericScattering && !p.Indoor && m_SkyCBMapped[m_FrameIndex]
         && atmo.AC_CameraHeight < atmo.AC_OuterRadius;

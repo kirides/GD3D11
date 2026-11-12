@@ -32,6 +32,8 @@ cbuffer Atmosphere : register( b1 )
 
 	float3 AC_SpherePosition;
 	float AC_RainFXWeight;
+
+	float4 AC_Weather;	// x = overcast, yzw = cloud tint rgb
 };
 
 // The scale equation calculated by Vernier's Graphical Analysis

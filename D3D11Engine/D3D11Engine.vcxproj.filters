@@ -903,6 +903,9 @@
     <ClInclude Include="D3D12Engine\D3D12VertexPullSelfTest.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="SkyWeather.h">
+      <Filter>Engine\GAPI\Objects</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1283,6 +1286,9 @@
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12VertexPullSelfTest.cpp">
       <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="SkyWeather.cpp">
+      <Filter>Engine\GAPI\Objects</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>

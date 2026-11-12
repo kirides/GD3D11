@@ -466,12 +466,14 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
     static_assert( kWetSkyCbOffset + sizeof( WetSkyCBData ) <= 512, "shadow CB overflow" );
     const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
     WetSkyCBData sky = {};
-    XMVECTOR tint = XMLoadFloat3( &set.FogColorMod );
+    GSky* gsky = Engine::GAPI->GetSky();
+    const XMFLOAT3 weatherFog = gsky ? gsky->GetWeatherFogColorMod( set.FogColorMod ) : XMFLOAT3( set.FogColorMod );
+    XMVECTOR tint = XMLoadFloat3( &weatherFog );
     if ( Engine::GAPI->GetFogOverride() > 0.0f )
         tint = Engine::GAPI->GetFogColor();
     tint = XMVectorLerp( tint, XMLoadFloat3( &set.RainFogColor ), std::min( 1.0f, cb.RainFxWeight * 2.0f ) );
     XMStoreFloat3( &sky.SkyTint, tint );
-    if ( GSky* gsky = Engine::GAPI->GetSky() ) {
+    if ( gsky ) {
         sky.SunHeight = gsky->GetAtmosphereCB().AC_LightPos.y;
         const MoonLightInfo moon = gsky->GetMoonLight();
         sky.MoonDir = moon.Direction;

@@ -8,6 +8,7 @@
 #include "../zFILE_VDFS.h"
 #include "../ThreadPool.h"
 #include "../UIRenderer2D.h"
+#include "../SkyWeather.h"
 
 #include <unordered_set>
 
@@ -699,6 +700,34 @@ HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {
     int alphaBits = Toolbox::GetNumberOfBits( OriginalSurfaceDesc.ddpfPixelFormat.dwRGBAlphaBitMask );
 
     int bpp = redBits + greenBits + blueBits + alphaBits;
+
+    // Dynamic weather biases itself on Gothic's sky day textures: summarize them once as they load.
+    if ( LockedData && EngineTexture ) {
+        if ( zCTexture* loading = Engine::GAPI->GetLoadingTexture();
+            loading && SkyWeather::IsSkyDayTexture( loading->GetNameView() ) ) {
+            SkyWeather::PixelFormat fmt = SkyWeather::PixelFormat::BGRA8;
+            bool known = true;
+            if ( bpp == 16 ) {
+                fmt = OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC == 1 ? SkyWeather::PixelFormat::B5G5R5A1
+                    : OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC == 2 ? SkyWeather::PixelFormat::B4G4R4A4
+                    : SkyWeather::PixelFormat::B5G6R5;
+            } else if ( bpp == 0 ) {
+                switch ( OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC ) {
+                case FOURCC_DXT1: fmt = SkyWeather::PixelFormat::DXT1; break;
+                case FOURCC_DXT2:
+                case FOURCC_DXT3: fmt = SkyWeather::PixelFormat::DXT3; break;
+                case FOURCC_DXT4:
+                case FOURCC_DXT5: fmt = SkyWeather::PixelFormat::DXT5; break;
+                default: known = false; break;
+                }
+            }
+            if ( known ) {
+                SkyWeather::RecordSkyTexture( loading->GetNameWithoutExtView(), LockedData,
+                    static_cast<int>( OriginalSurfaceDesc.dwWidth ), static_cast<int>( OriginalSurfaceDesc.dwHeight ),
+                    static_cast<int>( EngineTexture->GetRowPitchBytes( 0 ) ), fmt, alphaBits > 0 || bpp == 0 );
+            }
+        }
+    }
 
     // No conversion needed
     if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {

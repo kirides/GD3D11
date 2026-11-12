@@ -25,7 +25,8 @@ static const float NIGHT_BRIGHTNESS = 2.0f;
     float3 AC_Wavelength; float AC_RayleighScaleDepth; \
     float AC_RayleighOverScaleDepth; int AC_nSamples; float AC_fSamples; float AC_CameraHeight; \
     float3 AC_CameraPos; float AC_Time; float3 AC_LightPos; float AC_SceneWettness; \
-    float3 AC_SpherePosition; float AC_RainFXWeight;
+    float3 AC_SpherePosition; float AC_RainFXWeight; \
+    float4 AC_Weather;
 
 // ATMOSPHERE_BINDLESS: no b1 cbuffer; the includer passes AtmosphereData (e.g. from a heap CBV) to every function.
 struct AtmosphereData { ATMOSPHERE_FIELDS };
@@ -55,6 +56,7 @@ AtmosphereData GetAtmosphere()
     a.AC_SceneWettness = AC_SceneWettness;
     a.AC_SpherePosition = AC_SpherePosition;
     a.AC_RainFXWeight = AC_RainFXWeight;
+    a.AC_Weather = AC_Weather;
     return a;
 }
 #endif

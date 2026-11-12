@@ -1,6 +1,8 @@
 #include "ImGuiShim.h"
 #include "StaticLightFarField.h"
 #include "GSky.h"
+#include "oCGame.h"
+#include "zCSkyController_Outdoor.h"
 #include "D3D11PipelineStateCache.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
 #include "VulkanEngine/VulkanDevice.h"
@@ -1595,6 +1597,46 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::ColorEdit3( "Day Color", &settings.LowCloudDayColor.x );
             ImGui::SetItemTooltip( "Set per world on load; not saved." );
             ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+
+        ImGui::SeparatorText( "Dynamic Weather" );
+        {
+            ImGui::PushID( "DynamicWeatherSettings" );
+            ImGui::Checkbox( "Dynamic Weather", &settings.DynamicWeather );
+            ImGui::BeginDisabled( !settings.DynamicWeather );
+            ImGui::SliderFloat( "Variety", &settings.WeatherVariety, 0.0f, 1.0f );
+            ImGui::SliderFloat( "Bias", &settings.WeatherBias, -1.0f, 1.0f );
+            ImGui::SetItemTooltip( "Shifts the overcast estimate: negative is clearer, positive gloomier." );
+            ImGui::EndDisabled();
+
+            if ( GSky* sky = Engine::GAPI->GetSky() ) {
+                const WeatherDebugInfo info = sky->GetWeatherDebug();
+                ImGui::Text( "Active: %s", info.Active ? "yes" : "no" );
+                ImGui::Text( "Day counter: %.3f", info.DayCounter );
+                ImGui::Text( "Calendar day k: %d", info.K );
+                ImGui::Text( "Seed target: %.3f", info.SeedTarget );
+                ImGui::Text( "Texture bias: %.3f", info.TextureBias );
+                ImGui::Text( "Rain ramp: %.3f", info.RainRamp );
+                ImGui::Text( "Overcast raw: %.3f", info.Raw );
+                ImGui::Text( "Overcast: %.3f", info.Overcast );
+
+                // UI-only override state, not persisted; pushed to GSky only when edited.
+                static bool s_OverrideOn = false;
+                static float s_OverrideValue = 0.5f;
+                const bool toggled = ImGui::Checkbox( "Override overcast", &s_OverrideOn );
+                ImGui::BeginDisabled( !s_OverrideOn );
+                const bool moved = ImGui::SliderFloat( "Overcast", &s_OverrideValue, 0.0f, 1.0f );
+                ImGui::EndDisabled();
+                if ( toggled || moved ) sky->SetWeatherOverride( s_OverrideOn ? s_OverrideValue : -1.0f );
+            }
+
+            if ( ImGui::Button( "Next day" ) ) {
+                oCGame* game = oCGame::GetGame();
+                zCSkyController_Outdoor* sc = ( game && game->_zCSession_world ) ? game->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+                if ( sc ) sc->SetDayCounter( sc->GetDayCounter() + 1.0f );
+            }
+            ImGui::SetItemTooltip( "Advances Gothic's day counter by one. No effect where the offset is unknown." );
             ImGui::PopID();
         }
 
