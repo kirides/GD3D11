@@ -217,6 +217,16 @@ void D3D12GpuScene::OnSrvSlotFreed( UINT slot ) {
 }
 
 
+void D3D12GpuScene::InvalidateMaterials() {
+    for ( uint32_t v = 0; v < VisualCount(); ++v ) {
+        Visual& vis = m_Visuals[v];
+        if ( vis.State != kVisualReady || vis.Queued ) continue;
+        vis.Queued = true;
+        m_BuildQueue.push_back( v );
+    }
+}
+
+
 void D3D12GpuScene::SetSlotState( uint32_t slot, uint8_t state ) {
     if ( m_SlotState[slot] == state ) return;
     m_SlotState[slot] = state;

@@ -80,6 +80,8 @@ public:
     bool OnVobLeft( const zCVob* vob, DirectX::XMFLOAT4* bakedSphere = nullptr );
     /** A bindless slot was freed; templates naming it stop drawing until the visual is re-resolved. */
     void OnSrvSlotFreed( UINT slot );
+    /** A MaterialInfo changed (per-material roughness): every ready visual is queued for a template re-resolve. */
+    void InvalidateMaterials();
     /** Re-uploads every static VOB instance (their colors carry the static-light far field). */
     void RewriteVobInstances();
 

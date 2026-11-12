@@ -323,6 +323,36 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
         }
     }
 
+    // Per-material roughness (D3D12/Vulkan): picks the same 1x1 ORM steps as the default roughness.
+    bool roughChanged = false;
+    ImGui::TextUnformatted("Roughness:");
+    ImGui::SameLine(80);
+    if (ImGui::Checkbox("Override##RoughOverride", &SelectedTexRoughOverride)) {
+        roughChanged = true;
+    }
+    ImGui::BeginDisabled(!SelectedTexRoughOverride);
+    if (ImGui::SliderFloat("##RoughValue", &SelectedTexRoughness, DefaultRoughness::kMin, DefaultRoughness::kMax, "%.2f")) {
+        SelectedTexRoughness = DefaultRoughness::ForStep(DefaultRoughness::StepFor(SelectedTexRoughness));
+    }
+    roughChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("(only for materials without an _FX/_ORM map; D3D12/Vulkan)");
+    if (Selection.SelectedMaterial) {
+        zCTexture* roughTex = Selection.SelectedMaterial->GetTextureSingle();
+        MyDirectDrawSurface7* roughSurface = roughTex && roughTex->GetCacheState() == zRES_CACHED_IN ? roughTex->GetSurface() : nullptr;
+        if (roughSurface && roughSurface->GetFxMap()) {
+            ImGui::TextDisabled("This texture has an _FX/_ORM map: the map takes precedence.");
+        }
+    }
+
+    if (roughChanged && Selection.SelectedMaterial && Selection.SelectedMaterial->GetTextureSingle()) {
+        if (MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial)) {
+            info->buffer.Roughness = SelectedTexRoughOverride ? SelectedTexRoughness : -1.0f;
+            g_MaterialInfoEpoch.fetch_add(1, std::memory_order_relaxed);
+            info->WriteToFile(Selection.SelectedMaterial->GetTextureSingle()->GetNameWithoutExtView());
+        }
+    }
+
     RenderWorldTessellationGroup();
 }
 
@@ -929,6 +959,10 @@ void ImGuiEditorView::UpdateSelectionPanel() {
             SelectedTexNrmStr = info->buffer.NormalmapStrength;
             SelectedTexSpecIntens = info->buffer.SpecularIntensity;
             SelectedTexSpecPower = info->buffer.SpecularPower;
+            SelectedTexRoughOverride = info->buffer.Roughness >= 0.0f;
+            if (SelectedTexRoughOverride) {
+                SelectedTexRoughness = DefaultRoughness::ForStep(DefaultRoughness::StepFor(info->buffer.Roughness));
+            }
         }
     }
 

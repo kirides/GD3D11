@@ -7406,7 +7406,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             MaterialInfo::Buffer b = {};
 
                             b.Color = meshKey.Material->GetColor();
-                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->UpdateBuffer("MI_MaterialInfo", &b, sizeof(b));
+                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->UpdateBuffer("MI_MaterialInfo", &b, offsetof(MaterialInfo::Buffer, Roughness));
 
                         } else {
                             continue;

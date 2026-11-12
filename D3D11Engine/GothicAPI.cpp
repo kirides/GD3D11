@@ -114,7 +114,7 @@ void MaterialInfo::WriteToFile( const std::string_view name ) {
 void MaterialInfo::LoadFromFile( const std::string_view name ) {
     
     bool foundFile = false;
-    char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
+    char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )] = {};
     
     thread_local std::string filePath{};
     filePath.reserve( 255 );
@@ -147,7 +147,12 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     
     // Then the data
     ZeroMemory( &buffer, sizeof( MaterialInfo::Buffer ) );
-    memcpy( &buffer, ReadBuffer + sizeof( int ), sizeof( MaterialInfo::Buffer ) );
+    // v6 files stop before Roughness; copy only the legacy part of those.
+    memcpy( &buffer, ReadBuffer + sizeof( int ),
+        version >= 7 ? sizeof( MaterialInfo::Buffer ) : offsetof( MaterialInfo::Buffer, Roughness ) );
+    if ( version < 7 ) {
+        buffer.Roughness = -1.0f;
+    }
 
     if ( version < 2 ) {
         if ( buffer.DisplacementFactor == 0.0f ) {

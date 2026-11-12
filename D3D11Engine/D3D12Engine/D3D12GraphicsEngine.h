@@ -25,6 +25,7 @@
 
 struct RenderBucket;
 struct MeshKey;
+struct MaterialInfo;
 class D3D12LineRenderer;
 struct GothicBlendStateInfo;
 struct FrameVobUpload;
@@ -382,11 +383,11 @@ private:
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     // Set a lit draw's per-material bindless normal/ORM indices (b6 root consts). matRootParam = 10 (world/VOB
     // root sig) or 12 (skeletal). Call once per material change, right after binding its diffuse SRV.
-    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam );
+    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam, const MaterialInfo* info = nullptr );
     // Bindless variant: same b6 block plus the diffuse SRV heap slot as the third constant. Used by the
     // skeletal passes, whose root signature carries no diffuse descriptor table.
-    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam, UINT diffuseSlot );
-    void ResolveMaterialMapSlots( class zCTexture* tex, UINT* outNormalOrm ) const;
+    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam, UINT diffuseSlot, const MaterialInfo* info = nullptr );
+    void ResolveMaterialMapSlots( class zCTexture* tex, UINT* outNormalOrm, const MaterialInfo* info = nullptr ) const;
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
     void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5 );   // light SRV(t1)+LightCB root CBV+cluster-mask(t2); (3,4,5)=world/decal, (4,5,6)=skeletal, (5,6,7)=grass
@@ -815,6 +816,8 @@ private:
     UINT m_DefaultOrmSrvSlot = UINT_MAX;
     /** SRV heap slot of the default ORM texture for this frame's DefaultMaterialRoughness setting. */
     UINT GetDefaultOrmSrvSlot() const { return m_DefaultOrmSrvSlot; }
+    /** The default-ORM slot for a material without a map: its per-material roughness step if set, else the global one. */
+    UINT DefaultOrmSlotFor( const MaterialInfo* info ) const;
     /** Re-resolves m_DefaultOrmSrvSlot from RendererSettings.DefaultMaterialRoughness. Frame-start only. */
     void RefreshDefaultOrmSlot();
     std::unique_ptr<D3D12Texture> m_DistortionTexture;    // distortion2.dds — wet-ground normal fallback (see LoadDistortionTexture)
@@ -2256,6 +2259,7 @@ private:
     bool m_HeightPomState = false;                   // HeightMapPom && HeightMapShading as last seen
     /** Bumped when the POM setting combo or any world height slot changes; D3D12GpuWorld re-resolves its materials on a change. */
     uint32_t m_HeightPartitionEpoch = 0;
+    uint32_t m_MaterialInfoEpochSeen = 0;            // g_MaterialInfoEpoch as last applied (per-material roughness edits)
     std::vector<XMFLOAT4> m_WorldTessScratch;    // copy of GetGpuTable() with .w filled, reused
     // uint2 per diffuse SRV slot (.x height slot, .y reserved), guarded by m_SrvHeapMutex: FreeSrvSlot resets entries off-thread
     std::vector<uint32_t> m_MaterialMaps;
