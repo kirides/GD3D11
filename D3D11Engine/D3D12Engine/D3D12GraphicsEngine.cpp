@@ -1197,6 +1197,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // [kWetSkyCbOffset,  ..) UploadWetnessConstants        — wet-sky tint + moon direction
     // [kRtSunCbOffset,  512) UploadRtSunConstants          — the transparents' inline sun ray
     // [kFarFieldCbOffset, ..) UpdateFarField               — the static-light far-field crossfade
+    // [kWorldTessCbOffset,..) UploadWorldTessConstants     — world tessellation camera/factor block (b11)
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};
@@ -2205,6 +2206,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
     m_VertexPullWorld = false;   // re-latched in OnStartWorldRendering; a frame without it stays on the IA path
     m_Pipelines.VertexPullActive = false;
+    m_WorldTessActive = false;
 
     if ( !g_MainLoopFramePacingInstalled ) {
         FrameMark;

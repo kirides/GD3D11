@@ -61,6 +61,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12MeshArena.h"
 #include "../TransparencyQueue.h"
 #include "../StaticLightFarField.h"
+#include "../WorldTessOverrides.h"
 
 
 // ---- The two per-frame record sets the shadow modules share with this TU (declared in D3D12EngineCommon.h) ----
@@ -418,6 +419,7 @@ void D3D12GraphicsEngine::OnVobsReset() {
 void D3D12GraphicsEngine::OnWorldMeshReset() {
     // Not every load mode reaches OnLoadWorld, and the GPU world points into the sections being deleted.
     m_GpuWorld->Reset();
+    m_WorldTessTableVersion = UINT32_MAX;   // re-evaluated next frame; an empty table releases the resource
 }
 
 
@@ -425,6 +427,7 @@ void D3D12GraphicsEngine::OnLoadWorld()
 {
     m_GpuScene->Reset();
     m_GpuWorld->Reset();
+    m_WorldTessTableVersion = UINT32_MAX;
     m_MenuBackdropValid = false;   // shows the old world
     g_vobInfoVisualToBucket.clear();
     g_vobInfoVisualIndexToVisualInfo.clear();
@@ -1207,6 +1210,56 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
 	return true;
 }
 
+
+void D3D12GraphicsEngine::UploadWorldTessConstants() {
+	uint8_t* mapped = m_ShadowCBMapped[m_FrameIndex];
+	if ( !mapped ) return;
+	WorldTessCBData cb = {};   // zeroed while inactive: the HS then sees range 0 and factor 0
+	if ( m_WorldTessActive ) {
+		constexpr float kTargetPixelsPerSegment = 10.0f;   // screen size one tessellated edge segment aims for
+		const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
+		const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+		const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+		cb.CamPos[0] = camPos.x; cb.CamPos[1] = camPos.y; cb.CamPos[2] = camPos.z;
+		cb.MaxFactor = static_cast<float>( std::clamp( s.WorldTessellationMaxFactor, 1, 16 ) );
+		cb.UnitsPerPx = 2.0f / ( std::max( projM._22, 1e-4f ) * static_cast<float>( std::max( m_Resolution.y, 1 ) ) ) * kTargetPixelsPerSegment;
+		cb.Range = std::max( s.WorldTessellationRange, 1.0f );
+		cb.Strength = std::clamp( s.WorldTessellationStrength, 0.0f, 1.0f );
+		cb.FadeStart = 0.75f * cb.Range;
+	}
+	memcpy( mapped + kWorldTessCbOffset, &cb, sizeof( cb ) );
+}
+
+void D3D12GraphicsEngine::UpdateWorldTessTable() {
+	WorldTessOverrides& ov = GetWorldTessOverrides();
+	if ( ov.GetVersion() == m_WorldTessTableVersion ) return;
+	m_WorldTessTableVersion = ov.GetVersion();
+	const std::vector<XMFLOAT4>& table = ov.GetGpuTable();
+	// Frames still in flight read the old one: keep it alive until they retire
+	if ( m_WorldTessTable ) QueueResourceForRelease( std::move( m_WorldTessTable ) );
+	if ( table.empty() ) return;
+
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = static_cast<UINT64>( table.size() ) * sizeof( XMFLOAT4 );
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	Microsoft::WRL::ComPtr<Rhi::Resource> buffer;
+	if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, buffer.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Err( "D3D12: world tessellation override table ({} entries) could not be created; tessellation off.", table.size() );
+		return;
+	}
+	buffer->SetName( L"WorldTessParams" );
+	if ( !UploadBufferData( buffer.Get(), table.data(), desc.Width ) ) {
+		Logging::Err( "D3D12: world tessellation override table upload failed; tessellation off." );
+		return;
+	}
+	FlushTextureUploads();
+	m_WorldTessTable = std::move( buffer );
+}
 
 void D3D12GraphicsEngine::UpdateFarField() {
 	const StaticLightFarField& farField = GetStaticLightFarField();
@@ -2817,6 +2870,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	m_AttachArena->Flush( this );
 	// Last arena flush/growth of the frame is behind us (VOB arena, BeginSkinningFrame, the two above) and no cascade
 	// job has launched yet: rewrite this frame slot's stream table here. Passes recorded after this point may read it.
+	UpdateWorldTessTable();   // before the stream table so its SRV sees the new resource this frame
 	m_GeometryStreams->Update();
 	{
 		MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
@@ -2825,6 +2879,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		m_VertexPullWorld = Engine::GAPI->GetRendererState().RendererSettings.VertexPulling && !m_Pipelines.VertexPullFailed
 			&& m_WorldVbSlot != UINT_MAX && wvb && wvb->GetResource();
 		m_Pipelines.VertexPullActive = m_VertexPullWorld;
+		m_WorldTessActive = m_VertexPullWorld && Engine::GAPI->GetRendererState().RendererSettings.WorldTessellation
+			&& m_Pipelines.World.TessReady() && m_Pipelines.World.TessRootParam != UINT_MAX
+			&& wm && wm->GetMeshTessBuffer() != nullptr && m_WorldTessTable;
 	}
 	m_VertexPullSelfTest->Run();   // before BindSceneColorTarget, which rebinds the RT it disturbs
 
@@ -2853,6 +2910,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// binds, and derive its inverse for the end-of-frame camera-velocity fill. Must precede the prepass; the
 	// matching StoreVobPreviousTransforms at the bottom of this function rolls it into history. See D3D12Motion.cpp.
 	UploadMotionConstants();
+	UploadWorldTessConstants();   // camera + projection are final; before the prepass reads b11
 
 	// Sky: fog fill + Gothic's atmosphere solve now, geometry later (after the depth prepass) so opaque depth
 	// rejects the sky fragments behind geometry. See PrepareSky/DrawSky.
@@ -4653,6 +4711,14 @@ void D3D12GraphicsEngine::BindVobPull( D3D12CmdList& cmdList, const D3D12Pipelin
     cmdList->SetGraphicsRootShaderResourceView( pull.InstSrv, instances->GetGPUVirtualAddress() );
 }
 
+// Restores TRIANGLELIST on every exit of a world pass that drew patches (later passes assume it).
+struct WorldTessScope {
+    D3D12CmdList& cmd;
+    const bool active;
+    WorldTessScope( D3D12CmdList& c, bool a ) : cmd( c ), active( a ) {}
+    ~WorldTessScope() { if ( active ) cmd->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ); }
+};
+
 void D3D12GraphicsEngine::DrawDepthPrepass() {
     // Forward+ opaque WORLD-MESH depth prepass, before the lit color passes. Writes depth only (color write
     // mask 0). Water is skipped: it is transparent and never writes depth, same as in the opaque pass.
@@ -4692,11 +4758,17 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // for this. See World.DepthPrepassNoAlphaPSO.
     const bool splitAlpha = !gbuf && m_Pipelines.World.DepthPrepassNoAlphaPSO != nullptr;
 
-    m_CmdList->SetPipelineState( gbuf ? PullPick( m_Pipelines.World.DepthPrepassGBufPSO.Get(), m_Pipelines.World.DepthPrepassGBufPSOPull.Get() )
-                                      : ( splitAlpha ? PullPick( m_Pipelines.World.DepthPrepassNoAlphaPSO.Get(), m_Pipelines.World.DepthPrepassNoAlphaPSOPull.Get() )
-                                                     : PullPick( m_Pipelines.World.DepthPrepassPSO.Get(), m_Pipelines.World.DepthPrepassPSOPull.Get() ) ) );
+    const D3D12PipelineState::WorldPipeline& wp = m_Pipelines.World;
+    // Tessellated (patch) twins while m_WorldTessActive; the clipping PSO is also the alpha-suffix PSO below.
+    Rhi::PipelineState* clipPso = WorldTessPick( PullPick( wp.DepthPrepassPSO.Get(), wp.DepthPrepassPSOPull.Get() ), wp.TessDepthPrepassPSO.Get() );
+    m_CmdList->SetPipelineState( gbuf ? WorldTessPick( PullPick( wp.DepthPrepassGBufPSO.Get(), wp.DepthPrepassGBufPSOPull.Get() ), wp.TessDepthPrepassGBufPSO.Get() )
+                                      : ( splitAlpha ? WorldTessPick( PullPick( wp.DepthPrepassNoAlphaPSO.Get(), wp.DepthPrepassNoAlphaPSOPull.Get() ), wp.TessDepthPrepassNoAlphaPSO.Get() )
+                                                     : clipPso ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     BindWorldPull( m_CmdList, m_Pipelines.World.PullRootParam );
+    const WorldTessScope tessScope( m_CmdList, m_WorldTessActive );
+    if ( m_WorldTessActive )
+        m_CmdList->SetGraphicsRootConstantBufferView( wp.TessRootParam, m_ShadowCBGpu[m_FrameIndex] + kWorldTessCbOffset );   // b11
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
     if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSWorldGBuf)
 
@@ -4709,7 +4781,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
     m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
     m_CmdList->IASetIndexBuffer( &ibv );
-    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    m_CmdList->IASetPrimitiveTopology( m_WorldTessActive ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     // GPU-driven submit (P2.11): one ExecuteIndirect over the shared per-frame command buffer that
     // BuildWorldDrawCommands filled (same opaque draw set as the color pass; water already peeled). Each command
@@ -4718,7 +4790,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     if ( m_GpuWorldActive ) {
         if ( !m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) return;
         m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
-        if ( splitAlpha ) m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.DepthPrepassPSO.Get(), m_Pipelines.World.DepthPrepassPSOPull.Get() ) );
+        if ( splitAlpha ) m_CmdList->SetPipelineState( clipPso );
         m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
         m_WorldPrepassDrawn = true;
         return;
@@ -4743,7 +4815,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     }
     // Alpha-tested suffix through the clipping PSO, starting at the partition point.
     if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
-        m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.DepthPrepassPSO.Get(), m_Pipelines.World.DepthPrepassPSOPull.Get() ) );
+        m_CmdList->SetPipelineState( clipPso );
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
             static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );
@@ -4900,12 +4972,18 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
     // Opaque run depth-EQUAL against the prepass (no clip, early depth); alpha-tested run keeps PSO's clip.
-    Rhi::PipelineState* opaquePso = m_WorldPrepassDrawn && m_Pipelines.World.OpaquePSO
-        ? PullPick( m_Pipelines.World.OpaquePSO.Get(), m_Pipelines.World.OpaquePSOPull.Get() )
-        : PullPick( m_Pipelines.World.PSO.Get(), m_Pipelines.World.PSOPull.Get() );
+    // Tessellated (patch) twins while m_WorldTessActive, matching the prepass of this frame.
+    const D3D12PipelineState::WorldPipeline& wp = m_Pipelines.World;
+    Rhi::PipelineState* clipPso = WorldTessPick( PullPick( wp.PSO.Get(), wp.PSOPull.Get() ), wp.TessPSO.Get() );
+    Rhi::PipelineState* opaquePso = m_WorldPrepassDrawn && wp.OpaquePSO
+        ? WorldTessPick( PullPick( wp.OpaquePSO.Get(), wp.OpaquePSOPull.Get() ), wp.TessOpaquePSO.Get() )
+        : clipPso;
     m_WorldPrepassDrawn = false;
     m_CmdList->SetPipelineState( opaquePso );
     BindWorldFrameRootState( viewProj );
+    const WorldTessScope tessScope( m_CmdList, m_WorldTessActive );
+    if ( m_WorldTessActive )
+        m_CmdList->SetGraphicsRootConstantBufferView( wp.TessRootParam, m_ShadowCBGpu[m_FrameIndex] + kWorldTessCbOffset );   // b11
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -4916,7 +4994,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
     m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
     m_CmdList->IASetIndexBuffer( &ibv );
-    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    m_CmdList->IASetPrimitiveTopology( m_WorldTessActive ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     // GPU-driven submit (P2.11): one ExecuteIndirect over the shared per-frame command buffer (built by
     // BuildWorldDrawCommands before the depth prepass; water already peeled into g_FrameWaterSurfaces). Each
@@ -4926,7 +5004,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     if ( m_GpuWorldActive ) {
         if ( m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) {
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
-            m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.PSO.Get(), m_Pipelines.World.PSOPull.Get() ) );
+            m_CmdList->SetPipelineState( clipPso );
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
         }
         return XR_SUCCESS;
@@ -4937,7 +5015,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
             m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
     if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
-        m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.PSO.Get(), m_Pipelines.World.PSOPull.Get() ) );
+        m_CmdList->SetPipelineState( clipPso );
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
             static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );

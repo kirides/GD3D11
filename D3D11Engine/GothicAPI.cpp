@@ -13,6 +13,7 @@
 #include "WorldConverter.h"
 #include "MeshOptimizeCache.h"
 #include "StaticLightFarField.h"
+#include "WorldTessOverrides.h"
 #include "HookedFunctions.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
@@ -978,6 +979,7 @@ State->WorldSections.clear();
 
     SAFE_DELETE( WrappedWorldMesh );
     GetStaticLightFarField().Reset();
+    GetWorldTessOverrides().Reset();
 
     // Clear inventory too?
 }
@@ -5766,6 +5768,9 @@ void GothicAPI::LoadCustomZENResources() {
 
     // Load vegetation
     LoadVegetation( zen + ".veg" );
+
+    // Per-mesh world tessellation overrides (needs the sections, which exist by now)
+    GetWorldTessOverrides().Load( zen + ".wts" );
 }
 
 /** Saves resources created for this .ZEN */
@@ -5797,6 +5802,8 @@ void GothicAPI::SaveCustomZENResources() {
 
     // Save vegetation
     SaveVegetation( zen + ".veg" );
+
+    GetWorldTessOverrides().Save( zen + ".wts" );
 }
 
 /** Applys the suppressed textures */
@@ -6131,6 +6138,10 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WaterSimulation", to_string_locale_independent( (int)s.WaterSimulation ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterTessellation", to_string_locale_independent( s.WaterTessellation ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterTessellationMaxFactor", to_string_locale_independent( s.WaterTessellationMaxFactor ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WorldTessellation", to_string_locale_independent( s.WorldTessellation ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WorldTessellationMaxFactor", to_string_locale_independent( s.WorldTessellationMaxFactor ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WorldTessellationRange", float_to_string( s.WorldTessellationRange, 0 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WorldTessellationStrength", float_to_string( s.WorldTessellationStrength, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSeaState", float_to_string( s.WaterSeaState, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveScale", float_to_string( s.WaterWaveScale, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterChoppiness", float_to_string( s.WaterChoppiness, 2 ).c_str(), ini.c_str() );
@@ -6457,6 +6468,10 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             GothicRendererSettings::WATER_SIM_OFF, GothicRendererSettings::WATER_SIM_HIGH ) );
         s.WaterTessellation = GetPrivateProfileBoolA( "Display", "WaterTessellation", ds.WaterTessellation, ini );
         s.WaterTessellationMaxFactor = std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterTessellationMaxFactor", ds.WaterTessellationMaxFactor, ini.c_str() ), 4, 64 );
+        s.WorldTessellation = GetPrivateProfileBoolA( "Display", "WorldTessellation", ds.WorldTessellation, ini );
+        s.WorldTessellationMaxFactor = std::clamp<INT>( GetPrivateProfileIntA( "Display", "WorldTessellationMaxFactor", ds.WorldTessellationMaxFactor, ini.c_str() ), 1, 16 );
+        s.WorldTessellationRange = std::clamp( GetPrivateProfileFloatA( "Display", "WorldTessellationRange", ds.WorldTessellationRange, ini ), 500.0f, 20000.0f );
+        s.WorldTessellationStrength = std::clamp( GetPrivateProfileFloatA( "Display", "WorldTessellationStrength", ds.WorldTessellationStrength, ini ), 0.0f, 1.0f );
         s.WaterSeaState = std::clamp( GetPrivateProfileFloatA( "Display", "WaterSeaState", ds.WaterSeaState, ini ), 0.0f, 3.0f );
         s.WaterWaveScale = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWaveScale", ds.WaterWaveScale, ini ), 0.0f, 3.0f );
         s.WaterChoppiness = std::clamp( GetPrivateProfileFloatA( "Display", "WaterChoppiness", ds.WaterChoppiness, ini ), 0.0f, 2.0f );

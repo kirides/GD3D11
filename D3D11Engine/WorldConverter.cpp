@@ -12,6 +12,8 @@
 #include "zCMeshSoftSkin.h"
 #include "zCModel.h"
 #include "zCMorphMesh.h"
+#include <array>
+#include <bit>
 #include <set>
 #include <unordered_map>
 #include "ConstantBufferStructs.h"
@@ -36,6 +38,7 @@
 #include "VertexPacking.h"
 #include "WorldMeshSection.h"
 #include "StaticLightFarField.h"
+#include "WorldTessOverrides.h"
 
 extern MeshManager* s_MeshManager;
 
@@ -282,6 +285,171 @@ namespace {
             static_cast<unsigned int>(positions.size() * sizeof( float3 )),
             D3D11VertexBuffer::B_VERTEXBUFFER,
             D3D11VertexBuffer::U_IMMUTABLE );
+    }
+
+    // Roundness thresholds for the welded tessellation stream (cosines).
+    constexpr float kTessCreaseFlat = 0.766f;    // vertex normals more than ~40 deg apart: a crease, flat
+    constexpr float kTessCreaseSmooth = 0.966f;  // within ~15 deg: fully smooth
+    constexpr float kTessFaceFlat = 0.0f;        // smoothing normal 90 deg off an incident face: garbage, flat
+    constexpr float kTessFaceSmooth = 0.35f;     // within ~70 deg of every incident face: fully smooth
+
+    float TessSmoothstep( float a, float b, float x ) {
+        const float t = std::clamp( (x - a) / (b - a), 0.0f, 1.0f );
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    /** Builds the welded tessellation side stream (2 x uint32 per wrapped vertex): smoothing normal (oct snorm2x16)
+        and roundness (unorm8 in bits 0-7 of uint1; bits 8-31 = WorldTessOverrides table index of the owning mesh or
+        boundary entry). Every vertex at one exact position gets identical values, which keeps tessellated edges crack-free.
+        sectionRefs is parallel to allMeshes (the table's meshes, in wrapped vertex order). */
+    void BuildWrappedTessStream( MeshInfo* meshInfo, const std::vector<ExVertexStruct>& vertices, const std::vector<unsigned int>& indices,
+        const std::vector<WorldMeshInfo*>& allMeshes, std::vector<WorldTessMeshRef> sectionRefs ) {
+        if ( !meshInfo || vertices.empty() ) {
+            return;
+        }
+        const size_t count = vertices.size();
+        const uint32_t meshCount = static_cast<uint32_t>( allMeshes.size() );
+
+        // Wrapped vertex ranges are contiguous in allMeshes order; a vertex's mesh is the last start <= its id.
+        std::vector<uint32_t> meshStarts( meshCount );
+        for ( uint32_t i = 0; i < meshCount; ++i ) {
+            meshStarts[i] = allMeshes[i]->BaseVertexLocation;
+            allMeshes[i]->TessMeshIndex = i;
+        }
+        const auto meshOfVertex = [&]( uint32_t v ) {
+            return static_cast<uint32_t>( std::upper_bound( meshStarts.begin(), meshStarts.end(), v ) - meshStarts.begin() ) - 1;
+        };
+        std::vector<uint32_t> groupOwner;                                // table index per welded group
+        std::map<std::vector<uint32_t>, uint32_t> boundaryIds;           // distinct mesh sets -> boundary id
+        std::vector<const std::vector<uint32_t>*> boundarySets;
+        std::vector<uint32_t> runMeshes;
+
+        // Sort by exact position bits; contiguous runs are one welded position.
+        std::vector<uint32_t> order( count );
+        for ( size_t i = 0; i < count; ++i ) order[i] = static_cast<uint32_t>( i );
+        const auto bits = []( const ExVertexStruct& v ) {
+            return std::array<uint32_t, 3>{ std::bit_cast<uint32_t>( v.Position.x ), std::bit_cast<uint32_t>( v.Position.y ), std::bit_cast<uint32_t>( v.Position.z ) };
+        };
+        std::sort( order.begin(), order.end(), [&]( uint32_t a, uint32_t b ) { return bits( vertices[a] ) < bits( vertices[b] ); } );
+
+        const auto normalized = []( float x, float y, float z, float fallbackLenSq, float& ox, float& oy, float& oz ) {
+            const float l2 = x * x + y * y + z * z;
+            if ( l2 < fallbackLenSq ) return false;
+            const float inv = 1.0f / std::sqrt( l2 );
+            ox = x * inv; oy = y * inv; oz = z * inv;
+            return true;
+        };
+
+        std::vector<uint32_t> groupOf( count );
+        std::vector<float3> groupN;
+        std::vector<float> minVertDot, minFaceDot;
+        for ( size_t i = 0; i < count; ) {
+            size_t j = i + 1;
+            const auto key = bits( vertices[order[i]] );
+            while ( j < count && bits( vertices[order[j]] ) == key ) ++j;
+
+            float sx = 0, sy = 0, sz = 0;
+            for ( size_t k = i; k < j; ++k ) {
+                const float3& n = vertices[order[k]].Normal;
+                float nx, ny, nz;
+                if ( normalized( n.x, n.y, n.z, 1e-12f, nx, ny, nz ) ) { sx += nx; sy += ny; sz += nz; }
+            }
+            float3 gn{ 0, 0, 0 };
+            if ( !normalized( sx, sy, sz, 1e-8f, gn.x, gn.y, gn.z ) ) {
+                const float3& n = vertices[order[i]].Normal;
+                if ( !normalized( n.x, n.y, n.z, 1e-12f, gn.x, gn.y, gn.z ) ) gn = float3( 0, 1, 0 );
+            }
+
+            uint32_t owner = 0;
+            if ( meshCount > 0 ) {
+                runMeshes.clear();
+                for ( size_t k = i; k < j; ++k ) {
+                    const uint32_t m = meshOfVertex( order[k] );
+                    if ( std::find( runMeshes.begin(), runMeshes.end(), m ) == runMeshes.end() ) runMeshes.push_back( m );
+                }
+                if ( runMeshes.size() == 1 ) {
+                    owner = runMeshes[0];
+                } else {
+                    std::sort( runMeshes.begin(), runMeshes.end() );
+                    auto [bit, inserted] = boundaryIds.try_emplace( runMeshes, static_cast<uint32_t>( boundarySets.size() ) );
+                    if ( inserted ) boundarySets.push_back( &bit->first );
+                    owner = meshCount + bit->second;
+                }
+            }
+            groupOwner.push_back( owner );
+
+            float minDot = 1.0f;
+            for ( size_t k = i; k < j; ++k ) {
+                const float3& n = vertices[order[k]].Normal;
+                float nx, ny, nz;
+                if ( normalized( n.x, n.y, n.z, 1e-12f, nx, ny, nz ) ) minDot = std::min( minDot, nx * gn.x + ny * gn.y + nz * gn.z );
+                groupOf[order[k]] = static_cast<uint32_t>( groupN.size() );
+            }
+            groupN.push_back( gn );
+            minVertDot.push_back( minDot );
+            i = j;
+        }
+        minFaceDot.assign( groupN.size(), 1.0f );
+
+        // Face check: how far the smoothing normal strays from every incident triangle's plane normal.
+        for ( size_t t = 0; t + 2 < indices.size(); t += 3 ) {
+            const unsigned int ia = indices[t], ib = indices[t + 1], ic = indices[t + 2];
+            if ( ia >= count || ib >= count || ic >= count ) continue;
+            const float3 &a = vertices[ia].Position, &b = vertices[ib].Position, &c = vertices[ic].Position;
+            const float e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z;
+            const float e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+            float fx, fy, fz;
+            if ( !normalized( e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x, 1e-20f, fx, fy, fz ) ) continue;
+            for ( unsigned int v : { ia, ib, ic } ) {
+                const uint32_t g = groupOf[v];
+                minFaceDot[g] = std::min( minFaceDot[g], fx * groupN[g].x + fy * groupN[g].y + fz * groupN[g].z );
+            }
+        }
+
+        std::vector<uint32_t> stream( count * 2 );
+        const auto q = []( float v ) { return static_cast<uint32_t>( static_cast<uint16_t>( static_cast<int16_t>( std::lround( std::clamp( v, -1.0f, 1.0f ) * 32767.0f ) ) ) ); };
+        size_t flat = 0;
+        bool tableOverflow = false;
+        std::vector<uint32_t> groupWord0( groupN.size() ), groupWord1( groupN.size() );
+        for ( size_t g = 0; g < groupN.size(); ++g ) {
+            float ox, oy;
+            VertexPacking::EncodeOctNormal( groupN[g], ox, oy );
+            groupWord0[g] = q( ox ) | (q( oy ) << 16);
+            const float r = TessSmoothstep( kTessCreaseFlat, kTessCreaseSmooth, minVertDot[g] ) * TessSmoothstep( kTessFaceFlat, kTessFaceSmooth, minFaceDot[g] );
+            uint32_t owner = groupOwner[g];
+            if ( owner > 0xFFFFFFu ) {
+                if ( !tableOverflow ) Logging::Err( "World tessellation: table index {} exceeds 24 bits, falling back to entry 0", owner );
+                tableOverflow = true;
+                owner = 0;
+            }
+            groupWord1[g] = static_cast<uint32_t>( std::lround( std::clamp( r, 0.0f, 1.0f ) * 255.0f ) ) | (owner << 8);
+        }
+        for ( size_t v = 0; v < count; ++v ) {
+            const uint32_t g = groupOf[v];
+            stream[v * 2] = groupWord0[g];
+            stream[v * 2 + 1] = groupWord1[g];
+            if ( (groupWord1[g] & 0xFF) < 128 ) ++flat;
+        }
+
+        Engine::GraphicsEngine->CreateVertexBuffer( meshInfo->MeshTessBuffer );
+        meshInfo->MeshTessBuffer->Init( stream.data(), static_cast<unsigned int>( stream.size() * sizeof( uint32_t ) ),
+            D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+
+        Logging::Inf( "World tessellation stream: {} vertices, {} welded positions, {:.1f}% with roundness < 0.5", count, groupN.size(), 100.0 * flat / count );
+
+        // Boundary mesh sets as CSR; WorldTessOverrides keeps them and builds the GPU table from them.
+        std::vector<uint32_t> bOffsets, bMeshes;
+        if ( !boundarySets.empty() ) {
+            bOffsets.reserve( boundarySets.size() + 1 );
+            bOffsets.push_back( 0 );
+            for ( const auto* set : boundarySets ) {
+                bMeshes.insert( bMeshes.end(), set->begin(), set->end() );
+                bOffsets.push_back( static_cast<uint32_t>( bMeshes.size() ) );
+            }
+        }
+        sectionRefs.resize( meshCount );
+        for ( uint32_t i = 0; i < meshCount; ++i ) sectionRefs[i].Mesh = allMeshes[i];
+        GetWorldTessOverrides().Build( std::move( sectionRefs ), bOffsets, bMeshes );
     }
 
     // --- MikkTSpace tangent generation ---------------------------------------------------
@@ -1233,6 +1401,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     // returns offsets in insertion order and they get propagated back by re-iterating
     // the section maps in the same order.
     std::vector<WorldMeshInfo*> allMeshes;
+    std::vector<WorldTessMeshRef> tessRefs;   // parallel to allMeshes
     for ( auto const& itx : *outSections ) {
         for ( auto const& ity : itx.second ) {
             numSections++;
@@ -1240,6 +1409,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
             for ( auto const& it : ity.second.WorldMeshes ) {
                 allMeshes.emplace_back( it.second );
+                tessRefs.push_back( { nullptr, it.first.Texture, it.first.Material, itx.first, ity.first } );
             }
         }
     }
@@ -1338,6 +1508,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
     // Position-only companion stream for opaque depth/shadow passes (same ordering as above).
     BuildWrappedPositionBuffer( wmi, wrappedVertices );
+    if ( Engine::IsModernBackend() ) BuildWrappedTessStream( wmi, wrappedVertices, wrappedIndices, allMeshes, std::move( tessRefs ) );
 
     *outWrappedMesh = wmi;
     GetStaticLightFarField().CaptureWorldVertices( wrappedVertices );

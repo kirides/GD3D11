@@ -115,6 +115,7 @@ struct MeshInfo {
 
     GfxVertexBuffer* GetMeshVertexBuffer() const { return MeshVertexBuffer.get(); }
     GfxVertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
+    GfxVertexBuffer* GetMeshTessBuffer() const { return MeshTessBuffer.get(); }
     GfxVertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
     GfxVertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
 
@@ -129,6 +130,8 @@ struct MeshInfo {
     // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the
     // full 44-byte stream). Currently only populated for the wrapped world mesh. May be nullptr.
     std::unique_ptr<GfxVertexBuffer> MeshPositionBuffer;
+    // Welded smoothing stream for world tessellation, 2 x uint32 per wrapped vertex. Modern backends only; may be nullptr.
+    std::unique_ptr<GfxVertexBuffer> MeshTessBuffer;
     std::unique_ptr<GfxVertexBuffer> MeshIndexBuffer;
     std::unique_ptr<GfxVertexBuffer> MeshShadowIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
@@ -186,6 +189,8 @@ struct WorldMeshInfo : public MeshInfo {
     unsigned int BaseShadowIndexLocation;
     // First vertex in the wrapped world vertex buffer (its indices are already offset by it)
     unsigned int BaseVertexLocation = 0;
+    // Index in WorldTessOverrides' table (UINT_MAX: none, e.g. dead load paths or D3D11)
+    unsigned int TessMeshIndex = UINT_MAX;
 
     /** Spatial partition of this mesh's triangles (see WorldConverter::ClusterWorldMeshTriangles).
         Empty means "draw the whole mesh", not "draw nothing". */

@@ -162,6 +162,16 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> VobIndirectPSOPull, VobAttachPSOPull, DepthPrepassVobIndirectPSOPull, DepthPrepassVobNoAlphaPSOPull,
                                                     DepthPrepassVobAttachPSOPull, DepthPrepassVobAttachNoAlphaPSOPull, DepthPrepassVobGBufPSOPull,
                                                     DepthPrepassVobAttachGBufPSOPull;
+        // World tessellation (pulled VS + HS/DS, PATCH topology), main view only. TessRootParam = b11 WorldTessCB root CBV (appended last).
+        UINT TessRootParam = UINT_MAX;
+        bool TessFailed = false;
+        Microsoft::WRL::ComPtr<ID3DBlob>            TessVsBlob, TessHsBlob, TessDsBlob, TessDepthDsBlob, TessGBufDsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> TessPSO, TessOpaquePSO, TessDepthPrepassPSO, TessDepthPrepassNoAlphaPSO, TessDepthPrepassGBufPSO;
+        bool TessReady() const {
+            // The G-buffer twin is only needed while the flat G-buffer prepass exists
+            return !TessFailed && TessPSO && TessOpaquePSO && TessDepthPrepassPSO && TessDepthPrepassNoAlphaPSO
+                && ( TessDepthPrepassGBufPSO || !DepthPrepassGBufPSO );
+        }
     };
     // Water (transparent world surfaces): own root sig, the alpha-blended color PSO, plus a depth-only
     // prepass PSO (same root sig + VB/IB, lean position-only layout) that lays the water surface down in
@@ -864,8 +874,12 @@ private:
     void CreatePullTwin( Rhi::GraphicsPipelineStateDesc desc, ID3DBlob* pulledVs, Rhi::PipelineState** out, const char* what );
     /** Records a pulled Vob.hlsl VS compile (a failure sets VertexPullFailed) and validates the blob against the World root signature. */
     bool VobPullCompiled( bool compiled, const Microsoft::WRL::ComPtr<ID3DBlob>& blob, const char* name );
+    /** World tessellation twin of `desc`: VS/HS/DS swapped in, PATCH topology, no input layout. Returns false on failure. */
+    bool CreateWorldTessPso( Rhi::GraphicsPipelineStateDesc desc, ID3DBlob* ds, Rhi::PipelineState** out, const char* what );
+    /** Drops every world tessellation PSO and marks the feature unavailable. */
+    void FailWorldTess( const char* what );
 
-    Rhi::Device*        m_Device = nullptr;
+    Rhi::Device*       m_Device = nullptr;
     D3D12ShaderBackend* m_Shaders = nullptr;
     // Retained root-signature declarations, one per root sig. Kept past Build() so
     // D3D12RootLayout::ValidateShaders can check each pass's shaders against what it declared.

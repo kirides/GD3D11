@@ -1010,6 +1010,9 @@ private:
     // m_WorldVbSlot = the world VB's heap index = the stream table's base.
     bool m_VertexPullWorld = false;
     UINT m_WorldVbSlot = UINT_MAX;
+    // World tessellation latch (OnStartWorldRendering): main-view world prepass + lit opaque pass use the patch PSOs.
+    bool m_WorldTessActive = false;
+    Rhi::PipelineState* WorldTessPick( Rhi::PipelineState* flat, Rhi::PipelineState* tess ) const { return m_WorldTessActive && tess ? tess : flat; }
     Rhi::PipelineState* PullPick( Rhi::PipelineState* ia, Rhi::PipelineState* pulled ) const { return m_VertexPullWorld && pulled ? pulled : ia; }
     /** Sets b9 { world VB heap index, no VOB info } of the root signature's `rootParam`; no-op while the frame is on the IA path. */
     void BindWorldPull( D3D12CmdList& cmdList, UINT rootParam ) const;
@@ -2211,8 +2214,27 @@ private:
         UINT  Enabled;
         float _pad;
     };
-    static constexpr UINT kShadowCbSize = 768;
-    static_assert( kFarFieldCbOffset + sizeof( FarFieldCBData ) <= kShadowCbSize, "FarFieldCBData ends the shadow CB" );
+    // World tessellation block (b11 WorldTessCB, root CBV at 256-aligned offset); mirrors Shaders/D3D12/include/WorldTess.hlsl
+    static constexpr UINT kWorldTessCbOffset = 768;
+    struct WorldTessCBData {
+        float CamPos[3];
+        float MaxFactor;
+        float UnitsPerPx;
+        float Range;
+        float Strength;
+        float FadeStart;
+        float Reserved[4];   // future displacement params, zero
+    };
+    static_assert( sizeof( WorldTessCBData ) == 48, "WorldTessCBData mirrors WorldTessCB" );
+    static constexpr UINT kShadowCbSize = 1024;
+    static_assert( kFarFieldCbOffset + sizeof( FarFieldCBData ) <= kWorldTessCbOffset, "FarFieldCBData ends before the tessellation block" );
+    static_assert( kWorldTessCbOffset % 256 == 0 && kWorldTessCbOffset + sizeof( WorldTessCBData ) <= kShadowCbSize, "WorldTessCBData ends the shadow CB" );
+    /** Once per frame once the camera is final: the camera/factor block the world tessellation HS/DS read. */
+    void UploadWorldTessConstants();
+    /** Edit-rate: re-uploads the per-mesh override table (WorldTessOverrides) as geometry stream WorldTessParams; empty table releases it. */
+    void UpdateWorldTessTable();
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_WorldTessTable;
+    uint32_t m_WorldTessTableVersion = UINT32_MAX;
     /** Every frame with the light buffer: the bake's vertex buffer (heap slot kFarFieldVertexSlot) and CB block. */
     void UpdateFarField();
     Microsoft::WRL::ComPtr<Rhi::Resource> m_FarFieldVertexBuffer;

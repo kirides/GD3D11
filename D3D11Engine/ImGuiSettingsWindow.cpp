@@ -711,6 +711,19 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
     }
 #endif //BUILD_GOTHIC_2_6_fix
 
+    if ( IsD3D12() ) {
+        CheckRow( "World Tessellation", &settings.WorldTessellation,
+            "Smooths the terrain and buildings by tessellating the world mesh near the camera; hard edges stay sharp. Needs Vertex Pulling (D3D12/Vulkan). Objects and decals resting on smoothed terrain can float or sink slightly." );
+        ImGui::BeginDisabled( !settings.WorldTessellation );
+        SliderIntRow( "World Tessellation Detail", "##WorldTessellationMaxFactor", &settings.WorldTessellationMaxFactor, 1, 16, "%d",
+            "Maximum subdivision per world triangle edge. Lower is faster." );
+        SliderFloatRow( "World Tessellation Range", "##WorldTessellationRange", &settings.WorldTessellationRange, 500.0f, 20000.0f, "%.0f",
+            "Distance in world units up to which the world is smoothed; it fades out over the last quarter." );
+        SliderFloatRow( "World Tessellation Strength", "##WorldTessellationStrength", &settings.WorldTessellationStrength, 0.0f, 1.0f, "%.2f",
+            "How strongly surfaces are rounded. 0 keeps the original shape." );
+        ImGui::EndDisabled();
+    }
+
     constexpr ListItem<GothicRendererSettings::E_WaterSimulation> waterSims[] = {
         { "Off", GothicRendererSettings::WATER_SIM_OFF, "The sea uses the Water Waves mode above." },
         { "Low", GothicRendererSettings::WATER_SIM_LOW, "Simulated ocean waves, 3 cascades of 128x128." },

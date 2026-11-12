@@ -10,7 +10,7 @@ class D3D12GraphicsEngine;
 class D3D12GeometryStreams {
 public:
     enum class Stream : UINT {
-        WorldVB, WorldIB, VobVB, VobIB, AttachVB, AttachIB, SkelVB, SkelIB, SkinnedPosUv, SkinnedNrmPrev,
+        WorldVB, WorldIB, VobVB, VobIB, AttachVB, AttachIB, SkelVB, SkelIB, SkinnedPosUv, SkinnedNrmPrev, WorldTess, WorldTessParams,
         Count
     };
 

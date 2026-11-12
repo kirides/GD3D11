@@ -107,6 +107,51 @@ VS_OUT VSMain( VS_ENTRY_IN e )
     return o;
 }
 
+#ifdef VERTEX_PULL
+// Tessellated world (main view): the VS only fetches; transform and waves happen in the DS at the tessellated position.
+#define WORLD_TESS_HULL
+#include "include/WorldTess.hlsl"
+
+WorldTessCP VSWorldTess( uint vid : SV_VertexID )
+{
+    const WorldRawVertex v = LoadWorldRaw( vid );
+    const ByteAddressBuffer s = GD_HEAP( WorldVbIndex + kWorldTessStreamOffset );
+    const uint2 w = s.Load2( vid * 8 );   // x = welded oct normal snorm2x16, y bits 0-7 = roundness unorm8, bits 8-31 = override table index
+    const ByteAddressBuffer table = GD_HEAP( WorldVbIndex + kWorldTessParamsStreamOffset );
+    const float4 prm = asfloat( table.Load4( ( w.y >> 8 ) * 16 ) );   // .x roundness scale, .y factor scale
+    WorldTessCP o;
+    o.pos = v.pos;
+    o.tessN = VfDecodeOctNormal( VfUnpackSnorm2x16( w.x ) );
+    o.roundness = ( w.y & 0xFFu ) * ( 1.0 / 255.0 ) * prm.x;
+    o.factorScale = prm.y;
+    o.nrm = DecodeOctNormal( v.nrm );
+    o.tan = DecodeTangent( v.tan );
+    o.uv = v.uv;
+    o.col = v.col;
+    o.farField = LoadWorldFarField( vid );
+    o.mat = MatDiffuseIndex;
+    return o;
+}
+
+[domain( "tri" )]
+VS_OUT DSWorld( WorldTessPatch t, float3 bary : SV_DomainLocation, const OutputPatch<WorldTessCP, 3> p )
+{
+    const float3 rest = WorldTessPosition( p, t, bary );
+    const float3 wpos = rest + MaterialWaveOffset( rest, p[0].mat, false );
+    VS_OUT o;
+    o.clip = mul( float4( wpos, 1.0 ), ViewProj );
+    o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
+    o.col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;
+    o.wpos = wpos;
+    o.wnrm = normalize( p[0].nrm * bary.x + p[1].nrm * bary.y + p[2].nrm * bary.z );
+    const float4 tan = p[0].tan * bary.x + p[1].tan * bary.y + p[2].tan * bary.z;
+    o.wtan = float4( normalize( tan.xyz ), tan.w >= 0.0 ? 1.0 : -1.0 );
+    o.fogDist = distance( wpos, CamPosWS );
+    o.farField = p[0].farField * bary.x + p[1].farField * bary.y + p[2].farField * bary.z;
+    return o;
+}
+#endif
+
 // Quad marks (zCQuadMark — blood splatter, spell ground marks). Same lit path as the world mesh: this VS only
 // differs in its INPUT, so PSMain below is reused verbatim (which is what gets quad marks the identical
 // SrgbToLinear -> DelightDiffuse albedo treatment, CSM shadows, tiled point lights, SSAO, wetness and sky IBL).
