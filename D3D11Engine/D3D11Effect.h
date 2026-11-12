@@ -16,6 +16,7 @@ public:
     XRESULT DrawRain();
     XRESULT DrawRain_CS();
 
+    /** Rain shadowmap + sampler; the drop/flake textures load lazily (EnsureRainTextures) */
     XRESULT LoadRainResources();
 
     /** Renders the rain-shadowmap */
@@ -31,6 +32,9 @@ protected:
     /** Fills vectors of random raindrop data, split into mutable and immutable parts */
     void FillRandomRaindropData( std::vector<RainParticleDynamic>& dynamicData, std::vector<RainParticleStatic>& staticData );
 
+    /** Kicks/polls the async load of the rain or snow array; true once its SRV is usable */
+    bool EnsureRainTextures( bool snow );
+
     /** Rain */
     std::unique_ptr<GfxVertexBuffer> RainBufferStatic;
     std::unique_ptr<GfxVertexBuffer> RainBufferInitial;
@@ -41,6 +45,7 @@ protected:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> RainTextureArraySRV;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> SnowTextureArray;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> SnowTextureArraySRV;
+    std::shared_ptr<struct D3D11RainTextureJob> RainTextureJob, SnowTextureJob;
     std::unique_ptr<RenderToDepthStencilBuffer> RainShadowmap;
     CameraReplacement RainShadowmapCameraRepl;
 

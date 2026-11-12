@@ -2098,10 +2098,10 @@ private:
     UINT m_RainTextureArraySrvSlot = UINT_MAX;
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_SnowTextureArray;
     UINT m_SnowTextureArraySrvSlot = UINT_MAX;
-    bool m_RainTexturesLoaded = false;
-    // One-time (or on-demand retry) load of both arrays; non-fatal on failure — DrawRainParticles guards
-    // on m_RainTexturesLoaded and stays on the step-2 flat-white placeholder if this never succeeds.
-    bool LoadRainTextures();
+    // Each array loads on a worker the first time its weather is active (626 VDFS reads stalled the
+    // game thread for seconds); until its slot is published that weather draws nothing.
+    std::shared_ptr<struct D3D12RainTextureJob> m_RainTextureJob, m_SnowTextureJob;
+    void PollRainTextures( bool snow );
     bool LoadRainTextureArray( const char* prefix, int count, Microsoft::WRL::ComPtr<Rhi::Resource>& outTex,
         UINT& outSrvSlot );
 

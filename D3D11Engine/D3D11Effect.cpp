@@ -19,6 +19,7 @@
 #include "D3D11GraphicsEngine.h"
 #include "oCGame.h"
 #include "DDSArrayLoader.h"
+#include "ThreadPool.h"
 
 constexpr float snowSpeedFactor = 0.15f;
 
@@ -111,6 +112,9 @@ XRESULT D3D11Effect::DrawRain() {
         && oCGame::GetGame()->_zCSession_world
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetWeatherType() == zTWEATHER_SNOW;
+
+    // The weight ramps up from 0, so the async texture load hides behind the fade-in.
+    if ( !EnsureRainTextures( isSnow ) ) return XR_SUCCESS;
 
     auto rainPS = e->GetShaderManager().GetPShader( isSnow ? PShaderID::PS_Rain_Snow : PShaderID::PS_Rain );
 
@@ -303,6 +307,8 @@ XRESULT D3D11Effect::DrawRain_CS() {
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetWeatherType() == zTWEATHER_SNOW;
     
+    if ( !EnsureRainTextures( isSnow ) ) return XR_SUCCESS;
+
     auto rainPS = e->GetShaderManager().GetPShader( isSnow ? PShaderID::PS_Rain_Snow : PShaderID::PS_Rain );
 
     // artificially increase the number of particles for snow, to make it look better.
@@ -447,25 +453,56 @@ XRESULT D3D11Effect::DrawRain_CS() {
     return XR_SUCCESS;
 }
 
+// Worker-side result; the render thread adopts the array once State leaves Running.
+struct D3D11RainTextureJob {
+    enum : int { Running, Done, Failed, Cancelled };
+    std::atomic<int> State{ Running };
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> Tex;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> Srv;
+};
+
+bool D3D11Effect::EnsureRainTextures( bool snow ) {
+    auto& tex = snow ? SnowTextureArray : RainTextureArray;
+    auto& srv = snow ? SnowTextureArraySRV : RainTextureArraySRV;
+    auto& pending = snow ? SnowTextureJob : RainTextureJob;
+    if ( srv ) return true;
+
+    if ( !pending ) {
+        if ( !Engine::WorkerThreadPool ) return false;
+        auto job = std::make_shared<D3D11RainTextureJob>();
+        pending = job;
+        // ID3D11Device creation calls are free-threaded; nothing here touches the immediate context.
+        Microsoft::WRL::ComPtr<ID3D11Device> device = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice();
+        Engine::WorkerThreadPool->enqueue( [job, device, snow]( const std::stop_token& token ) {
+            if ( token.stop_requested() ) { job->State.store( D3D11RainTextureJob::Cancelled, std::memory_order_release ); return; }
+            ZoneScopedN( "LoadRainSnowTextures" );
+            Logging::Inf( "Loading {} textures (async)", snow ? "snow-flake" : "rain-drop" );
+            const HRESULT hr = snow
+                ? LoadTextureArray( device.Get(), R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256, job->Tex.GetAddressOf(), job->Srv.GetAddressOf() )
+                : LoadTextureArray( device.Get(), R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370, job->Tex.GetAddressOf(), job->Srv.GetAddressOf() );
+            if ( FAILED( hr ) ) Logging::Wrn( "Failed to load the {} texture array", snow ? "snow-flake" : "rain-drop" );
+            job->State.store( SUCCEEDED( hr ) ? D3D11RainTextureJob::Done : D3D11RainTextureJob::Failed, std::memory_order_release );
+        } );
+        return false;
+    }
+
+    switch ( pending->State.load( std::memory_order_acquire ) ) {
+    case D3D11RainTextureJob::Done:
+        tex = std::move( pending->Tex );
+        srv = std::move( pending->Srv );
+        pending.reset();
+        return true;
+    case D3D11RainTextureJob::Cancelled:
+        pending.reset();   // pool flushed (world change) before it ran: retry next frame
+        return false;
+    default:
+        return false;   // Running, or Failed (logged; kept so it is not retried every frame)
+    }
+}
+
 XRESULT D3D11Effect::LoadRainResources()
 {
     D3D11GraphicsEngineBase* e = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
-
-    if ( !RainTextureArray.Get() ) {
-        HRESULT hr = S_OK;
-        // Load textures...
-        Logging::Inf( "Loading rain-drop textures" );
-        ZoneScopedN( "LoadRainTextures" );
-        LE( LoadTextureArray( e->GetDevice().Get(), R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370, &RainTextureArray, &RainTextureArraySRV ) );
-    }
-
-    if ( !SnowTextureArray.Get() ) {
-        HRESULT hr = S_OK;
-        // Load textures...
-        Logging::Inf( "Loading snow flake textures" );
-        ZoneScopedN( "LoadSnowTextures" );
-        LE( LoadTextureArray( e->GetDevice().Get(), R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
-    }
 
     if ( !RainShadowmap.get() ) {
         const int s = 2048;
