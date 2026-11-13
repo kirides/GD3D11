@@ -2391,7 +2391,8 @@ XRESULT D3D12GraphicsEngine::OpenFrame() {
     // First menu frame without a backdrop: render the world once into it. Never on load screens (world may be torn down).
     if ( menuFrame && !m_MenuBackdropValid && !m_MenuBackdropTried && m_SceneEnabled && !m_OffFrame ) {
         oCGame* game = oCGame::GetGame();
-        const bool wantCapture = Engine::GAPI->IsIngameMenuPaused() || ( game && game->save_screen && !game->load_screen );
+        // A load started from an in-game menu stays paused, so load_screen must veto both branches.
+        const bool wantCapture = game && !game->load_screen && ( Engine::GAPI->IsIngameMenuPaused() || game->save_screen );
         if ( wantCapture && game && Engine::GAPI->GetLoadedWorldInfo() && Engine::GAPI->GetLoadedWorldInfo()->MainWorld
             && EnsureMenuBackdrop() ) {
             m_MenuBackdropTried = true;   // once per pause, even if the render bails out
