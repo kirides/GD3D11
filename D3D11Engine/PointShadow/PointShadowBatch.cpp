@@ -842,7 +842,7 @@ namespace PointShadowBatch {
         // PS_CubeShadow's alpha test reads FF_AlphaRef.
         g->GetShaderManager().GetPShader( PShaderID::PS_CubeShadow )->UpdateBuffer(
             "FFPipelineConstantBuffer", &rs.GraphicsState, sizeof( rs.GraphicsState ) );
-        g->SetActiveVertexShader( VShaderID::VS_ExLayered );
+        g->SetActiveVertexShader( VShaderID::VS_Ex );
         g->SetupVS_ExConstantBuffer();
 
         CasterDrawState state( g );
