@@ -666,6 +666,34 @@ struct WaterFrame
     float  shoreFieldState;   // 0 = no shoreline field, 1 = field, 2 = field painted for debugging
 };
 
+// Everything the shore foam needs once the water color is known. active = 0: no foam on this pixel.
+struct WaterFoamLayer
+{
+    float  active;
+    float  thickness;
+    float  relief;
+    float  sparkle;
+    float  aeration;   // already scaled by the foam fade
+    float  rim;
+    float  opacity;
+};
+
+// foamLight: the foam's lit color (WaterFoamColor), recomputed here instead of being carried through the shading
+float3 WaterApplyFoam( WaterFoamLayer f, float3 foamLight, float3 color )
+{
+    // Thin foam lets the water hue through and sits in the shade of the thick foam around it; even thick foam
+    // keeps a trace of it, so it isn't stark white
+    float3 waterHue = min( color / max( WaterLuma( color ), 0.02f ), 2.0f );
+    float3 body = lerp( lerp( 1.0f, waterHue, 0.35f ) * 0.80f, lerp( 1.0f, waterHue, 0.12f ), f.thickness );
+    float3 foamColor = foamLight * f.relief * body + f.sparkle;
+
+    // Water churned up behind the bores turns milky before any foam sits on it
+    float3 milky = lerp( color, foamLight * lerp( 1.0f, waterHue, 0.5f ) * 0.8f, 0.5f );
+    color = lerp( color, milky, f.aeration );
+    color *= 1.0f - f.rim;
+    return lerp( color, foamColor, f.opacity );
+}
+
 float3 ShadeWater( WaterPixel px, WaterFrame fr )
 {
     bool isOcean = fr.isOcean > 0.5f;
@@ -732,8 +760,94 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
         wavesSmall = normalize( wavesSmall / max( wavesSmall.y, 0.2f ) + swell );
     }
 
+    // The shore-field debug view replaces the whole result and its condition is uniform: leave here instead of
+    // carrying coast and surf to the end.
+    [branch] if ( fr.shoreFieldState > 1.5f && topSide > 0.5f )
+        return max( WaterShoreFieldDebug( coast, surf ), 0.0f );
+
     float3 scene = WaterSceneColor( distUV );
     float3 sceneClean = WaterSceneColor( lerp( distUV, px.screenUV, pow( 1 - shallowDepth, 20.0f ) ) );
+
+    // Waterfalls: near-vertical sheets get neither reflections nor a shoreline
+    float flatness = WaterFlatness( px.geometricNormal );
+    float waterfallMask = 1.0f - flatness;
+
+    // Shoreline: water thickness along the view ray, and the vertical depth below this pixel
+    float column = WaterColumnLength( depthRefracted, px.surfaceViewZ, px.surfaceViewDistance );
+    float straightColumn = WaterColumnLength( depth, px.surfaceViewZ, px.surfaceViewDistance );
+    float colorColumn = min( column, straightColumn );
+    float columnDeriv = fwidth( column );
+    float colorColumnDeriv = WaterDeeperNeighbourWidth( colorColumn, px.screenUV * fr.viewportSize );
+    float rayFloorDepth = WaterDepthBelowSurface( px.worldPos, px.surfaceViewZ, rawCenterDepth, fr.cameraPos );
+    float shoreException = step( WATER_DEEP_WATER_DEPTH, rayFloorDepth );
+    [branch] if ( shoreException < 0.5f && cameraBelow < 0.5f )
+        shoreException = WaterShoreProbeException( px.worldPos, fr.cameraPos );
+    float isolatedShallow = shoreException * ( 1.0f - step( WATER_DEEP_WATER_DEPTH, rayFloorDepth ) );   // reef, swimmer
+    float2 shore = isOcean ? OceanShore( column, columnDeriv ) : LegacyShore( column, columnDeriv, colorColumn, colorColumnDeriv );
+    shore = lerp( shore, 1.0f, max( max( shoreException, waterfallMask ), cameraBelow ) );
+
+    // Shore foam goes over everything: it is rough and opaque, so it hides reflections and glints. Its layer is
+    // worked out here, while the shore state is at hand, and only the few values it needs are carried to the end.
+    WaterFoamLayer foamLayer = (WaterFoamLayer)0;
+    float foamFade = ( foamOn ? 1.0f : 0.0f ) * topSide * flatness
+        * ( 1.0f - smoothstep( WATER_FOAM_FADE_DISTANCE * 0.55f, WATER_FOAM_FADE_DISTANCE, px.surfaceViewDistance ) );
+    float foamMaxDepth = isOcean ? 80.0f : 32.0f;
+    // The plumb walk is skipped over open sea, or where the ray's floor is too deep for any slope under ~56 degrees
+    float rayFloorRun = straightColumn * length( viewDirection.xz );
+    bool plumbUseful = straightColumn < 5900.0f && rayFloorDepth - 1.5f * rayFloorRun < foamMaxDepth;
+    bool nearShore = fieldOn ? ( coast.distance < ( isOcean ? 2600.0f : 600.0f ) || coast.depth < foamMaxDepth * 2.0f ) : plumbUseful;
+    // Whitecaps of the simulated sea ride the same foam layer as the surf
+    bool shoreFoamCase = foamFade > 0.001f && nearShore;
+    float whitecap = 0.0f;
+    float whitecapFade = 0.0f;
+    [branch] if ( px.oceanActive > 0.5f && topSide > 0.5f )
+    {
+        whitecapFade = flatness * ( 1.0f - smoothstep( WATER_FOAM_FADE_DISTANCE * 0.55f, WATER_FOAM_FADE_DISTANCE, px.surfaceViewDistance ) );
+        whitecap = px.oceanFoam;
+    }
+    [branch] if ( shoreFoamCase || ( whitecap > 0.01f && whitecapFade > 0.001f ) )
+    {
+        float foamFadeUsed = max( shoreFoamCase ? foamFade : 0.0f, whitecapFade );
+        // Depth under the pixel: the plumb line finds the waterline exactly where it sees the floor. Otherwise the
+        // view ray's floor (exact looking straight down; steep banks have no shallows, so its run stands in) or
+        // the baked depth.
+        float2 foamXZ = px.worldPos.xz + distortionSmall.xy * 14.0f;
+        float amount = 0.0f;
+        float aeration = 0.0f;
+        [branch] if ( shoreFoamCase )
+        {
+            float plumb = -1.0f;
+            [branch] if ( plumbUseful )
+                plumb = WaterPlumbDepth( px.worldPos, fr.cameraPos, foamMaxDepth, viewDirection.y, footprint );
+            float localDepth = min( plumb >= 0.0f ? plumb : rayFloorDepth, straightColumn );
+            if ( fieldOn && plumb < 0.0f ) localDepth = min( localDepth, coast.depth );
+            [branch] if ( fieldOn )
+            {
+                amount = WaterSurfFoamAmount( coast, surf, localDepth, px.worldPos.xz, fr.time, isOcean, isolatedShallow, aeration );
+                // The bore carries the foam up the shore; the backwash stretches it along the shore normal
+                foamXZ += coast.seaward * ( surf.carried - coast.distance * ( 1.0f - 1.0f / surf.stretch ) );
+            }
+            else
+            {
+                amount = WaterBandFoamAmount( px.worldPos.xz, localDepth, fr.time, isOcean, isolatedShallow );
+            }
+        }
+        amount = max( amount * ( shoreFoamCase ? 1.0f : 0.0f ), whitecap * whitecapFade / max( foamFadeUsed, 0.001f ) );
+        WaterFoamSample foam = WaterFoamCover( foamXZ, amount, fr.time, footprint, isOcean );
+
+        float3 foamNormal = normalize( float3( -foam.slope.x * WATER_FOAM_BUMP, 1.0f, -foam.slope.y * WATER_FOAM_BUMP ) );
+        float3 sunDir = normalize( AC_LightPos.xyz );
+        float relief = lerp( WaterFoamRelief( foamNormal, sunDir ), WaterFoamRelief( foamNormal, fr.moonDir ), night );
+        relief = lerp( 1.0f, relief, lerp( 0.9f, 0.35f, rain ) );   // overcast light is flat
+        foamLayer.active = 1.0f;
+        foamLayer.thickness = foam.thickness;
+        foamLayer.relief = relief;
+        foamLayer.sparkle = pow( saturate( dot( reflect( viewDirection, foamNormal ), sunDir ) ), 60.0f )
+                          * 0.20f * sunVisibility * foam.thickness;
+        foamLayer.aeration = aeration * 0.32f * foamFadeUsed;
+        foamLayer.rim = foam.rim * 0.14f * foamFadeUsed;
+        foamLayer.opacity = foam.opacity * foamFadeUsed;
+    }
 
     float NdotV = saturate( dot( -viewDirection, wavesFres ) );
     float legacyFresnel = min( 0.5f, saturate( pow( 1.0f - NdotV, 10.0f ) ) );
@@ -743,9 +857,6 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float3 skyDir = reflect( viewDirection, normalize( lerp( wavesFres, WATER_UP, 0.46f ) ) );
     float hemi = smoothstep( -0.04f, 0.02f, skyDir.y ) * topSide;
 
-    // Waterfalls: near-vertical sheets get neither reflections nor a shoreline
-    float flatness = WaterFlatness( px.geometricNormal );
-    float waterfallMask = 1.0f - flatness;
     float reflectionSuppress = lerp( 0.12f, 1.0f, flatness );
     float ssrStrength = ssrOn * lerp( 0.45f, 1.0f, flatness );
     float cubeStrength = lerp( 0.34f, 0.82f, ssrOn ) * topSide * lerp( 0.70f, 1.0f, flatness );
@@ -802,20 +913,6 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float glintBlock = saturate( geometryAvailable * 1.45f );
     float cubeOnlyAmount = saturate( lerp( 0.35f, 1.0f, reflectFresnel ) * 0.5f * reflectFresnel ) * reflectionSuppress;
     float3 cubeOnlyColor = cube * lerp( 1.0f, diffuse, 0.6f );
-
-    // Shoreline: water thickness along the view ray, and the vertical depth below this pixel
-    float column = WaterColumnLength( depthRefracted, px.surfaceViewZ, px.surfaceViewDistance );
-    float straightColumn = WaterColumnLength( depth, px.surfaceViewZ, px.surfaceViewDistance );
-    float colorColumn = min( column, straightColumn );
-    float columnDeriv = fwidth( column );
-    float colorColumnDeriv = WaterDeeperNeighbourWidth( colorColumn, px.screenUV * fr.viewportSize );
-    float rayFloorDepth = WaterDepthBelowSurface( px.worldPos, px.surfaceViewZ, rawCenterDepth, fr.cameraPos );
-    float shoreException = step( WATER_DEEP_WATER_DEPTH, rayFloorDepth );
-    [branch] if ( shoreException < 0.5f && cameraBelow < 0.5f )
-        shoreException = WaterShoreProbeException( px.worldPos, fr.cameraPos );
-    float isolatedShallow = shoreException * ( 1.0f - step( WATER_DEEP_WATER_DEPTH, rayFloorDepth ) );   // reef, swimmer
-    float2 shore = isOcean ? OceanShore( column, columnDeriv ) : LegacyShore( column, columnDeriv, colorColumn, colorColumnDeriv );
-    shore = lerp( shore, 1.0f, max( max( shoreException, waterfallMask ), cameraBelow ) );
 
     float3 smallReflect = reflect( -viewDirection, wavesSmall );
     float sunSpot = pow( saturate( dot( smallReflect, -AC_LightPos.xyz ) ), 500.0f ) * 0.5f
@@ -923,75 +1020,9 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
 
     color += WaterMoonGlint( viewDirection, wavesSmall, wavesFres, fr.moonDir ) * fr.moonGlint * shore.x * flatness * topSide;
 
-    // Shore foam goes over everything: it is rough and opaque, so it hides reflections and glints
-    float foamFade = ( foamOn ? 1.0f : 0.0f ) * topSide * flatness
-        * ( 1.0f - smoothstep( WATER_FOAM_FADE_DISTANCE * 0.55f, WATER_FOAM_FADE_DISTANCE, px.surfaceViewDistance ) );
-    float foamMaxDepth = isOcean ? 80.0f : 32.0f;
-    // The plumb walk is skipped over open sea, or where the ray's floor is too deep for any slope under ~56 degrees
-    float rayFloorRun = straightColumn * length( viewDirection.xz );
-    bool plumbUseful = straightColumn < 5900.0f && rayFloorDepth - 1.5f * rayFloorRun < foamMaxDepth;
-    bool nearShore = fieldOn ? ( coast.distance < ( isOcean ? 2600.0f : 600.0f ) || coast.depth < foamMaxDepth * 2.0f ) : plumbUseful;
-    // Whitecaps of the simulated sea ride the same foam layer as the surf
-    bool shoreFoamCase = foamFade > 0.001f && nearShore;
-    float whitecap = 0.0f;
-    float whitecapFade = 0.0f;
-    [branch] if ( px.oceanActive > 0.5f && topSide > 0.5f )
-    {
-        whitecapFade = flatness * ( 1.0f - smoothstep( WATER_FOAM_FADE_DISTANCE * 0.55f, WATER_FOAM_FADE_DISTANCE, px.surfaceViewDistance ) );
-        whitecap = px.oceanFoam;
-    }
-    [branch] if ( shoreFoamCase || ( whitecap > 0.01f && whitecapFade > 0.001f ) )
-    {
-        float foamFadeUsed = max( shoreFoamCase ? foamFade : 0.0f, whitecapFade );
-        // Depth under the pixel: the plumb line finds the waterline exactly where it sees the floor. Otherwise the
-        // view ray's floor (exact looking straight down; steep banks have no shallows, so its run stands in) or
-        // the baked depth.
-        float2 foamXZ = px.worldPos.xz + distortionSmall.xy * 14.0f;
-        float amount = 0.0f;
-        float aeration = 0.0f;
-        [branch] if ( shoreFoamCase )
-        {
-            float plumb = -1.0f;
-            [branch] if ( plumbUseful )
-                plumb = WaterPlumbDepth( px.worldPos, fr.cameraPos, foamMaxDepth, viewDirection.y, footprint );
-            float localDepth = min( plumb >= 0.0f ? plumb : rayFloorDepth, straightColumn );
-            if ( fieldOn && plumb < 0.0f ) localDepth = min( localDepth, coast.depth );
-            [branch] if ( fieldOn )
-            {
-                amount = WaterSurfFoamAmount( coast, surf, localDepth, px.worldPos.xz, fr.time, isOcean, isolatedShallow, aeration );
-                // The bore carries the foam up the shore; the backwash stretches it along the shore normal
-                foamXZ += coast.seaward * ( surf.carried - coast.distance * ( 1.0f - 1.0f / surf.stretch ) );
-            }
-            else
-            {
-                amount = WaterBandFoamAmount( px.worldPos.xz, localDepth, fr.time, isOcean, isolatedShallow );
-            }
-        }
-        amount = max( amount * ( shoreFoamCase ? 1.0f : 0.0f ), whitecap * whitecapFade / max( foamFadeUsed, 0.001f ) );
-        WaterFoamSample foam = WaterFoamCover( foamXZ, amount, fr.time, footprint, isOcean );
-
-        float3 foamNormal = normalize( float3( -foam.slope.x * WATER_FOAM_BUMP, 1.0f, -foam.slope.y * WATER_FOAM_BUMP ) );
-        float3 sunDir = normalize( AC_LightPos.xyz );
-        float relief = lerp( WaterFoamRelief( foamNormal, sunDir ), WaterFoamRelief( foamNormal, fr.moonDir ), night );
-        relief = lerp( 1.0f, relief, lerp( 0.9f, 0.35f, rain ) );   // overcast light is flat
-        // Thin foam lets the water hue through and sits in the shade of the thick foam around it; even thick foam
-        // keeps a trace of it, so it isn't stark white
-        float3 waterHue = min( color / max( WaterLuma( color ), 0.02f ), 2.0f );
-        float3 body = lerp( lerp( 1.0f, waterHue, 0.35f ) * 0.80f, lerp( 1.0f, waterHue, 0.12f ), foam.thickness );
-        float sparkle = pow( saturate( dot( reflect( viewDirection, foamNormal ), sunDir ) ), 60.0f )
-                      * 0.20f * sunVisibility * foam.thickness;
-        float3 foamLight = WaterFoamColor( px.worldPos, sceneClean, night, sunVisibility, rain, fr.moonGlint );
-        float3 foamColor = foamLight * relief * body + sparkle;
-
-        // Water churned up behind the bores turns milky before any foam sits on it
-        float3 milky = lerp( color, foamLight * lerp( 1.0f, waterHue, 0.5f ) * 0.8f, 0.5f );
-        color = lerp( color, milky, aeration * 0.32f * foamFadeUsed );
-        color *= 1.0f - foam.rim * 0.14f * foamFadeUsed;
-        color = lerp( color, foamColor, foam.opacity * foamFadeUsed );
-    }
-
-    [branch] if ( fr.shoreFieldState > 1.5f && topSide > 0.5f )
-        color = WaterShoreFieldDebug( coast, surf );
+    // The foam layer worked out above goes over the finished color
+    [branch] if ( foamLayer.active > 0.5f )
+        color = WaterApplyFoam( foamLayer, WaterFoamColor( px.worldPos, sceneClean, night, sunVisibility, rain, fr.moonGlint ), color );
 
     return max( color, 0.0f );
 }
