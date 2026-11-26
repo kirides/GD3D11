@@ -5,6 +5,14 @@
 #ifndef IGPU_TUNING
 #define IGPU_TUNING 0
 #endif
+// Feature specialisation, only ever set to 0 when IGPU_TUNING is on and the matching setting is off (see
+// D3D12ShaderBackend::AppendGlobalMacros): the code is compiled out so it stops costing registers.
+#ifndef FEAT_RT_SHADOWS
+#define FEAT_RT_SHADOWS 1       // ray-traced sun/point shadow mask decode
+#endif
+#ifndef FEAT_OPAQUE_SSR
+#define FEAT_OPAQUE_SSR 1       // temporal screen-space reflections on opaque surfaces
+#endif
 
 // Shared Forward+ lighting math for World.hlsl / Vob.hlsl / Skeletal.hlsl — previously triplicated verbatim
 // across all three; now a single source of truth. Ported from the D3D11 feat/pbr branch (Shaders/include/
@@ -43,9 +51,13 @@
 // is the depth prepass' surface may call this: the mask belongs to that surface.
 uint2 LoadRtShadowMask( float2 svposXY )
 {
+#if !FEAT_RT_SHADOWS
+    return uint2( 0, 0 );
+#else
     [branch] if ( RtShadowMaskIndex == 0u ) return uint2( 0, 0 );
     Texture2D<uint2> mask = GD_HEAP( RtShadowMaskIndex - 1u );
     return mask.Load( int3( svposXY, 0 ) );
+#endif
 }
 
 // De-lights diffuse textures by lifting baked shadows and softening baked highlights
@@ -924,6 +936,9 @@ bool SsrProjectToPrevUV( float3 posWS, out float2 uv, out float rawDepth )
 float3 EvaluateOpaqueSSR( float3 wpos, float3 N, float3 V, float roughness, out float confidence )
 {
     confidence = 0.0;
+#if !FEAT_OPAQUE_SSR
+    return float3( 0.0, 0.0, 0.0 );
+#else
     uint maxSteps = SsrPrevColorIndex >> kSsrStepsShift;
     if ( maxSteps == 0 || roughness > kSsrOpaqueRoughnessGate ) return float3( 0.0, 0.0, 0.0 );
     uint refineSteps = SsrPrevDepthIndex >> kSsrStepsShift;
@@ -1008,4 +1023,5 @@ float3 EvaluateOpaqueSSR( float3 wpos, float3 N, float3 V, float roughness, out 
         prevLinPos = linPos;
     }
     return float3( 0.0, 0.0, 0.0 );
+#endif
 }

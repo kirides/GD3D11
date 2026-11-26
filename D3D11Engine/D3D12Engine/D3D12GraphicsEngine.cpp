@@ -2292,6 +2292,22 @@ XRESULT D3D12GraphicsEngine::OpenFrame() {
     // Same spot, same reasoning, for an AO-resolution change (ImGui combo / ini).
     ApplyPendingAoResolutionChange();
 
+    // Settings that select shader permutations (integrated-GPU tuning and the features it compiles out): when
+    // they no longer match what was compiled, recompile. The static stops a failing compile from retrying
+    // every frame (ApplyPendingShaderReload rolls back, so the keys would keep differing).
+    {
+        static uint32_t requestedKey = ~0u;
+        const uint32_t compiled = D3D12ShaderBackend::CompiledSettingsKey();
+        const uint32_t wanted = D3D12ShaderBackend::SettingsKey( Engine::GAPI->GetRendererState().RendererSettings );
+        if ( compiled != ~0u && wanted != compiled && wanted != requestedKey ) {
+            Logging::Inf( "D3D12: shader feature settings changed (0x{:x} -> 0x{:x}), reloading shaders.", compiled, wanted );
+            requestedKey = wanted;
+            ReloadShaders( ShaderCategory::All );
+        } else if ( wanted == compiled ) {
+            requestedKey = ~0u;
+        }
+    }
+
     // Same spot, same reasoning, for a pending shader hot-reload request (ReloadShaders only records it —
     // see ApplyPendingShaderReload's comment for the GPU-flush + rollback-on-failure this does).
     ApplyPendingShaderReload();

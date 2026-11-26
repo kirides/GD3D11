@@ -510,6 +510,25 @@ bool D3D12ShaderBackend::LoadShaderSource( const std::string& fileName, std::str
     return false;
 }
 
+namespace {
+    std::atomic<uint32_t> g_CompiledSettingsKey{ ~0u };
+
+    constexpr uint32_t kKeyTuning = 1u << 0, kKeyRtShadows = 1u << 1, kKeyOpaqueSsr = 1u << 2;
+}
+
+uint32_t D3D12ShaderBackend::SettingsKey( const GothicRendererSettings& s ) {
+    // Feature bits only matter while the tuning is on: the desktop permutation never reads them.
+    uint32_t key = 0;
+    if ( !s.DebugSettings.FeatureSet.IntegratedGpuTuning ) return key;
+    key |= kKeyTuning;
+    if ( s.RayTracedSunShadows != GothicRendererSettings::RT_SHADOWS_OFF || s.RayTracedPointShadows != GothicRendererSettings::RT_SHADOWS_OFF )
+        key |= kKeyRtShadows;
+    if ( s.OpaqueSSRQuality != GothicRendererSettings::WATER_SSR_DISABLED ) key |= kKeyOpaqueSsr;
+    return key;
+}
+
+uint32_t D3D12ShaderBackend::CompiledSettingsKey() { return g_CompiledSettingsKey.load(); }
+
 void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list ) {
     const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 
@@ -522,6 +541,13 @@ void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list
     list.push_back( { "NORMAL_MAP_MODE", sNums[std::clamp<int>( s.AllowNormalmaps, 1, 2 )] } );
     // Integrated GPUs: shaders pick the cheaper permutations (include/IntegratedGpu.hlsl).
     list.push_back( { "IGPU_TUNING", s.DebugSettings.FeatureSet.IntegratedGpuTuning ? "1" : "0" } );
+    const uint32_t key = SettingsKey( s );
+    g_CompiledSettingsKey = key;
+    if ( key & kKeyTuning ) {
+        // Features that are switched off compile out of the lit shaders (they would only cost registers).
+        list.push_back( { "FEAT_RT_SHADOWS", ( key & kKeyRtShadows ) ? "1" : "0" } );
+        list.push_back( { "FEAT_OPAQUE_SSR", ( key & kKeyOpaqueSsr ) ? "1" : "0" } );
+    }
 }
 
 bool D3D12ShaderBackend::Reflect( ID3DBlob* code, ID3D12ShaderReflection** ppReflection ) {

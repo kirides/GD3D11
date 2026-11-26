@@ -53,6 +53,12 @@ public:
     // NOT null-terminated — the caller adds the {nullptr,nullptr} sentinel.
     static void AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list );
 
+    // The settings that AppendGlobalMacros turns into shader permutations, packed into one value: a change
+    // means the compiled shaders no longer match (the engine reloads them). CompiledSettingsKey() is the key
+    // of the most recent compile (~0u before the first).
+    static uint32_t SettingsKey( const struct GothicRendererSettings& s );
+    static uint32_t CompiledSettingsKey();
+
     // -GPUHEAPCHECK: compiles GD_HEAP() as a checked access (Shaders/D3D12/include/HeapCheck.hlsl). Set before
     // the first compile; the engine enables it once the check buffers exist.
     static void SetHeapCheck( bool enabled );
