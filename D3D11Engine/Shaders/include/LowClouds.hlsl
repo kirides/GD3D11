@@ -174,15 +174,27 @@ float LowCloudHG( float cosTheta, float g )
     return ( 1.0f - g2 ) / pow( max( 1.0f + g2 - 2.0f * g * cosTheta, 1e-4f ), 1.5f );
 }
 
-float LowCloudLightEnergy( float lightDepth, float cosTheta )
+// The three octaves' phase terms depend only on cosTheta (constant for a pixel's whole march): evaluate them once.
+float3 LowCloudPhase3( float cosTheta )
+{
+    float3 phase;
+    float k = 1.0f;
+    [unroll] for ( int o = 0; o < 3; ++o )
+    {
+        phase[o] = lerp( LowCloudHG( cosTheta, -0.25f * k ), LowCloudHG( cosTheta, 0.65f * k ), 0.55f );
+        k *= 0.5f;
+    }
+    return phase;
+}
+
+float LowCloudLightEnergy( float lightDepth, float3 phase )
 {
     float energy = 0.0f;
     float a = 1.0f;
     float k = 1.0f;
     [unroll] for ( int o = 0; o < 3; ++o )
     {
-        float phase = lerp( LowCloudHG( cosTheta, -0.25f * k ), LowCloudHG( cosTheta, 0.65f * k ), 0.55f );
-        energy += a * exp( -k * lightDepth ) * phase;
+        energy += a * exp( -k * lightDepth ) * phase[o];
         a *= 0.5f;
         k *= 0.5f;
     }
@@ -260,6 +272,7 @@ float4 ComputeLowCloudVolume( float3 cameraWorld, float3 endWorld, float cameraD
     float cosTheta = dot( rayDir, LowCloudSafeNormalize( moonIsMain ? LC_MoonDir : AC_LightPos.xyz ) );
     // Beer-powder: dark crinkled edges when the light is behind the viewer, none when looking into it
     float powderStrength = 0.75f * saturate( 0.5f - 0.5f * cosTheta );
+    const float3 phase = LowCloudPhase3( cosTheta );
 
     float nearFadeStart = lerp( 7800.0f, 18000.0f, skyPixel ) * distanceScale;
     float nearFadeEnd = lerp( 18000.0f, 32000.0f, skyPixel ) * distanceScale;
@@ -297,7 +310,7 @@ float4 ComputeLowCloudVolume( float3 cameraWorld, float3 endWorld, float cameraD
         {
             float lightDepth = LowCloudLightDepth( sampleWorld, lightDir, column );
             float powder = lerp( 1.0f, 1.0f - exp( -density * 6.0f ), powderStrength );
-            sampleLight += lightColor * LowCloudLightEnergy( lightDepth, cosTheta ) * powder * 0.45f;
+            sampleLight += lightColor * LowCloudLightEnergy( lightDepth, phase ) * powder * 0.45f;
         }
         sampleLight = lerp( sampleLight, hazeColor, 0.35f * smoothstep( 0.25f, 0.9f, sampleDistance / farFadeEnd ) );
 

@@ -1,0 +1,5 @@
+isa_*/
+work_*/
+*.json
+*.log
+__pycache__/
