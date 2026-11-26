@@ -399,6 +399,13 @@ bool D3D12Device::Init() {
         m_TypedUAVLoadAdditionalFormats = options.TypedUAVLoadAdditionalFormats != FALSE;
     }
 
+    D3D12_FEATURE_DATA_D3D12_OPTIONS4 options4 = {};
+    if ( SUCCEEDED( m_Device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS4, &options4, sizeof( options4 ) ) ) )
+        m_Native16BitShaderOps = options4.Native16BitShaderOpsSupported != FALSE;
+    else
+        m_Native16BitShaderOps = false;
+    if ( !m_Native16BitShaderOps ) Logging::Inf( "D3D12: no native 16-bit shader ops; compiling shaders with FP32 lighting." );
+
     std::string barrierReason;
     m_EnhancedBarriersSupported = DeviceSupportsEnhancedBarriers( m_Device.Get(), &barrierReason );
     if ( m_EnhancedBarriersSupported ) {

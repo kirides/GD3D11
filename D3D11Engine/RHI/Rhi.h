@@ -245,6 +245,8 @@ namespace Rhi {
         bool EnhancedBarriers = false;
         bool LayeredRendering = false;
         bool TypedUAVLoadAdditionalFormats = false;
+        /** Native 16-bit shader ops (D3D12_OPTIONS4); Polaris lacks them and rejects such DXIL. */
+        bool Native16BitShaderOps = true;
         /** Root signature 1.1 (per-parameter data-static promises reach the driver). */
         bool RootSignature11 = false;
         bool GpuUploadHeap = false;

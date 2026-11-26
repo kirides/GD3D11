@@ -56,6 +56,8 @@ public:
     // -GPUHEAPCHECK: compiles GD_HEAP() as a checked access (Shaders/D3D12/include/HeapCheck.hlsl). Set before
     // the first compile; the engine enables it once the check buffers exist.
     static void SetHeapCheck( bool enabled );
+    // false: DXIL compiles without -enable-16bit-types and with USE_FP16_LIGHTING=0. Set before the first compile.
+    static void SetNative16Bit( bool enabled );
     static bool IsHeapCheckEnabled();
     // "File.hlsl:Entry" for a GD_SHADER_ID a heap-check report carries.
     static std::string ShaderNameForId( uint32_t id );

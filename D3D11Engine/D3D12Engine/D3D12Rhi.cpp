@@ -547,6 +547,7 @@ namespace {
             m_Caps.EnhancedBarriers = m_D3D.EnhancedBarriersSupported();
             m_Caps.LayeredRendering = m_D3D.LayeredRenderingSupported();
             m_Caps.TypedUAVLoadAdditionalFormats = m_D3D.TypedUAVLoadAdditionalFormatsSupported();
+            m_Caps.Native16BitShaderOps = m_D3D.Native16BitShaderOpsSupported();
             m_Caps.RootSignature11 = SerializeVersionedRootSignatureProc() != nullptr
                 && QueryHighestRootSignatureVersion( d ) >= D3D_ROOT_SIGNATURE_VERSION_1_1;
             m_Caps.GpuUploadHeap = m_Allocator->IsGPUUploadHeapSupported();

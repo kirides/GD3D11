@@ -145,6 +145,7 @@ XRESULT D3D12GraphicsEngine::Init() {
     m_DeviceCapabilities.MultiDrawIndirect = true;
     m_DeviceCapabilities.UAVOverlap = true;
     m_DeviceCapabilities.Native16BitTextures = true;
+    D3D12ShaderBackend::SetNative16Bit( caps.Native16BitShaderOps );
     m_DeviceCapabilities.LayeredRendering = caps.LayeredRendering;
     // Gated at adapter selection (DeviceSupportsBindless), so a device that got this far has it.
     m_DeviceCapabilities.BindlessResources = true;

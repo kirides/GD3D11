@@ -128,6 +128,7 @@ namespace {
 
     // GD_SHADER_ID -> "File.hlsl:Entry", for the heap-check reports.
     bool g_HeapCheck = false;
+    bool g_Native16Bit = true;   // DXIL only; false on Polaris-class GPUs
     std::mutex g_ShaderIdMutex;
     std::unordered_map<uint32_t, std::string> g_ShaderIds;
 
@@ -407,7 +408,8 @@ namespace {
         arguments.push_back( DXC_ARG_OPTIMIZATION_LEVEL3 );   // -O3 (Maximum optimization for release)
         if ( il == ShaderIL::SPIRV && GpuDebug::VkAftermath() ) arguments.push_back( DXC_ARG_DEBUG );   // source lines in crash dumps
 #endif
-        arguments.push_back( L"-enable-16bit-types" ); // Enable 16-bit types for SM6+ (half, min16float, etc.)
+        if ( il == ShaderIL::SPIRV || g_Native16Bit )
+            arguments.push_back( L"-enable-16bit-types" ); // Enable 16-bit types for SM6+ (half, min16float, etc.)
         if ( il == ShaderIL::SPIRV ) {
             AppendSpirvArguments( arguments );
         } else {
@@ -566,6 +568,7 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
             macros.push_back( *m );
     }
     AppendGlobalMacros( macros );
+    if ( il == ShaderIL::DXIL && !g_Native16Bit ) macros.push_back( { "USE_FP16_LIGHTING", "0" } );   // also keys the cache
     char shaderId[16] = {};
     if ( g_HeapCheck ) {
         snprintf( shaderId, sizeof( shaderId ), "0x%08Xu", RegisterShaderId( shaderName ) );
@@ -591,6 +594,10 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
     ShaderNames::Register( ( *ppCode )->GetBufferPointer(), ( *ppCode )->GetBufferSize(), shaderName );
     if ( dumpSpirv ) DumpSpirv( shaderName, *ppCode );
     return true;
+}
+
+void D3D12ShaderBackend::SetNative16Bit( bool enabled ) {
+    g_Native16Bit = enabled;
 }
 
 void D3D12ShaderBackend::SetHeapCheck( bool enabled ) {

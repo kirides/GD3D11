@@ -43,6 +43,8 @@ public:
         R11G11B10_FLOAT usable as a typed UAV (the compressed scene-colour format). */
     bool TypedUAVLoadAdditionalFormatsSupported() const { return m_TypedUAVLoadAdditionalFormats; }
 
+    bool Native16BitShaderOpsSupported() const { return m_Native16BitShaderOps; }
+
     ID3D12Device*       GetDevice()      const { return m_Device.Get(); }
     ID3D12CommandQueue* GetDirectQueue() const { return m_DirectQueue.Get(); }
     ID3D12CommandQueue* GetCopyQueue()   const { return m_CopyQueue.Get(); }
@@ -59,4 +61,5 @@ private:
     bool m_EnhancedBarriersSupported = false;
     bool m_LayeredRenderingSupported = false;
     bool m_TypedUAVLoadAdditionalFormats = false;
+    bool m_Native16BitShaderOps = true;
 };
