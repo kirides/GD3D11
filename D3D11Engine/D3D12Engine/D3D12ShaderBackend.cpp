@@ -513,7 +513,23 @@ bool D3D12ShaderBackend::LoadShaderSource( const std::string& fileName, std::str
 namespace {
     std::atomic<uint32_t> g_CompiledSettingsKey{ ~0u };
 
-    constexpr uint32_t kKeyTuning = 1u << 0, kKeyRtShadows = 1u << 1, kKeyOpaqueSsr = 1u << 2;
+    constexpr uint32_t kKeyTuning = 1u << 0, kKeyRtShadows = 1u << 1, kKeyOpaqueSsr = 1u << 2, kKeyWetness = 1u << 3;
+
+    std::atomic<bool> g_WetSeen{ false };   // see ObserveWeather
+
+    // The pixel shaders that include include/PBRLighting.hlsl; only they read the tuning macros.
+    bool IsLitShaderFile( const std::string& fileName ) {
+        const size_t slash = fileName.find_last_of( "/\\" );
+        const char* base = fileName.c_str() + ( slash == std::string::npos ? 0 : slash + 1 );
+        for ( const char* lit : { "World.hlsl", "Vob.hlsl", "Skeletal.hlsl", "Vegetation.hlsl", "Decal.hlsl" } )
+            if ( _stricmp( base, lit ) == 0 ) return true;
+        return false;
+    }
+}
+
+void D3D12ShaderBackend::ObserveWeather( const GothicRendererSettings& s ) {
+    if ( g_WetSeen || !s.DebugSettings.FeatureSet.IntegratedGpuTuning ) return;
+    if ( s.RainSceneWettness > 0.0f || Engine::GAPI->GetSceneWetness() > 0.0f ) g_WetSeen = true;
 }
 
 uint32_t D3D12ShaderBackend::SettingsKey( const GothicRendererSettings& s ) {
@@ -524,12 +540,13 @@ uint32_t D3D12ShaderBackend::SettingsKey( const GothicRendererSettings& s ) {
     if ( s.RayTracedSunShadows != GothicRendererSettings::RT_SHADOWS_OFF || s.RayTracedPointShadows != GothicRendererSettings::RT_SHADOWS_OFF )
         key |= kKeyRtShadows;
     if ( s.OpaqueSSRQuality != GothicRendererSettings::WATER_SSR_DISABLED ) key |= kKeyOpaqueSsr;
+    if ( g_WetSeen ) key |= kKeyWetness;
     return key;
 }
 
 uint32_t D3D12ShaderBackend::CompiledSettingsKey() { return g_CompiledSettingsKey.load(); }
 
-void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list ) {
+void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list, const std::string& fileName, const char* target ) {
     const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 
     // Mirrors the D3D11 ShaderRegistry's normalmappingConfigurationBuilder so a normal map decodes the
@@ -539,7 +556,8 @@ void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list
     static const char* const sNums[] = { "0", "1", "2" };
     list.push_back( { "NORMAL_MAP_RESTORE_Z", s.CompressedNormalsSupport ? "1" : "0" } );
     list.push_back( { "NORMAL_MAP_MODE", sNums[std::clamp<int>( s.AllowNormalmaps, 1, 2 )] } );
-    // Integrated GPUs: shaders pick the cheaper permutations (include/IntegratedGpu.hlsl).
+    // Integrated GPUs: the lit shaders pick the cheaper permutations (PBRLighting.hlsl).
+    if ( !IsLitShaderFile( fileName ) || !target || target[0] != 'p' ) return;   // ps_*
     list.push_back( { "IGPU_TUNING", s.DebugSettings.FeatureSet.IntegratedGpuTuning ? "1" : "0" } );
     const uint32_t key = SettingsKey( s );
     g_CompiledSettingsKey = key;
@@ -547,6 +565,7 @@ void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list
         // Features that are switched off compile out of the lit shaders (they would only cost registers).
         list.push_back( { "FEAT_RT_SHADOWS", ( key & kKeyRtShadows ) ? "1" : "0" } );
         list.push_back( { "FEAT_OPAQUE_SSR", ( key & kKeyOpaqueSsr ) ? "1" : "0" } );
+        list.push_back( { "FEAT_WETNESS", ( key & kKeyWetness ) ? "1" : "0" } );
     }
 }
 
@@ -595,7 +614,7 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
         for ( const D3D_SHADER_MACRO* m = defines; m->Name != nullptr; ++m )
             macros.push_back( *m );
     }
-    AppendGlobalMacros( macros );
+    AppendGlobalMacros( macros, fileName, target );
     if ( il == ShaderIL::DXIL && !g_Native16Bit ) macros.push_back( { "USE_FP16_LIGHTING", "0" } );   // also keys the cache
     char shaderId[16] = {};
     if ( g_HeapCheck ) {

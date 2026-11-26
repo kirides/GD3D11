@@ -42,7 +42,7 @@ GLOBAL_MACRO_SETS = [
     [("NORMAL_MAP_RESTORE_Z", "0"), ("NORMAL_MAP_MODE", "1"), ("IGPU_TUNING", "0")],
     [("NORMAL_MAP_RESTORE_Z", "1"), ("NORMAL_MAP_MODE", "2"), ("IGPU_TUNING", "1")],
     # integrated-GPU tuning with the optional lit-shader features compiled out
-    [("NORMAL_MAP_RESTORE_Z", "1"), ("NORMAL_MAP_MODE", "1"), ("IGPU_TUNING", "1"), ("FEAT_RT_SHADOWS", "0"), ("FEAT_OPAQUE_SSR", "0")],
+    [("NORMAL_MAP_RESTORE_Z", "1"), ("NORMAL_MAP_MODE", "1"), ("IGPU_TUNING", "1"), ("FEAT_RT_SHADOWS", "0"), ("FEAT_OPAQUE_SSR", "0"), ("FEAT_WETNESS", "0")],
 ]
 
 TARGET_ALIASES = {"Shadermodel_VS": "vs_6_6", "Shadermodel_PS": "ps_6_6", "Shadermodel_CS": "cs_6_6",

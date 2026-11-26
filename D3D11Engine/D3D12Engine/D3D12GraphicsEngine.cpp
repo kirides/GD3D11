@@ -2297,8 +2297,10 @@ XRESULT D3D12GraphicsEngine::OpenFrame() {
     // every frame (ApplyPendingShaderReload rolls back, so the keys would keep differing).
     {
         static uint32_t requestedKey = ~0u;
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        D3D12ShaderBackend::ObserveWeather( rs );
         const uint32_t compiled = D3D12ShaderBackend::CompiledSettingsKey();
-        const uint32_t wanted = D3D12ShaderBackend::SettingsKey( Engine::GAPI->GetRendererState().RendererSettings );
+        const uint32_t wanted = D3D12ShaderBackend::SettingsKey( rs );
         if ( compiled != ~0u && wanted != compiled && wanted != requestedKey ) {
             Logging::Inf( "D3D12: shader feature settings changed (0x{:x} -> 0x{:x}), reloading shaders.", compiled, wanted );
             requestedKey = wanted;
