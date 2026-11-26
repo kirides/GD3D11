@@ -491,7 +491,9 @@ bool D3D12GraphicsEngine::CreateFsrContext( int kind, INT2 renderSize, INT2 upsc
     case Upscaler::UPSCALER_FSR_1: {
         FfxFsr1ContextDescription desc = {};
         desc.flags = FFX_FSR1_ENABLE_RCAS;   // EASU + RCAS straight on linear HDR, like D3D11PFX_FSR1
-        desc.outputFormat = FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
+        // The output target is kSceneColorFormat: tell FFX which of its two possibilities that is.
+        desc.outputFormat = kSceneColorFormat == DXGI_FORMAT_R11G11B10_FLOAT
+            ? FFX_API_SURFACE_FORMAT_R11G11B10_FLOAT : FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
         desc.maxRenderSize = maxRender;
         desc.displaySize = display;
         desc.backendInterface = backend;
