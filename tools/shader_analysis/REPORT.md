@@ -142,11 +142,27 @@ with its `../include` sibling).
   stay compiled in; they would need dry/wet pipeline variants (not done).
 - **R6a, low-cloud phase hoist (implemented):** the compiler had already hoisted the Henyey-Greenstein terms (instruction
   and transcendental counts unchanged); making it explicit only moves registers, CSGenerate 88 -> 85, PSComposite 77 -> 74.
-- **R4, water pixel shader variants (rejected, measured):** compiling out the FFT ocean evaluation and the SSR march
-  changes `Water.hlsl` PSMain by 116 -> 115 VGPR (still 4 waves) and instructions 7299 -> 6699 (-8 %). The peak is in the
-  shared shading (atmosphere, clouds, glint, absorption), not in the optional features, so these permutations would not buy
-  occupancy. A real reduction needs restructuring `WaterShading.hlsl`, not a macro.
+- **R4, water pixel shader (macro variants rejected, restructure implemented, `a7d6b3b0`):** compiling out the FFT ocean and
+  the SSR march only moves `Water.hlsl` PSMain 116 -> 115 VGPR, so the peak is not in the optional features. RGA's per-instruction
+  live-register dump (`rga --livereg`) showed a plateau of ~95-107 live values over 3000 instructions: the shore state (`coast`,
+  `surf`) and every foam input were held from where they were computed to the foam block at the very end, and the shore-field
+  debug view kept them alive to the return. `ShadeWater` now computes the shoreline measurement and the foam layer early, carries
+  eight scalars (`WaterFoamLayer`) and applies them at the end, recomputes `foamLight` there, and returns early for the (uniform)
+  debug view: same expressions, VGPR 116 -> 96 = 4 -> 5 waves, instructions 7299 -> 7354; harbor frames old vs new shader differ
+  less than two frames of one shader.
 - **R5, tessellation hull LDS (not done):** the 38-dword control point is copied through the hull. Shrinking it means the domain
   shader re-fetches vertex attributes per tessellated vertex (the DS runs far more often than the HS), trading LDS for memory
   traffic on a bandwidth-limited GPU; packing only the vertex colour saves ~8 %. World tessellation is off by default.
   Needs a GPU capture before touching it.
+
+### Second follow-up: wetness and precision
+- **Wetness compiled out while dry (`336cf344`):** `FEAT_WETNESS` is 0 in the lit pixel shaders (tuned mode) until the scene first gets
+  wet (rain or the manual override), then the settings key gains a bit and the shaders reload once. gfx1035, RT off / SSR on:
+  World PSMain 80 -> 71 VGPR (6 -> 7 waves), 4253 -> 3032 instructions; Vob PSMain 79 -> 69 (6 -> 7); Vob bindless 89 -> 79 and
+  Skeletal 84 -> 78 (5 -> 6). The tuning macros are now appended only to the pixel shaders of World/Vob/Skeletal/Vegetation/Decal
+  (every other shader's cache key is unchanged, a flip recompiles ~40 entries instead of ~207).
+- **Scene colour R11G11B10 under the tuning (`f69fa74d`):** reuses the existing `CompressBackBuffer` path (halves every scene-colour
+  pass); yields to TAA. Compared against the default: 0.64/255 mean difference on a static frame, no sky banding.
+- **Not done, with reasons:** SSR / water / TAA depth copies (`CopyResource` from the typeless D32 needs the R32 family), GTAO
+  half-depth (linear view depth; R16F loses centimetres at range), cascade shadow maps to D16 (needs a larger constant bias and new
+  PSOs, a quality risk), low-cloud layers to 8-bit (small gain), R16F AO result (needs a look at where AO is stored).
