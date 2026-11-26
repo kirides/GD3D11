@@ -11,6 +11,7 @@
 #include <dxgi1_6.h>
 #include "D3D12Rhi.h"
 #include <memory>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -47,6 +48,7 @@ class D3D12GpuScene;
 class D3D12Ocean;
 struct GpuSceneCasterView;
 struct GpuScenePointView;
+struct Fsr1LateTargets;   // D3D12Fsr1Late.h
 class D3D12GpuWorld;
 class D3D12MeshArena;
 class D3D12RayTracing;
@@ -1481,6 +1483,11 @@ private:
     // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph — see D3D12DoF.cpp's file
     // header / D3D12RenderDepthOfField's declaration above for why.
     void RenderSMAA( class D3D12RenderGraph& graph );
+    // The three SMAA passes over a `size` image. begin/end bracket them: begin (at execute time) names the source SRV
+    // and destination, end restores the source. Display chain = the display-res steps; FSR 1 late = render-res pair.
+    struct DisplayChainStep;
+    void AddSmaaPasses( class D3D12RenderGraph& graph, INT2 size, std::function<DisplayChainStep( D3D12CmdList& )> begin,
+        std::function<void( D3D12CmdList& )> end );
 
     // --- The post-tonemap DISPLAY CHAIN -------------------------------------------------------------------
     // SMAA, sharpen and the underwater FX each read the finished display image and write it back, which a
@@ -1790,6 +1797,18 @@ private:
     bool m_FsrInitFailed = false;       // don't retry m_FsrFailedKind every frame; cleared by ReleaseFsr
     int  m_FsrFailedKind = 0;
     bool m_FsrDispatchFailureLogged = false;
+    // FSR 1 in AMD's order (D3D12, SDR output): tonemap + SMAA at render res, EASU/RCAS on the LDR image, then the display
+    // chain. m_Fsr1LateCtx = the FSR 1 context was built for it (LDR BGRA output) and m_Fsr1LateTargets exist instead of
+    // m_FsrOutput; m_Fsr1LateFrame = this frame's graph takes that path (SMAA must then skip the display chain).
+    bool m_Fsr1LateCtx = false;
+    bool m_Fsr1LateFrame = false;
+    std::unique_ptr<Fsr1LateTargets> m_Fsr1LateTargets;
+    UINT m_Fsr1LateSrvSlot[2] = { UINT_MAX, UINT_MAX };           // kept across re-creations (slots are never freed)
+    bool Fsr1LateEligible() const;                                // D3D12, SDR output, display chain ready, BGRA8 typed UAV
+    bool CreateFsr1LateTargets();                                 // render-res LDR pair + display-res UAV output
+    void ReleaseFsr1Late();                                       // requires an idle GPU
+    bool UseFsr1Late() const;                                     // this frame runs the late order
+    void RecordFsr1Late( class D3D12RenderGraph& graph );         // adds the passes that replace FSR + resolve + SMAA
 
     int  WantedFsrKind() const;                                   // E_Upscaler the settings ask for; DEFAULT = none
     void ApplyPendingUpscalerChange();                            // OnBeginFrame: idles + drops a context of another kind

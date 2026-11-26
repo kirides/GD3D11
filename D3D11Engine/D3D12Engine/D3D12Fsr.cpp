@@ -5,7 +5,8 @@
 // display-res output instead of the render-res scene colour (GetTonemapSourceSrvSlot), a 1:1 blit.
 //
 // FSR 2/3 are AA_FSR: they replace the TAA resolve and share its jitter sequence and motion G-buffer. FSR 1 is
-// spatial (EASU + RCAS) and runs after whatever AA mode is active, like D3D11's in-engine FSR 1.
+// spatial (EASU + RCAS). On D3D12 with SDR output it runs in AMD's order, on the tonemapped and anti-aliased LDR image
+// (see "FSR 1 in AMD's order" below); otherwise on the linear HDR scene after whatever AA mode is active, like D3D11's.
 //
 // The FFX DLL of the active backend (ffx_fsr3upscaler_{dx12,vk}_x86.dll, each carrying all three upscalers) is
 // resolved lazily, so a missing DLL only disables the upscalers. One context lives at a time; its destruction
@@ -41,6 +42,8 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "D3D12Fsr1Late.h"
+#include "D3D12RenderGraph.h"
 
 namespace {
     using Upscaler = GothicRendererSettings::E_Upscaler;
@@ -311,7 +314,8 @@ int D3D12GraphicsEngine::WantedFsrKind() const {
 bool D3D12GraphicsEngine::IsFsrEnabled() const {
     const int kind = WantedFsrKind();
     if ( kind == Upscaler::UPSCALER_DEFAULT || kind != m_FsrContextKind || !m_FsrContext ) return false;
-    if ( !m_FsrOutputReady || !m_SceneColor ) return false;
+    if ( !m_SceneColor ) return false;
+    if ( !( m_Fsr1LateCtx ? m_Fsr1LateTargets != nullptr : m_FsrOutputReady ) ) return false;
     if ( kind == Upscaler::UPSCALER_FSR_1 ) return true;
     if ( kind == Upscaler::UPSCALER_FSR_3 && !m_Fsr3SharedReady ) return false;
     return m_MotionResourcesReady && m_VelocitySrvSlot != UINT_MAX && m_DepthBuffer;
@@ -332,6 +336,7 @@ void D3D12GraphicsEngine::ApplyPendingUpscalerChange() {
     if ( !m_FsrContext || m_FsrContextKind == wanted ) return;
     WaitForGpuIdle();
     DestroyFsrContext();
+    ReleaseFsr1Late();
 }
 
 
@@ -347,7 +352,10 @@ void D3D12GraphicsEngine::EnsureFsrReady() {
     if ( m_BackbufferResolution.x < 4 || m_BackbufferResolution.y < 4 ) return;
 
     m_FsrInitFailed = false;
-    if ( ( !m_FsrOutputReady && !CreateFsrOutput( m_BackbufferResolution ) )
+    // FSR 1 in AMD's order when the display chain can take it; otherwise the HDR display-res output as before.
+    const bool late = kind == Upscaler::UPSCALER_FSR_1 && Fsr1LateEligible() && ( m_Fsr1LateTargets || CreateFsr1LateTargets() );
+    m_Fsr1LateCtx = late;
+    if ( ( !late && !m_FsrOutputReady && !CreateFsrOutput( m_BackbufferResolution ) )
         || !CreateFsrContext( kind, m_Resolution, m_BackbufferResolution ) ) {
         m_FsrInitFailed = true;
         m_FsrFailedKind = kind;
@@ -356,8 +364,9 @@ void D3D12GraphicsEngine::EnsureFsrReady() {
     // Optional: without it FSR 2/3 still run, the snow just ghosts.
     if ( kind != Upscaler::UPSCALER_FSR_1 && !m_FsrReactive ) CreateFsrReactiveMask( m_Resolution );
 
-    Logging::Inf( "{}: {} upscaler ready ({}x{} -> {}x{}).", m_Api == Rhi::Backend::Vulkan ? "Vulkan" : "D3D12",
-        UpscalerName( kind ), m_Resolution.x, m_Resolution.y, m_BackbufferResolution.x, m_BackbufferResolution.y );
+    Logging::Inf( "{}: {} upscaler ready ({}x{} -> {}x{}){}.", m_Api == Rhi::Backend::Vulkan ? "Vulkan" : "D3D12",
+        UpscalerName( kind ), m_Resolution.x, m_Resolution.y, m_BackbufferResolution.x, m_BackbufferResolution.y,
+        m_Fsr1LateCtx ? ", on the tonemapped LDR image (SMAA before it)" : "" );
 }
 
 
@@ -490,10 +499,13 @@ bool D3D12GraphicsEngine::CreateFsrContext( int kind, INT2 renderSize, INT2 upsc
     switch ( kind ) {
     case Upscaler::UPSCALER_FSR_1: {
         FfxFsr1ContextDescription desc = {};
-        desc.flags = FFX_FSR1_ENABLE_RCAS;   // EASU + RCAS straight on linear HDR, like D3D11PFX_FSR1
+        // Late order: the input is the tonemapped, gamma-encoded LDR image, which is what EASU/RCAS expect.
+        // Otherwise EASU + RCAS straight on linear HDR, like D3D11PFX_FSR1.
+        desc.flags = FFX_FSR1_ENABLE_RCAS;
         // The output target is kSceneColorFormat: tell FFX which of its two possibilities that is.
-        desc.outputFormat = kSceneColorFormat == DXGI_FORMAT_R11G11B10_FLOAT
-            ? FFX_API_SURFACE_FORMAT_R11G11B10_FLOAT : FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
+        desc.outputFormat = m_Fsr1LateCtx ? FFX_API_SURFACE_FORMAT_B8G8R8A8_UNORM
+            : kSceneColorFormat == DXGI_FORMAT_R11G11B10_FLOAT ? FFX_API_SURFACE_FORMAT_R11G11B10_FLOAT
+            : FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
         desc.maxRenderSize = maxRender;
         desc.displaySize = display;
         desc.backendInterface = backend;
@@ -645,6 +657,7 @@ void D3D12GraphicsEngine::DestroyFsrContext() {
     destructor. Also the retry point after a failed init. */
 void D3D12GraphicsEngine::ReleaseFsr() {
     DestroyFsrContext();
+    ReleaseFsr1Late();
     m_FsrOutputReady = false;
     m_FsrOutput.Reset();
     m_FsrOutputInUavState = false;
@@ -664,7 +677,7 @@ void D3D12GraphicsEngine::RenderFsrUpscale() {
     const bool reactiveWritten = m_FsrReactiveWritten;   // this frame's rain draw wrote the mask
     m_FsrReactiveWritten = false;
     if ( !m_FrameOpen || !m_CmdList ) return;
-    if ( !IsFsrEnabled() ) return;
+    if ( !IsFsrEnabled() || m_Fsr1LateCtx ) return;   // the late order dispatches from RecordFsr1Late
 
     const int kind = m_FsrContextKind;
     const bool temporal = kind != Upscaler::UPSCALER_FSR_1;
@@ -863,4 +876,254 @@ void D3D12GraphicsEngine::TransitionFsrOutput( D3D12_RESOURCE_STATES before, D3D
 UINT D3D12GraphicsEngine::GetTonemapSourceSrvSlot() const {
     if ( m_FsrRanThisFrame && m_FsrOutputSrvSlot != UINT_MAX ) return m_FsrOutputSrvSlot;
     return m_SceneColorSrvSlot;
+}
+
+
+// ---- FSR 1 in AMD's order ---------------------------------------------------------------------------------
+// AMD wants FSR 1 after anti-aliasing and tonemapping, on the gamma-encoded LDR image, before anything that adds
+// noise and before the UI. The linear-HDR path above feeds EASU/RCAS values they don't expect and runs SMAA on the
+// already-upscaled image. Here: tonemap (render res) -> SMAA (render res) -> EASU + RCAS (display res) -> copy into
+// the display chain, where the tonemap resolve used to land, so underwater, the UI and the rest are unchanged.
+// D3D12 and SDR output only; -GFSR1EARLY keeps the old order for comparison.
+
+/** The late order is possible: D3D12 (the Vulkan FFX layout handling is not wired up), SDR output (HDR display
+    keeps the FP16 chain), the display-chain scratches exist, and BGRA8 can be a typed UAV (FFX writes the output). */
+bool D3D12GraphicsEngine::Fsr1LateEligible() const {
+    static const bool disabled = [] {
+        std::string cmd = GetCommandLineA();
+        for ( auto& c : cmd ) c = static_cast<char>( toupper( static_cast<unsigned char>( c ) ) );
+        return cmd.find( "-GFSR1EARLY" ) != std::string::npos;
+    }();
+    if ( disabled || m_Api != Rhi::Backend::D3D12 || m_HdrOutputActive || !m_LdrCopyReady || !m_RtvHeap ) return false;
+    if ( !m_Pipelines.Tonemap.PSO || !m_Pipelines.Tonemap.RootSig || !m_LumAdaptedBuffer ) return false;
+    if ( m_Pipelines.DisplayFormat != DXGI_FORMAT_B8G8R8A8_UNORM ) return false;
+    ID3D12Device* device = D3D12Rhi::NativeDevice( m_Rhi.Get() );
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT fs = { DXGI_FORMAT_B8G8R8A8_UNORM };
+    return device && SUCCEEDED( device->CheckFeatureSupport( D3D12_FEATURE_FORMAT_SUPPORT, &fs, sizeof( fs ) ) )
+        && ( fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE ) != 0;
+}
+
+
+bool D3D12GraphicsEngine::CreateFsr1LateTargets() {
+    m_Fsr1LateTargets.reset();
+    if ( m_Resolution.x < 4 || m_Resolution.y < 4 || m_BackbufferResolution.x < 4 || m_BackbufferResolution.y < 4 ) return false;
+    Rhi::Device* device = m_Rhi.Get();
+    if ( !device || !m_RtvHeap ) return false;
+    const DXGI_FORMAT format = m_Pipelines.DisplayFormat;
+
+    auto targets = std::make_unique<Fsr1LateTargets>();
+    targets->RenderSize = m_Resolution;
+    targets->DisplaySize = m_BackbufferResolution;
+
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width = static_cast<UINT64>( m_Resolution.x );
+    dd.Height = static_cast<UINT>( m_Resolution.y );
+    dd.DepthOrArraySize = 1;
+    dd.MipLevels = 1;
+    dd.Format = format;
+    dd.SampleDesc.Count = 1;
+    dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_CLEAR_VALUE clear = {};
+    clear.Format = format;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.Format = format;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+
+    for ( UINT i = 0; i < 2; ++i ) {
+        if ( FAILED( device->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
+            targets->In[i].ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
+            Logging::Wrn( "D3D12: failed to create the FSR 1 render-res LDR target {} ({}x{}); using the HDR order.", i, m_Resolution.x, m_Resolution.y );
+            return false;
+        }
+        targets->In[i]->SetName( i == 0 ? L"Fsr1LdrTonemapped" : L"Fsr1LdrAntiAliased" );
+        if ( m_Fsr1LateSrvSlot[i] == UINT_MAX ) m_Fsr1LateSrvSlot[i] = AllocateSrvSlot();
+        if ( m_Fsr1LateSrvSlot[i] == UINT_MAX ) return false;
+        targets->InSrvSlot[i] = m_Fsr1LateSrvSlot[i];
+        device->CreateShaderResourceView( targets->In[i].Get(), &srv, GetSrvCpuHandle( targets->InSrvSlot[i] ) );
+        // RTV heap slots kBackBufferMax+9 / +10; see CreateFrameResources rtvHeapDesc.NumDescriptors.
+        targets->InRtv[i] = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+        targets->InRtv[i].ptr += static_cast<SIZE_T>( kBackBufferMax + 9 + i ) * m_RtvDescriptorSize;
+        m_Rhi->CreateRenderTargetView( targets->In[i].Get(), nullptr, targets->InRtv[i] );
+    }
+
+    D3D12_RESOURCE_DESC od = dd;
+    od.Width = static_cast<UINT64>( m_BackbufferResolution.x );
+    od.Height = static_cast<UINT>( m_BackbufferResolution.y );
+    od.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    // No TRACK_LAYOUT: FFX barriers this output with legacy barriers (see TransitionFsrOutput).
+    if ( FAILED( device->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &od, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+        targets->Out.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: failed to create the FSR 1 display-res output ({}x{}); using the HDR order.", m_BackbufferResolution.x, m_BackbufferResolution.y );
+        return false;
+    }
+    targets->Out->SetName( L"Fsr1LdrOutput" );
+
+    m_CmdList.InvalidateRenderTargets();   // RTV descriptors rewritten in place
+    m_Fsr1LateTargets = std::move( targets );
+    m_FsrReset = true;
+    return true;
+}
+
+
+void D3D12GraphicsEngine::ReleaseFsr1Late() {
+    m_Fsr1LateTargets.reset();
+    m_Fsr1LateCtx = false;
+    m_Fsr1LateFrame = false;
+}
+
+
+/** This frame's graph runs the late order. Pure query, stable for the frame (EnsureFsrReady ran first). */
+bool D3D12GraphicsEngine::UseFsr1Late() const {
+    return m_Fsr1LateCtx && m_Fsr1LateTargets && m_FsrContextKind == Upscaler::UPSCALER_FSR_1
+        && m_LdrCopyReady && m_CmdList && IsFsrEnabled();
+}
+
+
+/** Registers the late order's passes in place of "FSR Upscale", "Resolve Scene To BackBuffer" and the display-chain
+    SMAA. A failed EASU/RCAS dispatch falls back to the plain tonemap resolve (bilinear upscale) for that frame. */
+void D3D12GraphicsEngine::RecordFsr1Late( D3D12RenderGraph& graph ) {
+    // Legacy barrier on the FFX output (see TransitionFsrOutput).
+    auto legacyTransition = [this]( Rhi::Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
+        const D3D12_RESOURCE_BARRIER barrier = TransitionBarrier( D3D12Rhi::Native( res ), before, after );
+        D3D12Rhi::Native( m_CmdList.Get() )->ResourceBarrier( 1, &barrier );
+    };
+    constexpr D3D12_RESOURCE_STATES kLdrRead = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    auto smaaRan = std::make_shared<bool>( false );
+
+    // 1. Tonemap at render resolution into the LDR target.
+    graph.AddPass( RG_PASS_NAME( "FSR1 Tonemap (render res)" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        builder.MarkExternalEffect();
+        pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) {
+            m_FsrRanThisFrame = false;
+            m_FsrReactiveWritten = false;
+            Fsr1LateTargets& t = *m_Fsr1LateTargets;   // present: UseFsr1Late
+            DX_ZONE( m_CmdList.Get(), "FSR1 tonemap (render res)" );
+            if ( t.NeedsDiscard ) {
+                m_CmdList->DiscardResource( t.In[0].Get() );
+                m_CmdList->DiscardResource( t.In[1].Get() );
+                t.NeedsDiscard = false;
+            }
+            TransitionSceneColor( m_CmdList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+            const D3D12_CPU_DESCRIPTOR_HANDLE rtv = t.InRtv[0];
+            m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+            m_ColorTargetIsHDR = false;
+            const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+            const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+            m_CmdList->RSSetViewports( 1, &vp );
+            m_CmdList->RSSetScissorRects( 1, &sc );
+            m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
+            m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+            const TonemapRootConstants tonemapConsts = MakeTonemapConstants( false, false );
+            m_CmdList->SetGraphicsRoot32BitConstants( 1, kTonemapRootConstantCount, &tonemapConsts, 0 );
+            m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
+            m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+            m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+            m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+            };
+        } );
+
+    // 2. SMAA at render resolution: [0] -> [1].
+    if ( WillRunSMAA() ) {
+        AddSmaaPasses( graph, m_Resolution,
+            [this, smaaRan]( D3D12CmdList& cmdList ) {
+                Fsr1LateTargets& t = *m_Fsr1LateTargets;
+                DisplayChainStep step;
+                step.SrcSrvSlot = t.InSrvSlot[0];
+                step.Dst = t.In[1].Get();
+                step.DstRtv = t.InRtv[1];
+                cmdList.TransitionBarrier( t.In[0].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, kLdrRead );
+                *smaaRan = true;
+                return step;
+            },
+            [this]( D3D12CmdList& cmdList ) {
+                cmdList.TransitionBarrier( m_Fsr1LateTargets->In[0].Get(), kLdrRead, D3D12_RESOURCE_STATE_RENDER_TARGET );
+            } );
+    }
+
+    // 3. EASU + RCAS: LDR render-res -> LDR display-res.
+    graph.AddPass( RG_PASS_NAME( "FSR1 EASU+RCAS (LDR)" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        builder.MarkExternalEffect();
+        pass.m_executeCallback = [this, smaaRan]( const D3D12RenderGraph&, D3D12CmdList& ) {
+            Fsr1LateTargets& t = *m_Fsr1LateTargets;
+            Rhi::Resource* src = *smaaRan ? t.In[1].Get() : t.In[0].Get();
+            DX_ZONE( m_CmdList.Get(), "FSR1 upscale (LDR)" );
+            TracyD3D12ZoneCGX( m_CmdList.Get(), "FSR1 upscale (LDR)" );
+            m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+            m_CmdList->TransitionBarrier( src, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+
+            const FfxCommandList commandList = g_Ffx.Dx12.GetCommandList( D3D12Rhi::Native( m_CmdList.Get() ) );
+            const FfxApiResource color = AsFfxResource( m_Api, src, L"Fsr1InputLdr", FFX_API_RESOURCE_STATE_COMPUTE_READ );
+            const FfxApiResource output = AsFfxResource( m_Api, t.Out.Get(), L"Fsr1OutputLdr", FFX_API_RESOURCE_STATE_UNORDERED_ACCESS );
+            const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+            FfxErrorCode err = FFX_ERROR_INVALID_POINTER;
+            if ( color.resource && output.resource ) {
+                FfxFsr1DispatchDescription dd = {};
+                dd.commandList = commandList;
+                dd.color = color;
+                dd.output = output;
+                dd.renderSize = { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ) };
+                dd.enableSharpening = settings.SharpenFactor >= 0.001f;
+                dd.sharpness = std::clamp( settings.SharpenFactor, 0.0f, 1.0f );
+                err = g_Ffx.Fsr1Dispatch( static_cast<FfxFsr1Context*>( m_FsrContext ), &dd );
+            }
+
+            // FFX recorded its own pipelines, root signatures and descriptor heaps behind the cache.
+            m_CmdList.InvalidateAll();
+            if ( m_SrvHeap ) {
+                Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+                m_CmdList->SetDescriptorHeaps( 1, heaps );
+            }
+            m_CmdList->TransitionBarrier( src, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
+
+            if ( err != FFX_OK ) {
+                if ( !m_FsrDispatchFailureLogged ) {
+                    Logging::Wrn( "FSR 1 dispatch failed ({}); falling back to bilinear upscaling. Further failures are not logged.", static_cast<int>( err ) );
+                    m_FsrDispatchFailureLogged = true;
+                }
+                return;
+            }
+            m_FsrReset = false;
+            m_FsrRanThisFrame = true;
+            };
+        } );
+
+    // 4. Into the display chain, where the tonemap resolve would have landed (or the old resolve if FSR failed).
+    graph.AddPass( RG_PASS_NAME( "FSR1 To Display Chain" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        builder.MarkExternalEffect();
+        pass.m_executeCallback = [this, legacyTransition]( const D3D12RenderGraph&, D3D12CmdList& ) {
+            if ( !m_FsrRanThisFrame ) {
+                ResolveSceneToBackBuffer();   // plain tonemap + bilinear upscale into the display chain
+                return;
+            }
+            if ( m_LdrScratchNeedsDiscard && m_LdrCopyReady ) {
+                m_CmdList->DiscardResource( m_LdrScratch[0].Get() );
+                m_CmdList->DiscardResource( m_LdrScratch[1].Get() );
+                m_LdrScratchNeedsDiscard = false;
+            }
+            PlanDisplayChain();   // m_FsrRanThisFrame is final: sharpen is off, SMAA already ran
+
+            Fsr1LateTargets& t = *m_Fsr1LateTargets;
+            Rhi::Resource* dst = GetDisplayTarget();
+            legacyTransition( t.Out.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE );
+            m_CmdList->TransitionBarrier( dst, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST );
+            m_CmdList->CopyResource( dst, t.Out.Get() );
+            m_CmdList->TransitionBarrier( dst, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET );
+            legacyTransition( t.Out.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+
+            // Leave the display target bound for the 2D UI, like the tonemap resolve does.
+            const D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
+            m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+            m_ColorTargetIsHDR = false;
+            const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+            const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
+            m_CmdList->RSSetViewports( 1, &vp );
+            m_CmdList->RSSetScissorRects( 1, &sc );
+            };
+        } );
 }

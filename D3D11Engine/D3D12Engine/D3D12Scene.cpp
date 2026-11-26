@@ -3344,22 +3344,29 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderLuminanceAdapt(); };
 		} );
 
-	// FSR 1/2/3 upscale on the linear HDR scene, after bloom/luminance and before the tonemap resolve, which then
-	// samples its display-res output 1:1 (see D3D12Fsr.cpp). No-op, and the resolve upscales bilinearly, otherwise.
-	postFxGraph.AddPass( RG_PASS_NAME( "FSR Upscale" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFsrUpscale(); };
-		} );
+	// FSR 1 in AMD's order (D3D12, SDR): tonemap + SMAA at render res, EASU/RCAS on the LDR image, then the display
+	// chain (RecordFsr1Late). Otherwise, as before:
+	//   FSR 1/2/3 upscale on the linear HDR scene, after bloom/luminance and before the tonemap resolve, which then
+	//   samples its display-res output 1:1 (see D3D12Fsr.cpp). No-op, and the resolve upscales bilinearly, otherwise.
+	m_Fsr1LateFrame = UseFsr1Late();
+	if ( m_Fsr1LateFrame ) {
+		RecordFsr1Late( postFxGraph );
+	} else {
+		postFxGraph.AddPass( RG_PASS_NAME( "FSR Upscale" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+			pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFsrUpscale(); };
+			} );
 
-	// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
-	// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
-	postFxGraph.AddPass( RG_PASS_NAME( "Resolve Scene To BackBuffer" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { ResolveSceneToBackBuffer(); };
-		} );
+		// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
+		// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
+		postFxGraph.AddPass( RG_PASS_NAME( "Resolve Scene To BackBuffer" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+			pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { ResolveSceneToBackBuffer(); };
+			} );
 
-	// SMAA anti-aliasing (opt-in, RendererSettings.AntiAliasingMode == AA_SMAA): runs on the tonemapped LDR
-	// swapchain image, before Gothic's 2D UI/HUD composites on top so the HUD stays crisp. No-ops if disabled
-	// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
-	RenderSMAA( postFxGraph );
+		// SMAA anti-aliasing (opt-in, RendererSettings.AntiAliasingMode == AA_SMAA): runs on the tonemapped LDR
+		// swapchain image, before Gothic's 2D UI/HUD composites on top so the HUD stays crisp. No-ops if disabled
+		// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
+		RenderSMAA( postFxGraph );
+	}
 
 	// Post-tonemap sharpening (SHARPEN_CAS by default — this one is ON for a stock config, unlike SMAA).
 	// D3D11's "Sharpen" pass sits in the same place: after AA, on the LDR backbuffer, before the 2D UI.

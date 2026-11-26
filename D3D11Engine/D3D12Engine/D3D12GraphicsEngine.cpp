@@ -1,6 +1,7 @@
 // D3D12GraphicsEngine — core: device/queues/swapchain/frame/present/uploads/resources.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12Fsr1Late.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12Ocean.h"
 #include "D3D12VertexBuffer.h"
@@ -1612,7 +1613,7 @@ void D3D12GraphicsEngine::PlanDisplayChain() {
 	if ( !m_LdrCopyReady ) return;
 
 	int passes = 0;
-	if ( WillRunSMAA() ) ++passes;
+	if ( WillRunSMAA() && !m_Fsr1LateFrame ) ++passes;   // late FSR 1 already ran SMAA at render res
 	if ( WillRunSharpen() ) ++passes;
 	if ( WillRunUnderwaterFX() ) ++passes;
 	if ( passes == 0 ) return;
@@ -2151,9 +2152,9 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
     // Fixed RTV slots: 0..kBackBufferMax-1 unused (keeps the offsets below stable), kBackBufferMax scene colour,
     // +3 HDR display, +4/+5 motion/normal G-buffer (D3D12Motion.cpp), +6/+7 LDR display-chain scratches (D3D12PostFX.cpp),
-    // +8 FSR reactive mask (D3D12Fsr.cpp).
+    // +8 FSR reactive mask, +9/+10 FSR 1 late render-res LDR pair (D3D12Fsr.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferMax + 9;
+    rtvHeapDesc.NumDescriptors = kBackBufferMax + 11;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( m_Rhi->CreateDescriptorHeap( &rtvHeapDesc, m_RtvHeap.ReleaseAndGetAddressOf() ) ) )

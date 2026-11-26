@@ -551,8 +551,18 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 	if ( settings.AntiAliasingMode != GothicRendererSettings::AA_SMAA ) return;
 	if ( !WillRunSMAA() ) return;
 
+	// --- Open the display-chain step: the finished frame becomes the SMAA color SRV and the neighborhood
+	// blend renders into the next slot. ---
+	AddSmaaPasses( graph, m_BackbufferResolution,
+		[this]( D3D12CmdList& cmdList ) { return BeginDisplayChainStep( cmdList ); },
+		[this]( D3D12CmdList& cmdList ) { EndDisplayChainStep( cmdList ); } );
+}
+
+
+void D3D12GraphicsEngine::AddSmaaPasses( D3D12RenderGraph& graph, INT2 size, std::function<DisplayChainStep( D3D12CmdList& )> begin,
+	std::function<void( D3D12CmdList& )> end ) {
 	auto consts = std::make_shared<SmaaConsts>( SmaaConsts{
-		{ 1.0f / m_BackbufferResolution.x, 1.0f / m_BackbufferResolution.y, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ) },
+		{ 1.0f / size.x, 1.0f / size.y, static_cast<float>( size.x ), static_cast<float>( size.y ) },
 		UINT_MAX, 0, 0,
 		m_SmaaAreaTex->GetSrvSlot(), m_SmaaSearchTex->GetSrvSlot()
 		} );
@@ -568,9 +578,9 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 	// --- Open the display-chain step: the finished frame becomes the SMAA color SRV and the neighborhood
 	// blend further down renders into the next slot. ---
 	graph.AddPass( RG_PASS_NAME( "SMAA Begin" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this, consts, step]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+		pass.m_executeCallback = [this, consts, step, begin]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
 			DX_ZONE( cmdList.Get(), "SMAA" );
-			*step = BeginDisplayChainStep( cmdList );
+			*step = begin( cmdList );
 			consts->ColorIdx = step->SrcSrvSlot;
 			};
 		} );
@@ -579,16 +589,16 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 	// automatically; the Blend Weight pass's Read() below transitions it to shader-read afterward — neither
 	// needs a manual check/transition here.
 	graph.AddPass( RG_PASS_NAME( "SMAA Edge Detection" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-		edgesHandle = builder.CreateTexture( { static_cast<uint32_t>( m_BackbufferResolution.x ), static_cast<uint32_t>( m_BackbufferResolution.y ),
+		edgesHandle = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ),
 			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaEdges", 0u }, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
-		pass.m_executeCallback = [this, consts, step, edgesHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+		pass.m_executeCallback = [this, consts, step, edgesHandle, size]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
 			D3D12RenderTarget* edges = g.GetPhysicalTexture( edgesHandle );
 			if ( !edges || !step->Valid() ) return;   // no chain step means no color SRV to detect edges in
 
 			consts->EdgesIdx = edges->GetSrvSlot();
-			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
-			const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
+			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( size.x ), static_cast<float>( size.y ), 0.0f, 1.0f };
+			const D3D12_RECT     sc = { 0, 0, size.x, size.y };
 			cmdList.RSSetViewports( 1, &vp );
 			cmdList.RSSetScissorRects( 1, &sc );
 			cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -609,19 +619,19 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 	// stays manual — there's no Read() to hang it off.
 	graph.AddPass( RG_PASS_NAME( "SMAA Blend Weight" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
 		builder.Read( edgesHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		blendHandle = builder.CreateTexture( { static_cast<uint32_t>( m_BackbufferResolution.x ), static_cast<uint32_t>( m_BackbufferResolution.y ),
+		blendHandle = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ),
 			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaBlend", 0u }, D3D12_RESOURCE_STATE_RENDER_TARGET );
 		// The neighborhood-blend pass further down reads this pass's result via consts->BlendIdx, a plain
 		// shared value — not a graph Read(), so mark the side effect explicitly.
 		builder.MarkExternalEffect();
 
-		pass.m_executeCallback = [this, consts, step, blendHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+		pass.m_executeCallback = [this, consts, step, blendHandle, size]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
 			D3D12RenderTarget* blend = g.GetPhysicalTexture( blendHandle );
 			if ( !blend || !step->Valid() ) return;
 
 			consts->BlendIdx = blend->GetSrvSlot();
-			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
-			const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
+			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( size.x ), static_cast<float>( size.y ), 0.0f, 1.0f };
+			const D3D12_RECT     sc = { 0, 0, size.x, size.y };
 			cmdList.RSSetViewports( 1, &vp );
 			cmdList.RSSetScissorRects( 1, &sc );
 			cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -641,11 +651,11 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 
 	// --- Neighborhood blending (color + blend -> the chain's next slot). ---
 	graph.AddPass( RG_PASS_NAME( "SMAA Neighborhood Blend" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this, consts, step]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+		pass.m_executeCallback = [this, consts, step, size, end]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
 			if ( !step->Valid() ) return;
 			D3D12_CPU_DESCRIPTOR_HANDLE backRtv = step->DstRtv;
-			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
-			const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
+			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( size.x ), static_cast<float>( size.y ), 0.0f, 1.0f };
+			const D3D12_RECT     sc = { 0, 0, size.x, size.y };
 			cmdList.RSSetViewports( 1, &vp );
 			cmdList.RSSetScissorRects( 1, &sc );
 			cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -658,7 +668,7 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 
 			// Source scratch back to RENDER_TARGET so it can be the next step's destination. Edges/blend need
 			// no explicit reset - D3D12RenderTarget::State is caller-maintained and self-correcting.
-			EndDisplayChainStep( cmdList );
+			end( cmdList );
 			};
 		} );
 }
