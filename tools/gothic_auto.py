@@ -13,6 +13,12 @@ Examples (from the repo root):
 Fast start (verified in the ZenGin source, oGameManager/ooBert/oGame): there is NO command-line save loading. Use
   --new-game (-nomenu) [--world W.zen] [--time HH:MM]: skips the main menu, plays the intro (Esc skips), starts a new game.
 
+Runtime changes, no restart, nothing saved (the game never writes UserSettings.ini; the tool loads a separate ini):
+  set:Sec.Key=V[,Sec.Key=V]  (apply + reload shaders)  setfast:... (no reload)  reset (back to the launch settings)  reload (shaders)
+Free camera (Gothic free-look, hero asleep; needs a loaded world):
+  freecam:on|off  freecam_pos:x,y,z[,yawDeg,pitchDeg]  freecam_lookat:x,y,z[,dist]|NAME[,dist] (NAME = alias/waypoint/hero)  camget
+  lookat only aims unless dist is given: then the camera flies along its line of sight to dist units (cm) from the target.
+
 Step language (";" separated): beam:NAME|tp:ALIAS (teleport player to waypoint)  pos  waypoints (dump)
   wait:SEC  key:NAME[+NAME] (game input)  wmkey:NAME (GD3D11 hotkey: f11, num0)  hold:NAME:SEC  text:STR  click:X,Y  shot:LABEL (window capture, png)  eshot:LABEL (engine NUMPAD7 jpg)
   log:SUBSTRING (wait until Log.txt contains it, 120 s)  quit
@@ -37,6 +43,7 @@ SC = {'esc': 1, 'enter': 0x1C, 'space': 0x39, 'tab': 0x0F, 'ctrl': 0x1D, 'shift'
       'num0': 0x52, 'num1': 0x4F, 'num2': 0x50, 'num3': 0x51, 'num4': 0x4B, 'num5': 0x4C, 'num6': 0x4D,
       'num7': 0x47, 'num8': 0x48, 'num9': 0x49}
 EXT = {'up', 'down', 'left', 'right'}
+WM_AUTOMATION = 0x8000 + 0x3D1  # WM_APP + 0x3D1, AutomationInput::WM_AUTOMATION
 VK_NUM7 = 0x67
 VK = {'f1': 0x70, 'f11': 0x7A, 'esc': 0x1B, 'enter': 0x0D, 'num7': 0x67, 'num0': 0x60, 'space': 0x20}
 VK.update({f'f{i}': 0x6F + i for i in range(1, 13)})
@@ -99,6 +106,7 @@ class Game:
         self._ini_backup = None
         self._log_offset = 0
         self.keys = None
+        self._rt_overrides = {}
 
     # ---- settings -------------------------------------------------------------------------------------------
     def apply_settings(self, api, overrides):
@@ -246,6 +254,8 @@ class Game:
         tmp = self.system / 'auto_cmd.tmp'
         tmp.write_text(f'{cid} {text}' + chr(10))
         os.replace(tmp, self.system / 'auto_cmd.txt')  # atomic: the DLL never sees a half-written file
+        self.refresh_window()
+        u32.PostMessageW(self.hwnd, WM_AUTOMATION, 0, 0)  # serve it now on the main thread (works in menus too)
         t0 = time.time()
         while time.time() - t0 < timeout:
             if res.exists():
@@ -262,6 +272,63 @@ class Game:
         print(f'  beam {name}: {r}')
         time.sleep(settle)  # let the world stream in and the camera settle
         return r.startswith('OK')
+
+    # ---- runtime settings (never saved: a separate ini is loaded over the live settings) --------------------------
+    def set_runtime(self, pairs, reload=True):
+        """Apply 'Section.Key=Value' overrides on top of the launch ini without restarting or saving anything."""
+        for item in pairs:
+            sk, v = item.split('=', 1)
+            self._rt_overrides[sk.strip()] = v.strip()
+        return self._apply_runtime(reload)
+
+    def reset_runtime(self, reload=True):
+        self._rt_overrides.clear()
+        return self._apply_runtime(reload)
+
+    def _apply_runtime(self, reload):
+        dst = self.system / 'GD3D11' / 'auto_settings.ini'
+        shutil.copyfile(self.ini, dst)  # the launch ini: the game never saves, so the file is unchanged since launch
+        for sk, v in self._rt_overrides.items():
+            sec, key = sk.split('.', 1)
+            _ini_set(dst, sec, key, v)
+        r = self.cmd('applyini reload' if reload else 'applyini', timeout=120)
+        print(f'  settings {dict(self._rt_overrides)}: {r}')
+        return r.startswith('OK')
+
+    def reload_shaders(self):
+        r = self.cmd('reload', timeout=180)
+        print(f'  reload shaders: {r}')
+        return r.startswith('OK')
+
+    # ---- free camera (Gothic free-look + hero asleep; use freecam:off to give the game back) -----------------
+    def freecam(self, on):
+        r = self.cmd('freecam on' if on else 'freecam off')
+        print(f'  freecam {"on" if on else "off"}: {r}')
+        return r.startswith('OK')
+
+    def freecam_pos(self, args, settle=1.5):
+        r = self.cmd('campos ' + ' '.join(a.strip() for a in args.split(',')))
+        print(f'  campos: {r}')
+        time.sleep(settle)
+        return r.startswith('OK')
+
+    def freecam_lookat(self, args, settle=1.5):
+        """x,y,z[,dist] or NAME[,dist]; NAME = alias from gothic_waypoints.json, a waypoint, or hero."""
+        t = [a.strip() for a in args.split(',')]
+        try:
+            float(t[0])
+            target = ' '.join(t[:3]); rest = t[3:]
+        except ValueError:
+            target = '@' + WAYPOINTS.get(t[0].lower(), t[0]); rest = t[1:]
+        r = self.cmd(f'lookat {target} {" ".join(rest)}'.strip())
+        print(f'  lookat {target}: {r}')
+        time.sleep(settle)
+        return r.startswith('OK')
+
+    def camget(self):
+        r = self.cmd('camget')
+        print(f'  camera: {r}  (x y z yaw pitch; feed to freecam_pos)')
+        return r
 
     def wmkey(self, name):
         """Window-message key (WM_KEYDOWN/UP): reaches GD3D11's own hotkeys (F11 settings, NUMPAD0 shader reload)."""
@@ -336,6 +403,14 @@ class Game:
                 r = self.cmd('waypoints')
                 print('  ' + r)
                 if r.startswith('OK'): shutil.copy(self.system / 'auto_waypoints.txt', self.out / 'waypoints.txt')
+            elif cmd == 'set': print('  ok' if self.set_runtime(arg.split(',')) else '  FAILED')
+            elif cmd == 'setfast': print('  ok' if self.set_runtime(arg.split(','), reload=False) else '  FAILED')
+            elif cmd == 'reset': print('  ok' if self.reset_runtime() else '  FAILED')
+            elif cmd == 'reload': print('  ok' if self.reload_shaders() else '  FAILED')
+            elif cmd == 'freecam': print('  ok' if self.freecam(arg.lower() in ('on', '1', '')) else '  FAILED')
+            elif cmd == 'freecam_pos': print('  ok' if self.freecam_pos(arg) else '  FAILED')
+            elif cmd == 'freecam_lookat': print('  ok' if self.freecam_lookat(arg) else '  FAILED')
+            elif cmd == 'camget': self.camget()
             elif cmd == 'wmkey': self.wmkey(arg.lower())
             elif cmd == 'hold': n, s = arg.split(':'); self.hold(n, float(s))
             elif cmd == 'text': self.text(arg)
@@ -350,6 +425,7 @@ class Game:
         self.quit()
         if self.log_path.exists():
             (self.out / 'Log.txt').write_bytes(self.log_path.read_bytes()[self._log_offset:])
+        (self.system / 'GD3D11' / 'auto_settings.ini').unlink(missing_ok=True)
         self.restore_settings()
 
 

@@ -4136,6 +4136,9 @@ void GothicAPI::SendMessageToGameWindow( UINT msg, WPARAM wParam, LPARAM lParam 
 /** Message-Callback for the main window */
 LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) {
     switch ( msg ) {
+    case AutomationInput::WM_AUTOMATION:
+        AutomationInput::Tick( true );
+        return 0;
     case WM_KEYDOWN:
         Engine::GraphicsEngine->OnKeyDown( wParam );
         switch ( wParam ) {
