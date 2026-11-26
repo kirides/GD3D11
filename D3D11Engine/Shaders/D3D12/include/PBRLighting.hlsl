@@ -135,6 +135,10 @@ static const float kPcfMaxTexels   = 2.0;
 // GetCascadeUVAndBounds blendFactor -> `shadow = lerp(shadow, shadowNext, blendFactor)`).
 static const float kCascadeBlendBand = 0.12;
 
+#ifndef SHADOW_PCF_LITE
+#define SHADOW_PCF_LITE IGPU_TUNING   // cheaper penumbra kernel (see SampleCascadePCF)
+#endif
+
 float SampleCascadePCF( int c, float2 uv, float depth )
 {
     const float texel = 1.0 / ShadowMapSize;
@@ -164,10 +168,20 @@ float SampleCascadePCF( int c, float2 uv, float depth )
     if ( pre == 5.0 ) return 1.0;
 
     float sh = 0.0;
+#if SHADOW_PCF_LITE
+    // Penumbra pixels: 3x3 taps at 1.5 steps (each comparison tap already filters 2x2 texels, so this covers
+    // ~75% of the 5x5's footprint) = 14 fetches in total with the pre-test instead of 30.
+    const float liteStep = pcfStep * 1.5;
+    [unroll] for ( int y = -1; y <= 1; ++y )
+    [unroll] for ( int x = -1; x <= 1; ++x )
+        sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * liteStep, c ), depth );
+    return sh / 9.0;
+#else
     [unroll] for ( int y = -2; y <= 2; ++y )
     [unroll] for ( int x = -2; x <= 2; ++x )
         sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), depth );
     return sh / 25.0;
+#endif
 }
 
 // Returns 1.0 = fully lit, 0.0 = fully occluded. Picks the first cascade whose footprint contains the point
