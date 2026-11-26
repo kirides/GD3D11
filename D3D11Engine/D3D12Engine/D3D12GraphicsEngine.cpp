@@ -205,10 +205,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
         if ( rs.CompressBackBuffer && !rs.GetUseCompressedBackBuffer() ) {
             Logging::Inf( "D3D12: CompressBackBuffer ignored while TAA is active; keeping R16G16B16A16_FLOAT." );
-        } else if ( rs.CompressBackBuffer ) {
+        } else if ( rs.GetUseCompressedBackBuffer() ) {
             if ( m_DeviceCapabilities.TypedUAVLoadAdditionalFormats ) {
                 kSceneColorFormat = DXGI_FORMAT_R11G11B10_FLOAT;
-                Logging::Inf( "D3D12: compressed scene colour (R11G11B10_FLOAT)." );
+                Logging::Inf( "D3D12: compressed scene colour (R11G11B10_FLOAT){}.",
+                    rs.CompressBackBuffer ? "" : ", integrated-GPU tuning" );
             } else {
                 Logging::Wrn( "D3D12: CompressBackBuffer requested but the device lacks "
                     "TypedUAVLoadAdditionalFormats; keeping R16G16B16A16_FLOAT." );

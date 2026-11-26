@@ -2439,7 +2439,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                             settings.DebugSettings.FeatureSet.IntegratedGpuTuningOverride,
                             settings.DebugSettings.FeatureSet.IntegratedGpuTuning,
                             Engine::GraphicsEngine->GetDeviceCapabilities().IntegratedGpu,
-                            "D3D12/Vulkan: cheaper shader permutations for GPUs that share system memory (fewer\nsky-visibility and shadow taps, unused features and dry-weather wetness compiled out).\nAuto is on for integrated GPUs. Reloads shaders; the first time the scene gets wet (rain)\nthey reload once more to add the wetness code back.",
+                            "D3D12/Vulkan: cheaper shader permutations for GPUs that share system memory (fewer\nsky-visibility and shadow taps, unused features and dry-weather wetness compiled out)\nand a compressed R11G11B10 scene colour (not with TAA). Auto is on for integrated GPUs.\nReloads shaders, once more the first time the scene gets wet; the scene colour format\napplies after a restart.",
                             ShaderCategory::All );
 
                         FeatureOverrideRow( "Alias Transient Textures", settings,
