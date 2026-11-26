@@ -1,5 +1,11 @@
 #pragma once
 
+// IGPU_TUNING (global macro from D3D12ShaderBackend::AppendGlobalMacros): 1 on GPUs that share system memory,
+// where registers and bandwidth, not ALU, limit the lit shaders. Defaults the cheaper permutations below.
+#ifndef IGPU_TUNING
+#define IGPU_TUNING 0
+#endif
+
 // Shared Forward+ lighting math for World.hlsl / Vob.hlsl / Skeletal.hlsl — previously triplicated verbatim
 // across all three; now a single source of truth. Ported from the D3D11 feat/pbr branch (Shaders/include/
 // PointLightShadows.h): Cook-Torrance GGX PBR, CSM sun shadow, point-light shadow cubes, and the tiled
@@ -427,6 +433,9 @@ static const float2 kSkyVisDirs[8] = {
     float2( 1.0, 0.0 ), float2( 0.7071, 0.7071 ), float2( 0.0, 1.0 ), float2( -0.7071, 0.7071 ),
     float2( -1.0, 0.0 ), float2( -0.7071, -0.7071 ), float2( 0.0, -1.0 ), float2( 0.7071, -0.7071 )
 };
+#ifndef SKY_VISIBILITY_LITE
+#define SKY_VISIBILITY_LITE IGPU_TUNING   // 9 taps instead of 25
+#endif
 #if SKY_VISIBILITY_LITE
 static const uint  SKYVIS_DIR_STEP = 2;   // 4 directions
 static const uint  SKYVIS_RADII_COUNT = 2;

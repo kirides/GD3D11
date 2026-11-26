@@ -1164,6 +1164,8 @@ struct GothicRendererSettings {
         DebugSettings.FeatureSet.UseMDIOverride = FEATURE_AUTO;
         DebugSettings.FeatureSet.UseLayeredRenderingOverride = FEATURE_AUTO;
         DebugSettings.FeatureSet.UseTransientAliasingOverride = FEATURE_AUTO;
+        DebugSettings.FeatureSet.IntegratedGpuTuningOverride = FEATURE_AUTO;
+        DebugSettings.FeatureSet.IntegratedGpuTuning = false;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1668,7 +1670,11 @@ struct GothicRendererSettings {
             bool UseLayeredRendering;
             // D3D12/Vulkan: render-graph scratch textures placed in one aliased heap instead of committed.
             bool UseTransientAliasing;
+            // Shader permutations tuned for GPUs that share system memory (cheaper shadow/sky-visibility
+            // sampling, fewer registers). Feeds the IGPU_TUNING shader macro; changing it recompiles shaders.
+            bool IntegratedGpuTuning;
 
+            E_FeatureOverride IntegratedGpuTuningOverride;
             E_FeatureOverride EnableDriverExtensionsOverride;
             E_FeatureOverride UseMDIOverride;
             E_FeatureOverride UseLayeredRenderingOverride;

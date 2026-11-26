@@ -39,8 +39,8 @@ SPIRV_ARGS = [
 
 # D3D12ShaderBackend::AppendGlobalMacros adds these to every compile; cover each value once.
 GLOBAL_MACRO_SETS = [
-    [("NORMAL_MAP_RESTORE_Z", "0"), ("NORMAL_MAP_MODE", "1")],
-    [("NORMAL_MAP_RESTORE_Z", "1"), ("NORMAL_MAP_MODE", "2")],
+    [("NORMAL_MAP_RESTORE_Z", "0"), ("NORMAL_MAP_MODE", "1"), ("IGPU_TUNING", "0")],
+    [("NORMAL_MAP_RESTORE_Z", "1"), ("NORMAL_MAP_MODE", "2"), ("IGPU_TUNING", "1")],
 ]
 
 TARGET_ALIASES = {"Shadermodel_VS": "vs_6_6", "Shadermodel_PS": "ps_6_6", "Shadermodel_CS": "cs_6_6",

@@ -551,6 +551,9 @@ namespace {
             m_Caps.RootSignature11 = SerializeVersionedRootSignatureProc() != nullptr
                 && QueryHighestRootSignatureVersion( d ) >= D3D_ROOT_SIGNATURE_VERSION_1_1;
             m_Caps.GpuUploadHeap = m_Allocator->IsGPUUploadHeapSupported();
+            D3D12_FEATURE_DATA_ARCHITECTURE1 architecture = {};
+            if ( SUCCEEDED( d->CheckFeatureSupport( D3D12_FEATURE_ARCHITECTURE1, &architecture, sizeof( architecture ) ) ) )
+                m_Caps.Integrated = architecture.UMA == TRUE;
             m_Caps.AdapterLuid = d->GetAdapterLuid();
             DXGI_ADAPTER_DESC1 adapterDesc = {};
             if ( m_D3D.GetAdapter() && SUCCEEDED( m_D3D.GetAdapter()->GetDesc1( &adapterDesc ) ) ) m_Caps.VendorId = adapterDesc.VendorId;

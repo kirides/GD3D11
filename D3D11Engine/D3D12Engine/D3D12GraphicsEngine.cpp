@@ -153,7 +153,10 @@ XRESULT D3D12GraphicsEngine::Init() {
     m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = caps.TypedUAVLoadAdditionalFormats;
     m_DeviceCapabilities.RayQuery = caps.RayQuery;
     m_DeviceCapabilities.TransientAliasing = caps.VendorId != 0x10DE;
+    m_DeviceCapabilities.IntegratedGpu = caps.Integrated;
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
+    Logging::Inf( "Device is {}integrated; integrated-GPU shader tuning {}.", m_DeviceCapabilities.IntegratedGpu ? "" : "not ",
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.IntegratedGpuTuning ? "on" : "off" );
 
     if ( !CreateUploadObjects() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create upload objects." );

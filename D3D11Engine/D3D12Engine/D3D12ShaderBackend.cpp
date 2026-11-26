@@ -520,6 +520,8 @@ void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list
     static const char* const sNums[] = { "0", "1", "2" };
     list.push_back( { "NORMAL_MAP_RESTORE_Z", s.CompressedNormalsSupport ? "1" : "0" } );
     list.push_back( { "NORMAL_MAP_MODE", sNums[std::clamp<int>( s.AllowNormalmaps, 1, 2 )] } );
+    // Integrated GPUs: shaders pick the cheaper permutations (include/IntegratedGpu.hlsl).
+    list.push_back( { "IGPU_TUNING", s.DebugSettings.FeatureSet.IntegratedGpuTuning ? "1" : "0" } );
 }
 
 bool D3D12ShaderBackend::Reflect( ID3DBlob* code, ID3D12ShaderReflection** ppReflection ) {

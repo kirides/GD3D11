@@ -6278,6 +6278,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "UseMDIOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseMDIOverride ) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseLayeredRenderingOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseLayeredRenderingOverride ) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseTransientAliasingOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseTransientAliasingOverride ) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "IntegratedGpuTuningOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.IntegratedGpuTuningOverride ) ).c_str(), ini.c_str() );
 
     return XR_SUCCESS;
 }
@@ -6615,6 +6616,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DebugSettings.FeatureSet.UseMDIOverride = readFeatureOverride( "UseMDIOverride", ds.DebugSettings.FeatureSet.UseMDIOverride );
         s.DebugSettings.FeatureSet.UseLayeredRenderingOverride = readFeatureOverride( "UseLayeredRenderingOverride", ds.DebugSettings.FeatureSet.UseLayeredRenderingOverride );
         s.DebugSettings.FeatureSet.UseTransientAliasingOverride = readFeatureOverride( "UseTransientAliasingOverride", ds.DebugSettings.FeatureSet.UseTransientAliasingOverride );
+        s.DebugSettings.FeatureSet.IntegratedGpuTuningOverride = readFeatureOverride( "IntegratedGpuTuningOverride", ds.DebugSettings.FeatureSet.IntegratedGpuTuningOverride );
 
         // Fix the resolution if the players maximum resolution got lower
         /*RECT r;

@@ -214,6 +214,7 @@ void GothicRendererSettings::ApplyDeviceCapabilities( const GraphicsDeviceCapabi
     fs.UseMDI = resolve( fs.UseMDIOverride, caps.MultiDrawIndirect );
     fs.UseLayeredRendering = resolve( fs.UseLayeredRenderingOverride, caps.LayeredRendering );
     fs.UseTransientAliasing = resolve( fs.UseTransientAliasingOverride, caps.TransientAliasing );
+    fs.IntegratedGpuTuning = resolve( fs.IntegratedGpuTuningOverride, caps.IntegratedGpu );
 }
 
 // ResetDebugSettings() zeroes the capability bools and the FL10 cascade Lambda/Bias; restore both.

@@ -257,6 +257,8 @@ namespace Rhi {
         bool ShaderStoresAllStages = true;
         /** Hull/domain stages with patch topologies (always on D3D12; Vulkan needs the tessellationShader feature). */
         bool Tessellation = true;
+        /** The GPU shares system memory (D3D12 UMA / Vulkan integrated device type): a mobile or APU iGPU. */
+        bool Integrated = false;
         UINT VendorId = 0;
         LUID AdapterLuid = {};
     };

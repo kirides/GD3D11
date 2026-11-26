@@ -927,15 +927,16 @@ void ImGuiShim::OnResize( INT2 newSize )
 // override is stored; picking one re-resolves the effective value against the live device.
 static void FeatureOverrideRow( const char* label, GothicRendererSettings& settings,
     GothicRendererSettings::E_FeatureOverride& value, const bool& effective, bool deviceSupports,
-    const char* toolTip ) {
+    const char* toolTip, ShaderCategory reloadShaders = ShaderCategory::None ) {
     static const ListItem<GothicRendererSettings::E_FeatureOverride> overrides[] = {
         { "Auto",      GothicRendererSettings::FEATURE_AUTO },
         { "Force Off", GothicRendererSettings::FEATURE_FORCE_OFF },
         { "Force On",  GothicRendererSettings::FEATURE_FORCE_ON },
     };
 
-    if ( ImComboBox( label, overrides, &value, [&settings] {
+    if ( ImComboBox( label, overrides, &value, [&settings, reloadShaders] {
         settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
+        if ( reloadShaders != ShaderCategory::None ) Engine::GraphicsEngine->ReloadShaders( reloadShaders );
     } ) ) {
         ImGui::EndCombo();
     }
@@ -2434,6 +2435,13 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                         "Render the shadow cascades in one layered pass instead of one draw per cascade." );
 
                     if ( Engine::IsModernBackend() ) {
+                        FeatureOverrideRow( "Integrated GPU Tuning", settings,
+                            settings.DebugSettings.FeatureSet.IntegratedGpuTuningOverride,
+                            settings.DebugSettings.FeatureSet.IntegratedGpuTuning,
+                            Engine::GraphicsEngine->GetDeviceCapabilities().IntegratedGpu,
+                            "D3D12/Vulkan: cheaper shader permutations for GPUs that share system memory (fewer\nsky-visibility and shadow taps, fewer registers). Auto is on for integrated GPUs.\nReloads shaders.",
+                            ShaderCategory::All );
+
                         FeatureOverrideRow( "Alias Transient Textures", settings,
                             settings.DebugSettings.FeatureSet.UseTransientAliasingOverride,
                             settings.DebugSettings.FeatureSet.UseTransientAliasing,
