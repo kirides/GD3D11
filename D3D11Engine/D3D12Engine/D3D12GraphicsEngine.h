@@ -1740,6 +1740,11 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_TaaHistory[2];
     UINT m_TaaHistorySrvSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_TaaHistoryUavSlot[2] = { UINT_MAX, UINT_MAX };
+    // The history is always RGBA16F (weight in alpha, full-precision accumulation). With a compressed R11G11B10 scene
+    // colour the resolve also writes its RGB here (scene-colour format, UAV) and this is what gets copied over the scene
+    // colour; otherwise the history itself is. Rests in UNORDERED_ACCESS.
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_TaaSceneOut;
+    UINT m_TaaSceneOutUavSlot = UINT_MAX;
     UINT m_TaaHistoryIndex = 0;
     // TAA needs the PREVIOUS frame's depth for its disocclusion test — nothing else in the frame keeps one, so
     // this is a private snapshot taken at the end of RenderTAA.

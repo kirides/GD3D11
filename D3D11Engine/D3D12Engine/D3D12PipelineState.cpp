@@ -3892,7 +3892,7 @@ bool D3D12PipelineState::CreateTaa() {
     D3D12RootLayout& rs = Layout( "Taa" );
     // Same once-per-frame MotionCB the prepass reads — final long before the TAA resolve binds it.
     rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 0: b0 MotionCB
-    rs.AddConstants( 1, 18, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 TaaCB
+    rs.AddConstants( 1, 19, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 TaaCB
     // s0 linear-clamp: the bicubic/bilinear history fetches. s1 point-clamp: the depth gathers, which must not
     // filter across a depth discontinuity.
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL,

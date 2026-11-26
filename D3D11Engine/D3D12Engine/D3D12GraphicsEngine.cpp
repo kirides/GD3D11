@@ -201,12 +201,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     // Must run BEFORE any Create*() too: every scene PSO bakes kSceneColorFormat into RTVFormats[0].
-    // R11G11B10 drops alpha, which TAA's history weight needs; it is also an optional typed-UAV format.
+    // R11G11B10 drops alpha (TAA keeps its own RGBA16F history for that); it is also an optional typed-UAV format.
     {
         auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
-        if ( rs.CompressBackBuffer && !rs.GetUseCompressedBackBuffer() ) {
-            Logging::Inf( "D3D12: CompressBackBuffer ignored while TAA is active; keeping R16G16B16A16_FLOAT." );
-        } else if ( rs.GetUseCompressedBackBuffer() ) {
+        // TAA keeps its history in its own RGBA16F pair (D3D12Taa.cpp), so it does not need the scene colour's alpha.
+        if ( rs.GetUseCompressedBackBuffer( false ) ) {
             if ( m_DeviceCapabilities.TypedUAVLoadAdditionalFormats ) {
                 kSceneColorFormat = DXGI_FORMAT_R11G11B10_FLOAT;
                 Logging::Inf( "D3D12: compressed scene colour (R11G11B10_FLOAT){}.",

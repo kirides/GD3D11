@@ -46,12 +46,17 @@ namespace {
     // Relative view-Z tolerance for the disocclusion test. Generous enough to survive the sub-pixel reprojection
     // error on a steeply slanted surface, tight enough to reject a genuinely different one.
     constexpr float kTaaDepthTolerance = 0.05f;
+
+    // Independent of the scene colour's format: the accumulated weight lives in the alpha, and 11/10-bit floats would
+    // let quantisation error build up in the history.
+    constexpr DXGI_FORMAT kTaaHistoryFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
 /** (Re)creates the history pair and the private previous-depth snapshot. Called from the same resize path as
     the AO and motion resources. Heap slots persist; only resources and views are rebuilt. */
 bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
     m_TaaResourcesReady = false;
+    m_TaaSceneOut.Reset();
     m_TaaHistoryValid = false;      // freshly allocated garbage until the first resolve writes it
     m_TaaPrevDepthValid = false;
     if ( size.x < 4 || size.y < 4 ) return false;
@@ -63,9 +68,27 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-    // History: same format as the scene colour, which is what lets the result be handed back with a plain
-    // CopyResource instead of a full-screen blit shader.
+    // History: RGBA16F. When the scene colour is RGBA16F too the result is handed back with a plain CopyResource
+    // of the history; when it is compressed, the resolve writes the RGB to m_TaaSceneOut for the same CopyResource.
     for ( UINT i = 0; i < 2; ++i ) {
+        D3D12_RESOURCE_DESC dd = {};
+        dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        dd.Width = static_cast<UINT64>( size.x );
+        dd.Height = static_cast<UINT>( size.y );
+        dd.DepthOrArraySize = 1;
+        dd.MipLevels = 1;
+        dd.Format = kTaaHistoryFormat;
+        dd.SampleDesc.Count = 1;
+        dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_TaaHistory[i].ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
+            Logging::Wrn( "D3D12: failed to create a TAA history buffer ({}x{}).", size.x, size.y );
+            return false;
+        }
+        m_TaaHistory[i]->SetName( i == 0 ? L"TaaHistory0" : L"TaaHistory1" );
+    }
+
+    if ( kSceneColorFormat != kTaaHistoryFormat ) {
         D3D12_RESOURCE_DESC dd = {};
         dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         dd.Width = static_cast<UINT64>( size.x );
@@ -76,11 +99,11 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_TaaHistory[i].ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
-            Logging::Wrn( "D3D12: failed to create a TAA history buffer ({}x{}).", size.x, size.y );
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_TaaSceneOut.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
+            Logging::Wrn( "D3D12: failed to create the TAA scene-colour output ({}x{}).", size.x, size.y );
             return false;
         }
-        m_TaaHistory[i]->SetName( i == 0 ? L"TaaHistory0" : L"TaaHistory1" );
+        m_TaaSceneOut->SetName( L"TaaSceneOut" );
     }
 
     // Private previous-depth snapshot. Same resource desc as m_DepthBuffer so CopyResource is unambiguously
@@ -114,18 +137,25 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
         if ( !ensureSlot( m_TaaHistorySrvSlot[i] ) || !ensureSlot( m_TaaHistoryUavSlot[i] ) ) return false;
     }
     if ( !ensureSlot( m_TaaPrevDepthSrvSlot ) ) return false;
+    if ( m_TaaSceneOut && !ensureSlot( m_TaaSceneOutUavSlot ) ) return false;
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-    srv.Format = kSceneColorFormat;
+    srv.Format = kTaaHistoryFormat;
     srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srv.Texture2D.MipLevels = 1;
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-    uav.Format = kSceneColorFormat;
+    uav.Format = kTaaHistoryFormat;
     uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     for ( UINT i = 0; i < 2; ++i ) {
         device->CreateShaderResourceView( m_TaaHistory[i].Get(), &srv, GetSrvCpuHandle( m_TaaHistorySrvSlot[i] ) );
         device->CreateUnorderedAccessView( m_TaaHistory[i].Get(), nullptr, &uav, GetSrvCpuHandle( m_TaaHistoryUavSlot[i] ) );
+    }
+    if ( m_TaaSceneOut ) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC outUav = {};
+        outUav.Format = kSceneColorFormat;
+        outUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        device->CreateUnorderedAccessView( m_TaaSceneOut.Get(), nullptr, &outUav, GetSrvCpuHandle( m_TaaSceneOutUavSlot ) );
     }
 
     D3D12_SHADER_RESOURCE_VIEW_DESC depthSrv = {};
@@ -266,9 +296,10 @@ void D3D12GraphicsEngine::RenderTAA() {
         float    DepthTolerance;
         uint32_t HistoryValid;
         float    PrevJitter[2];
+        uint32_t SceneOutIndex;
     } cb = {};
-    static_assert( sizeof( TaaConstants ) == 18 * sizeof( uint32_t ),
-        "TaaConstants must match TAAResolve.hlsl's b1 TaaCB and the 18 root constants pushed below" );
+    static_assert( sizeof( TaaConstants ) == 19 * sizeof( uint32_t ),
+        "TaaConstants must match TAAResolve.hlsl's b1 TaaCB and the 19 root constants pushed below" );
 
     cb.Resolution[0] = static_cast<float>( m_Resolution.x );
     cb.Resolution[1] = static_cast<float>( m_Resolution.y );
@@ -291,21 +322,23 @@ void D3D12GraphicsEngine::RenderTAA() {
     cb.DepthTolerance = kTaaDepthTolerance;
     cb.PrevJitter[0] = m_TaaPrevJitterPixels.x;
     cb.PrevJitter[1] = m_TaaPrevJitterPixels.y;
-    m_CmdList->SetComputeRoot32BitConstants( 1, 18, &cb, 0 );
+    cb.SceneOutIndex = m_TaaSceneOut ? m_TaaSceneOutUavSlot : UINT_MAX;
+    m_CmdList->SetComputeRoot32BitConstants( 1, 19, &cb, 0 );
 
     m_CmdList->Dispatch( ( m_Resolution.x + 7 ) / 8, ( m_Resolution.y + 7 ) / 8, 1 );
 
-    // Hand the result back to the scene colour for bloom/tonemap. Both are kSceneColorFormat, so this is a
-    // straight CopyResource. NOTE: it also overwrites the scene colour's ALPHA with the TAA confidence weight.
-    // Nothing downstream on this backend reads scene-colour alpha (bloom, luminance and the tonemap all take
-    // .rgb), and the fog composition only preserves alpha rather than consuming it.
+    // Hand the result back to the scene colour for bloom/tonemap with a straight CopyResource: of the history when
+    // the scene colour is RGBA16F too (NOTE: that also overwrites the scene colour's ALPHA with the TAA confidence
+    // weight; nothing downstream reads scene-colour alpha: bloom, luminance and the tonemap take .rgb, and the fog
+    // composition only preserves it), of m_TaaSceneOut when the scene colour is compressed.
+    Rhi::Resource* copySource = m_TaaSceneOut ? m_TaaSceneOut.Get() : m_TaaHistory[writeIdx].Get();
     {
-        D3D12ResourceTransition toCopy[2] = { { m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12ResourceTransition toCopy[2] = { { copySource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_COPY_SOURCE } };
         UINT n = 1;
         if ( SceneColorTransition( D3D12_RESOURCE_STATE_COPY_DEST, toCopy[n] ) ) ++n;
         m_CmdList->TransitionBarriers( toCopy, n );
-        m_CmdList->CopyResource( m_SceneColor.Get(), m_TaaHistory[writeIdx].Get() );
+        m_CmdList->CopyResource( m_SceneColor.Get(), copySource );
     }
 
     // Snapshot this frame's depth for the NEXT frame's disocclusion test. Nothing else in the frame keeps a
@@ -323,7 +356,7 @@ void D3D12GraphicsEngine::RenderTAA() {
     // Rest states for the next frame: history back to UAV (both slots), scene colour back to RENDER_TARGET.
     {
         D3D12ResourceTransition rest[3] = {
-            { m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { copySource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
             { m_TaaHistory[readIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
         };
         UINT n = 2;

@@ -1703,8 +1703,10 @@ struct GothicRendererSettings {
 
     // TAA stores its accumulated weight in the history alpha, which R11G11B10 lacks. The integrated-GPU tuning
     // compresses the scene colour too (half the bytes in every post pass); the format is fixed at startup.
-    bool GetUseCompressedBackBuffer() const {
-        return ( CompressBackBuffer || DebugSettings.FeatureSet.IntegratedGpuTuning ) && AntiAliasingMode != E_AntiAliasingMode::AA_TAA;
+    // taaNeedsAlpha = false: D3D12 keeps its TAA history in its own RGBA16F pair, so TAA no longer blocks it there.
+    bool GetUseCompressedBackBuffer( bool taaNeedsAlpha = true ) const {
+        return ( CompressBackBuffer || DebugSettings.FeatureSet.IntegratedGpuTuning )
+            && ( !taaNeedsAlpha || AntiAliasingMode != E_AntiAliasingMode::AA_TAA );
     }
 
     // FSR 2/3 are temporal: they replace the TAA resolve and need AA_FSR. FSR 1 is spatial.
