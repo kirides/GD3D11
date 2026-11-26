@@ -909,6 +909,9 @@
     <ClInclude Include="WorldTessOverrides.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="AutomationInput.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1295,6 +1298,9 @@
     </ClCompile>
     <ClCompile Include="WorldTessOverrides.cpp">
       <Filter>Engine\GAPI</Filter>
+    </ClCompile>
+    <ClCompile Include="AutomationInput.cpp">
+      <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>

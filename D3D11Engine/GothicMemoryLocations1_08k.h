@@ -581,6 +581,7 @@ struct GothicMemoryLocations {
 
     struct zCWorld {
         static const unsigned int Render = 0x005F3EC0;
+        static const unsigned int Offset_WayNet = 0x78;
         static const unsigned int LoadWorld = 0x005F8A00;
         static const unsigned int VobRemovedFromWorld = 0x005F64C0;
         static const unsigned int VobAddedToWorld = 0x005F6360;
@@ -617,6 +618,7 @@ struct GothicMemoryLocations {
 
     struct oCNPC {
         static const unsigned int ResetPos = 0x0074CED0;
+        static const unsigned int BeamTo = 0x00693B10; // int __thiscall (const zSTRING& waypoint/freepoint/vob name)
         static const unsigned int Enable = 0x006A2000;
         static const unsigned int Disable = 0x006A1D20;
         static const unsigned int InitModel = 0x00695020;

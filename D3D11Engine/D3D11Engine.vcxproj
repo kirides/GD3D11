@@ -1195,6 +1195,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D12Engine\D3D12VertexPullSelfTest.h" />
     <ClInclude Include="SkyWeather.h" />
     <ClInclude Include="WorldTessOverrides.h" />
+    <ClInclude Include="AutomationInput.h" />
     <ClInclude Include="D3D12Engine\D3D12Device.h" />
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h" />
     <ClInclude Include="D3D12Engine\D3D12EngineCommon.h" />
@@ -1437,6 +1438,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11ShaderManager.cpp" />
     <ClCompile Include="SkyWeather.cpp" />
     <ClCompile Include="WorldTessOverrides.cpp" />
+    <ClCompile Include="AutomationInput.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp" />
     <ClCompile Include="HookedFunctions.cpp" />
     <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">

@@ -43,6 +43,7 @@
 #include "D3D7\MyDirect3DDevice7.h"
 #include "GVegetationBox.h"
 #include "oCNPC.h"
+#include "AutomationInput.h"
 #include "oCVisFX.h"
 #include "zCMeshSoftSkin.h"
 #include "zCVobLight.h"
@@ -615,6 +616,7 @@ void GothicAPI::UpdateTextureMaxSize() {
 void GothicAPI::OnWorldUpdate() {
     ZoneScopedN( "GothicAPI::OnWorldUpdate" );
     ++FrameNumber;
+    AutomationInput::Tick();
 #if BUILD_SPACER
     zCBspBase* rootBsp = oCGame::GetGame()->_zCSession_world->GetBspTree()->GetRootNode();
     BspInfo* root = &State->BspLeafVobLists[rootBsp];
