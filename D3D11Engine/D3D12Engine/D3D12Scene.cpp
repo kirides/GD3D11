@@ -3156,7 +3156,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 			BuildHiZ();
 			CullVobsGPU();
 		}
-	    DrawVobDepthPrepass();
+	    {
+		    const D3D12GpuTimerScope vobTimer( m_GpuTimers.get(), m_CmdList, "vob prepass" );
+		    DrawVobDepthPrepass();
+	    }
 	    DrawSkeletalDepthPrepass();
 		// Vegetation last in the prepass — after the GPU VOB cull, which must see world-mesh-only depth, and
 		// after every other prepass writer, so the grass cards' alpha-tested fill is rejected early wherever
@@ -3222,7 +3225,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal (color)" );
 		    DrawSkeletalColor();   // base meshes + node attachments, lit through the tile grid (both lists)
 	    }
-	    DrawVobsInstanced();
+	    {
+		    const D3D12GpuTimerScope vobTimer( m_GpuTimers.get(), m_CmdList, "vob lit" );
+		    DrawVobsInstanced();
+	    }
 	    DrawVegetation();
     }
 
