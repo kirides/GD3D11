@@ -1051,7 +1051,7 @@ struct GothicRendererSettings {
         HeightMapRange = 8000.0f;
         HeightMapPomSteps = 24;
         HeightMapSilhouettes = true;
-        WaterSeaState = 1.0f;
+        WaterSeaState = 0.0f;
         WaterWaveScale = 1.0f;
         WaterChoppiness = 1.0f;
         WaterWindAngle = 0.0f;
