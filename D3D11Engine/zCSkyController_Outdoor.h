@@ -281,6 +281,21 @@ public:
 #endif
     }
 
+    /** A thunderstorm: oCSkyControler_Barrier's own gate for the lightning bolts (rain above half, not snow). */
+    bool IsThunderstorm() {
+        return GetRenderLighting() && GetRainFXWeight() > 0.5f && GetWeatherType() != zTWEATHER_SNOW;
+    }
+
+    /** zrenderMan.hintLightning, the barrier's per-frame flash; only trusted while the storm that sets it lasts. */
+    bool IsLightningFlashing() {
+        constexpr unsigned int hintAddr = GothicMemoryLocations::zCSkyController::ADDR_HintLightning;
+        if constexpr ( hintAddr == 0 ) {
+            return false;
+        } else {
+            return IsThunderstorm() && *reinterpret_cast<int*>( hintAddr ) != 0;
+        }
+    }
+
     int GetRainingCounter() {
 #ifndef BUILD_GOTHIC_1_08k
         return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_RainingCounter ));

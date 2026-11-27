@@ -652,14 +652,25 @@ void GothicAPI::OnWorldUpdate() {
         const auto& rs = RendererState.RendererSettings;
         // The wind wanders up to ~55 degrees around WaterWindAngle over the game days; eased, so day wraps and sleeping don't snap it
         float driftTarget = 0.0f;
+        float weatherSeaTarget = 0.0f;
         zCWorld* gameWorld = oCGame::GetGame() ? oCGame::GetGame()->_zCSession_world : nullptr;
-        if ( zCSkyController_Outdoor* sky = ( rs.WaterWindDrift && gameWorld ) ? gameWorld->GetSkyControllerOutdoor() : nullptr ) {
-            const float days = sky->GetDayCounter() + sky->GetMasterTime();
-            driftTarget = 0.6f * std::sin( 6.2831853f * days * 0.9f + 1.3f ) + 0.35f * std::sin( 6.2831853f * days * 0.37f + 4.1f );
+        if ( zCSkyController_Outdoor* sky = gameWorld ? gameWorld->GetSkyControllerOutdoor() : nullptr ) {
+            if ( rs.WaterWindDrift ) {
+                const float days = sky->GetDayCounter() + sky->GetMasterTime();
+                driftTarget = 0.6f * std::sin( 6.2831853f * days * 0.9f + 1.3f ) + 0.35f * std::sin( 6.2831853f * days * 0.37f + 4.1f );
+            }
+            // Rain roughens the sea towards 2, a thunderstorm towards 3; snow leaves it alone
+            if ( sky->GetWeatherType() == zTWEATHER_RAIN ) {
+                const float rain = std::clamp( sky->GetRainFXWeight() / 0.85f, 0.0f, 1.0f );
+                weatherSeaTarget = rain * ( sky->GetRenderLighting() ? 3.0f : 2.0f );
+            }
         }
         OceanFFT::Surface& sea = OceanFFT::GetSurface();
-        const float ease = 1.0f - std::exp( -std::min( GetFrameTimeSec(), 0.1f ) / 10.0f );
+        const float frameSec = std::min( GetFrameTimeSec(), 0.1f );
+        const float ease = 1.0f - std::exp( -frameSec / 10.0f );
         sea.SetWindDrift( sea.WindDrift() + ( driftTarget - sea.WindDrift() ) * ease );
+        const float seaEase = 1.0f - std::exp( -frameSec / 40.0f );   // the sea builds up and settles over about a minute
+        sea.SetWeatherSeaState( sea.WeatherSeaState() + ( weatherSeaTarget - sea.WeatherSeaState() ) * seaEase );
         OceanFFT::GetSurface().Refresh( FeatureLevel10Compatibility ? 0 : static_cast<int>( rs.WaterSimulation ), rs.WaterSeaState, rs.WaterWindAngle,
             rs.WaterWaveScale, rs.WaterChoppiness, Engine::IsModernBackend() ? 2 : 1 );
     }

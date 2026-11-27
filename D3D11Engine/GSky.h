@@ -44,7 +44,7 @@ struct MoonLightInfo {
     XMFLOAT3 LightColor = { 0.0f, 0.0f, 0.0f }; // gamma-space direct moonlight, 0 unless the moon is the main light
     float GlintVisibility = 0.0f;               // strength of the moon's reflection on water
     float DiscVisibility = 0.0f;                // how visible the moon disc is in the sky, day or night
-    XMFLOAT3 NightFill = { 0.0f, 0.0f, 0.0f };  // gamma-space indirect night light for outdoor worlds
+    XMFLOAT3 NightFill = { 0.0f, 0.0f, 0.0f };  // gamma-space outdoor night light + lightning flash
     XMFLOAT3 Tint = { 0.42f, 0.56f, 1.0f };     // LightColor = Tint * Intensity
     float Intensity = 0.0f;
     bool IsMainLight = false;                   // the moon drives the shadow cascades instead of the sun

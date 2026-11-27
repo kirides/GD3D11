@@ -757,7 +757,7 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         "Physically based sea waves with choppy crests and whitecaps, on the sea only. Needs hardware tessellation and compute shaders; uses video memory. Switching it on from Off takes effect on the next world load." );
     ImGui::BeginDisabled( settings.WaterSimulation == GothicRendererSettings::WATER_SIM_OFF );
     SliderFloatRow( "Sea State", "##WaterSeaState", &settings.WaterSeaState, 0.0f, 3.0f, "%.1f",
-        "0 = calm, 1 = moderate, 2 = rough, 3 = storm." );
+        "0 = calm, 1 = moderate, 2 = rough, 3 = storm. Rain roughens the sea towards 2, thunderstorms towards 3." );
     SliderFloatRow( "Wave Height", "##WaterWaveScale", &settings.WaterWaveScale, 0.0f, 3.0f );
     SliderFloatRow( "Wave Choppiness", "##WaterChoppiness", &settings.WaterChoppiness, 0.0f, 2.0f );
     SliderFloatRow( "Wind Direction", "##WaterWindAngle", &settings.WaterWindAngle, -180.0f, 180.0f, "%.0f" );

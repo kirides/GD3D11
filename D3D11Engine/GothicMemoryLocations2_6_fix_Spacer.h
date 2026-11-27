@@ -144,6 +144,7 @@ struct GothicMemoryLocations {
         static const unsigned int VTBL_RenderSkyPre = 27; //0x6C / 4
         static const unsigned int VTBL_RenderSkyPost = (0x78 / 4);
         static const unsigned int ClearBackground = 0;
+        static const unsigned int ADDR_HintLightning = 0; // no zrenderMan.hintLightning in this build
     };
 
     struct zCParticleEmitter {

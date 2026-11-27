@@ -82,6 +82,9 @@ public:
     /** Rotation of the whole sea (radians), so the wind direction can drift without rebuilding the spectrum. */
     void SetWindDrift( float radians ) { m_Drift = radians; }
     float WindDrift() const { return m_Drift; }
+    /** Sea state the weather asks for (rain 2, thunderstorm 3); Refresh uses the rougher of it and the setting. */
+    void SetWeatherSeaState( float level ) { m_WeatherSea = level; }
+    float WeatherSeaState() const { return m_WeatherSea; }
     /** Crest-to-trough height (world units) of the swell the coast simulation runs in near land, from this sea's wave height. */
     float SwellHeight() const { return m_SwellHeight; }
 
@@ -106,6 +109,7 @@ private:
     std::vector<Mode> m_Modes;
     double m_Seconds = 0.0;
     float m_Drift = 0.0f;
+    float m_WeatherSea = 0.0f;
     float m_SwellHeight = 22.0f;
     float m_Wrapped = 0.0f;
     std::chrono::steady_clock::time_point m_Last{};

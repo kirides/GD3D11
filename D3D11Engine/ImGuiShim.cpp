@@ -1,4 +1,5 @@
 #include "ImGuiShim.h"
+#include "OceanSpectrum.h"
 #include "StaticLightFarField.h"
 #include "GSky.h"
 #include "oCGame.h"
@@ -1233,6 +1234,8 @@ void ImGuiShim::RenderSettingsWindow()
                     settings.WaterSimulation = (GothicRendererSettings::E_WaterSimulation)sim;
                 ImGui::SetItemTooltip( "FFT sea waves on MT_Ocean water; the quality tier reallocates the simulation." );
                 ImGui::SliderFloat( "Sea state", &settings.WaterSeaState, 0.0f, 3.0f );
+                ImGui::SetItemTooltip( "Minimum; rain raises it towards 2, a thunderstorm towards 3 (weather now: %.2f).",
+                    OceanFFT::GetSurface().WeatherSeaState() );
                 ImGui::SliderFloat( "Wave height", &settings.WaterWaveScale, 0.0f, 3.0f );
                 ImGui::SliderFloat( "Wave choppiness", &settings.WaterChoppiness, 0.0f, 2.0f );
                 ImGui::SliderFloat( "Wind direction", &settings.WaterWindAngle, -180.0f, 180.0f );

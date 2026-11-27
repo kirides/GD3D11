@@ -503,6 +503,11 @@ MoonLightInfo GSky::GetMoonLight() {
     out.Intensity = kMoonLightStrength * moonVisibility;
     out.LightColor = XMFLOAT3( out.Tint.x * out.Intensity, out.Tint.y * out.Intensity, out.Tint.z * out.Intensity );
     out.NightFill = XMFLOAT3( kNightFillColor.x * night, kNightFillColor.y * night, kNightFillColor.z * night );
+    // ZenGin's lightning flash (ADDSMOOTH on outdoor polys) rides the same outdoor fill, so every backend gets it
+    if ( sc->IsLightningFlashing() ) {
+        constexpr XMFLOAT3 kLightningFlash = { 0.55f, 0.60f, 0.70f };
+        out.NightFill = XMFLOAT3( out.NightFill.x + kLightningFlash.x, out.NightFill.y + kLightningFlash.y, out.NightFill.z + kLightningFlash.z );
+    }
     out.GlintVisibility = out.AboveHorizonFade * night * fog * ( 1.0f - rain );
     out.DiscVisibility = out.AboveHorizonFade * fog * ( 1.0f - rain );
     return out;

@@ -176,6 +176,7 @@ struct GothicMemoryLocations {
         static const unsigned int VTBL_RenderSkyPost = 21;
         static const unsigned int static_skyEffectsEnabled = 0x887EDC; // int*
         static const unsigned int ClearBackground = 0;
+        static const unsigned int ADDR_HintLightning = 0; // G1's zCRenderManager has no hintLightning
     };
 
     struct zCParticleEmitter {

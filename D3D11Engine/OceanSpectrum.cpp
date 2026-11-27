@@ -277,7 +277,9 @@ void Surface::Refresh( int simulation, float seaState, float windAngleDeg, float
         return;
     }
     const int quality = std::min( simulation - 1, maxQuality );
-    SeaState sea = SeaStateForLevel( seaState );
+    // Stepped so an easing weather sea rebuilds the spectrum every few seconds, not every frame
+    const float weatherSea = std::round( m_WeatherSea * 10.0f ) * 0.1f;
+    SeaState sea = SeaStateForLevel( std::max( seaState, weatherSea ) );
     sea.windAngle = windAngleDeg * 0.0174532925f;
     sea.swellAngle = sea.windAngle + 0.4f;
     sea.scale = waveScale;

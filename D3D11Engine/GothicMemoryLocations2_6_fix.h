@@ -281,6 +281,8 @@ struct GothicMemoryLocations {
         static const unsigned int VTBL_RenderSkyPost = 28;
         static const unsigned int static_skyEffectsEnabled = 0x8A5DB0; // int*
         static const unsigned int ClearBackground = 0x005df930;
+        // int zrenderMan.hintLightning (0x0099AA44 + 0x24): the barrier's lightning flash, 0 = unknown
+        static const unsigned int ADDR_HintLightning = 0x0099AA68;
     };
 
     struct zCParticleEmitter {
