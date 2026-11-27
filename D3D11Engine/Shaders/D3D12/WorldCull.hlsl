@@ -35,6 +35,15 @@ struct WorldCluster
     uint   IndexCount;
 };
 
+// Normal cone (meshopt's): the cluster faces away when dot(normalize(Apex - eye), Axis) >= Cutoff. Cutoff 2 = none.
+struct ClusterCone
+{
+    float3 Apex;
+    float  Cutoff;
+    float3 Axis;
+    float  Pad;
+};
+
 struct WorldMaterial
 {
     uint  Normal;           // 0xFFFFFFFF = none
@@ -80,7 +89,10 @@ cbuffer WorldCullExtCB : register( b1 )
     uint     HiZWidth;
     uint     HiZHeight;
     uint     HiZMipCount;
+    float3   ConeEye;
+    uint     ExtFlags;          // EXT_*
 };
+#define EXT_CONES  1u           // reject clusters whose normal cone faces away from ConeEye
 
 StructuredBuffer<WorldSection>  Sections     : register( t0 );
 StructuredBuffer<WorldMesh>     Meshes       : register( t1 );
@@ -91,6 +103,7 @@ RWByteAddressBuffer             ArgCount     : register( u1 );   // [0] opaque, 
 // Main view: one seen flag per material. Cube view: the bake report, { count, material indices } of the casters
 // left out because their texture is not resident (D3D12PointShadows re-bakes the light once they are).
 RWByteAddressBuffer             Feedback     : register( u2 );
+StructuredBuffer<ClusterCone>   Cones        : register( t4 );
 RWByteAddressBuffer             History      : register( u3 );   // one uint per cluster: visible in the last late phase
 
 #define WORLD_DRAW_COMMAND_STRIDE 36u
@@ -182,10 +195,16 @@ void ReportMissing( uint materialIndex )
 
 groupshared uint gVisible[MAX_CLUSTER_WORDS];
 
+bool IsConeBackfacing( ClusterCone cone )
+{
+    return cone.Cutoff <= 1.0 && dot( normalize( cone.Apex - ConeEye ), cone.Axis ) >= cone.Cutoff;
+}
+
 // The cluster test for this view and phase. Late also records whether the cluster is visible this frame.
 bool CullCluster( uint clusterIndex, WorldCluster c )
 {
     bool visible = IsBoxVisible( c.Min, c.Max );
+    if ( visible && ( ExtFlags & EXT_CONES ) ) visible = !IsConeBackfacing( Cones[clusterIndex] );
     if ( ViewFlags & VIEW_EARLY ) return visible && History.Load( clusterIndex * 4u ) != 0u;
     if ( !( ViewFlags & VIEW_LATE ) ) return visible;
     if ( visible && HiZMipCount > 0u )

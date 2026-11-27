@@ -2345,6 +2345,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::BeginDisabled( !settings.GpuWorld );
                 ImGui::Checkbox("World occlusion (two-phase Hi-Z)", &settings.GpuWorldOcclusion );
                 ImGui::SetItemTooltip("Draw last frame's visible world clusters first, then test the rest against their Hi-Z");
+                ImGui::Checkbox("World backface cones", &settings.GpuWorldConeCulling );
+                ImGui::SetItemTooltip("Skip world clusters whose triangles all face away from the camera");
                 ImGui::EndDisabled();
 
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );

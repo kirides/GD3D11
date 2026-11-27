@@ -38,6 +38,8 @@ public:
         float Radius = 0.0f;
         D3D12_GPU_VIRTUAL_ADDRESS Report = 0;   // sphere view: where it reports materials it left out (u2)
         Phase MainPhase = Phase::Single;        // main view: early draws last frame's visible clusters, late the rest
+        bool Cones = false;                     // main view: drop clusters facing away from ConeEye
+        DirectX::XMFLOAT3 ConeEye = {};
         DirectX::XMFLOAT4X4 HiZViewProj = {};   // late: the reversed-Z view-proj the Hi-Z was built with (b1 layout)
         UINT HiZIndex = 0, HiZWidth = 0, HiZHeight = 0, HiZMipCount = 0;   // late: 0 mips = no occlusion test
     };
@@ -123,7 +125,7 @@ private:
 
     UINT m_Capacity = 0;   // commands per list
     Microsoft::WRL::ComPtr<Rhi::Resource> m_Sections, m_Meshes, m_Clusters, m_MaterialBuffer, m_Seen;
-    Microsoft::WRL::ComPtr<Rhi::Resource> m_History;   // per cluster: main-view visibility
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_Cones, m_History;   // per cluster: normal cone, main-view visibility
     Microsoft::WRL::ComPtr<Rhi::Resource> m_Args[kViews], m_ArgCount[kViews];
     bool m_ArgsDrawable[kViews] = {};   // Args + ArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
     bool m_SeenReadable = false;        // m_Seen in COPY_SOURCE, else UNORDERED_ACCESS

@@ -33,18 +33,22 @@ namespace {
         uint32_t DefaultOrm, MaterialCount;
         int32_t  CamSectionX, CamSectionY, SectionGridRadius;
     };
+    struct ConeGpu { XMFLOAT3 Apex; float Cutoff; XMFLOAT3 Axis; float Pad; };
     struct WorldCullExtCB {
         XMFLOAT4X4 HiZViewProj;
         uint32_t HiZIndex, HiZWidth, HiZHeight, HiZMipCount;
+        XMFLOAT3 ConeEye;
+        uint32_t ExtFlags;
     };
     static_assert( sizeof( SectionGpu ) == 32 && sizeof( MeshGpu ) == 40 && sizeof( ClusterGpu ) == 32, "WorldCull.hlsl structs" );
-    static_assert( sizeof( WorldCullExtCB ) == 80, "WorldCull.hlsl WorldCullExtCB" );
+    static_assert( sizeof( ConeGpu ) == 32 && sizeof( WorldCullExtCB ) == 96, "WorldCull.hlsl ClusterCone / WorldCullExtCB" );
     static_assert( sizeof( WorldCullCB ) == 31 * sizeof( uint32_t ), "CreateWorldCull's 31 root constants" );
 
     constexpr uint32_t kMeshMain = 1u, kMeshCaster = 2u, kMeshPoint = 4u;
     constexpr uint32_t kMaterialAlpha = 1u, kMaterialReady = 2u;
     constexpr uint32_t kViewMainFlag = 1u, kViewNoFrustum = 2u, kViewFeedback = 4u, kViewGridRadius = 8u;
     constexpr uint32_t kViewSphere = 16u, kViewCube = 32u, kViewEarly = 64u, kViewLate = 128u;
+    constexpr uint32_t kExtCones = 1u;
     constexpr UINT kArgCountBytes = 16;   // opaque count, alpha count, drawn indices, pad
     constexpr uint32_t kTouchInterval = 30;       // frames between CacheIn touches of a seen material
     constexpr uint32_t kResolvesPerFrame = 64;
@@ -74,6 +78,56 @@ namespace {
     }
 
     bool IsValidBox( const zTBBox3D& b ) { return b.Min.x <= b.Max.x && b.Min.y <= b.Max.y && b.Min.z <= b.Max.z; }
+
+    /** meshopt_computeClusterBounds' normal cone without its 256-vertex limit; the axis is the mean normal. With
+        clockwise front faces in a left-handed space, cross(p1 - p0, p2 - p0) points out of the front face. */
+    ConeGpu ComputeCone( const WorldMeshInfo& mesh, uint32_t first, uint32_t count, const zTBBox3D& box ) {
+        const ConeGpu none = { {}, 2.0f, { 0.0f, 1.0f, 0.0f }, 0.0f };
+        const std::vector<WorldVertexCPU>* cpu = mesh.GetCpuVertices();
+        const size_t vertexCount = cpu ? cpu->size() : mesh.Vertices.size();
+        auto position = [&]( VERTEX_INDEX i ) {
+            const float3& p = cpu ? ( *cpu )[i].Position : mesh.Vertices[i].Position;
+            return XMVectorSet( p.x, p.y, p.z, 0.0f );
+            };
+        static thread_local std::vector<XMFLOAT4> planes;
+        planes.clear();
+        XMVECTOR sum = XMVectorZero();
+        const size_t end = std::min<size_t>( static_cast<size_t>( first ) + count, mesh.Indices.size() );
+        for ( size_t t = first; t + 2 < end; t += 3 ) {
+            const VERTEX_INDEX i0 = mesh.Indices[t], i1 = mesh.Indices[t + 1], i2 = mesh.Indices[t + 2];
+            if ( i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount ) return none;
+            const XMVECTOR p0 = position( i0 );
+            const XMVECTOR n = XMVector3Cross( XMVectorSubtract( position( i1 ), p0 ), XMVectorSubtract( position( i2 ), p0 ) );
+            const float area = XMVectorGetX( XMVector3Length( n ) );
+            if ( area <= 1e-12f ) continue;   // degenerate triangles are invisible anyway
+            const XMVECTOR nn = XMVectorScale( n, 1.0f / area );
+            XMFLOAT4 plane;
+            XMStoreFloat4( &plane, XMVectorSetW( nn, -XMVectorGetX( XMVector3Dot( nn, p0 ) ) ) );
+            planes.push_back( plane );
+            sum = XMVectorAdd( sum, nn );
+        }
+        const float sumLength = XMVectorGetX( XMVector3Length( sum ) );
+        if ( planes.empty() || sumLength <= 1e-6f ) return none;
+        const XMVECTOR axis = XMVectorScale( sum, 1.0f / sumLength );
+        float minDot = 1.0f;
+        for ( const XMFLOAT4& pl : planes ) minDot = std::min( minDot, XMVectorGetX( XMVector3Dot( XMLoadFloat4( &pl ), axis ) ) );
+        if ( minDot <= 0.1f ) return none;   // wider than ~168 degrees: useless, and the apex gets unstable
+
+        // The apex lies behind every triangle's plane, on the axis through the box centre.
+        const XMVECTOR center = XMVectorScale( XMVectorAdd( XMLoadFloat3( &box.Min ), XMLoadFloat3( &box.Max ) ), 0.5f );
+        float maxT = 0.0f;
+        for ( const XMFLOAT4& pl : planes ) {
+            const XMVECTOR n = XMLoadFloat4( &pl );
+            const float dc = XMVectorGetX( XMVector3Dot( center, n ) ) + pl.w;
+            maxT = std::max( maxT, dc / XMVectorGetX( XMVector3Dot( axis, n ) ) );
+        }
+        ConeGpu cone;
+        XMStoreFloat3( &cone.Apex, XMVectorSubtract( center, XMVectorScale( axis, maxT ) ) );
+        XMStoreFloat3( &cone.Axis, axis );
+        cone.Cutoff = sqrtf( 1.0f - minDot * minDot );
+        cone.Pad = 0.0f;
+        return cone;
+    }
 }
 
 D3D12GpuWorld::D3D12GpuWorld( D3D12GraphicsEngine& engine ) : m_E( engine ) {}
@@ -99,7 +153,7 @@ void D3D12GpuWorld::Reset() {
     m_MeshCount = m_ClusterCount = m_SectionCount = 0;
     m_Capacity = 0;
     for ( ComPtr<Rhi::Resource>* r : { std::addressof( m_Sections ), std::addressof( m_Meshes ), std::addressof( m_Clusters ),
-              std::addressof( m_MaterialBuffer ), std::addressof( m_Seen ), std::addressof( m_History ) } )
+              std::addressof( m_MaterialBuffer ), std::addressof( m_Seen ), std::addressof( m_Cones ), std::addressof( m_History ) } )
         if ( *r ) m_E.QueueResourceForRelease( std::move( *r ) );
     for ( UINT v = 0; v < kViews; ++v ) {
         if ( m_Args[v] ) m_E.QueueResourceForRelease( std::move( m_Args[v] ) );
@@ -146,6 +200,7 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
     std::vector<SectionGpu> sections;
     std::vector<MeshGpu> meshes;
     std::vector<ClusterGpu> clusters;
+    std::vector<ConeGpu> cones;
     std::map<std::pair<zCMaterial*, MaterialInfo*>, uint32_t> materialIndex;
     std::vector<MeshCluster> sorted;
     for ( auto& [x, row] : worldSections ) {
@@ -184,9 +239,12 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
                 for ( const MeshCluster& c : sorted ) next = ( c.IndexOffset == next ) ? next + c.IndexCount : UINT32_MAX;
                 if ( sorted.empty() || next != mesh->Indices.size() ) {
                     clusters.push_back( { box.Min, mesh->BaseIndexLocation, box.Max, static_cast<uint32_t>( mesh->Indices.size() ) } );
+                    cones.push_back( ComputeCone( *mesh, 0, static_cast<uint32_t>( mesh->Indices.size() ), box ) );
                 } else {
-                    for ( const MeshCluster& c : sorted )
+                    for ( const MeshCluster& c : sorted ) {
                         clusters.push_back( { c.Bounds.Min, mesh->BaseIndexLocation + c.IndexOffset, c.Bounds.Max, c.IndexCount } );
+                        cones.push_back( ComputeCone( *mesh, c.IndexOffset, c.IndexCount, c.Bounds ) );
+                    }
                 }
                 mg.ClusterCount = static_cast<uint32_t>( clusters.size() ) - mg.ClusterFirst;
                 meshes.push_back( mg );
@@ -223,12 +281,14 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
     const UINT64 meshBytes = meshes.size() * sizeof( MeshGpu );
     const UINT64 clusterBytes = clusters.size() * sizeof( ClusterGpu );
     const UINT64 materialBytes = materials.size() * sizeof( MaterialGpu );
+    const UINT64 coneBytes = cones.size() * sizeof( ConeGpu );
     const UINT64 historyBytes = clusters.size() * sizeof( uint32_t );
     bool ok = make( sectionBytes, false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuWorldSections", m_Sections )
         && make( meshBytes, false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuWorldMeshes", m_Meshes )
         && make( clusterBytes, false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuWorldClusters", m_Clusters )
         && make( materialBytes, false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuWorldMaterials", m_MaterialBuffer )
         && make( m_Materials.size() * sizeof( uint32_t ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuWorldSeen", m_Seen )
+        && make( coneBytes, false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuWorldCones", m_Cones )
         && make( historyBytes, true, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuWorldHistory", m_History );
     for ( UINT v = 0; ok && v < kViews; ++v ) {
         ok = make( static_cast<UINT64>( CommandCapacity( v ) ) * 2u * CommandStride( v ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -276,7 +336,7 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
 
     // One-off upload through a temporary buffer, released once this frame retires.
     ComPtr<Rhi::Resource> upload;
-    const D3D12_RESOURCE_DESC ud = BufferDesc( sectionBytes + meshBytes + clusterBytes + materialBytes + historyBytes, false );
+    const D3D12_RESOURCE_DESC ud = BufferDesc( sectionBytes + meshBytes + clusterBytes + materialBytes + coneBytes + historyBytes, false );
     if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, upload.GetAddressOf() ) ) )
         return false;
     uint8_t* p = nullptr;
@@ -286,7 +346,7 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
     const struct { Rhi::Resource* Dst; const void* Src; UINT64 Bytes; } parts[] = {
         { m_Sections.Get(), sections.data(), sectionBytes }, { m_Meshes.Get(), meshes.data(), meshBytes },
         { m_Clusters.Get(), clusters.data(), clusterBytes }, { m_MaterialBuffer.Get(), materials.data(), materialBytes },
-        { m_History.Get(), nullptr, historyBytes } };
+        { m_Cones.Get(), cones.data(), coneBytes }, { m_History.Get(), nullptr, historyBytes } };
     for ( const auto& part : parts ) {
         if ( part.Src ) memcpy( p + at, part.Src, part.Bytes );
         else memset( p + at, 0, part.Bytes );   // no cluster was visible last frame
@@ -299,12 +359,14 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
         { m_Meshes.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
         { m_Clusters.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
         { m_MaterialBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+        { m_Cones.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
         { m_History.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
     } );
     m_E.QueueResourceForRelease( std::move( upload ) );
 
-    Logging::Inf( "D3D12: GPU world built: {} meshes, {} clusters, {} materials, {} sections, {} meshes on the CPU path",
-        m_MeshCount, m_ClusterCount, m_Materials.size(), m_SectionCount, m_Specials.size() );
+    const size_t withCone = std::ranges::count_if( cones, []( const ConeGpu& c ) { return c.Cutoff <= 1.0f; } );
+    Logging::Inf( "D3D12: GPU world built: {} meshes, {} clusters ({} with a normal cone), {} materials, {} sections, {} meshes on the CPU path",
+        m_MeshCount, m_ClusterCount, withCone, m_Materials.size(), m_SectionCount, m_Specials.size() );
     return true;
 }
 
@@ -489,6 +551,7 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
     cmd.SetComputeRootShaderResourceView( 3, m_Clusters->GetGPUVirtualAddress() );
     cmd.SetComputeRootShaderResourceView( 4, m_MaterialBuffer->GetGPUVirtualAddress() );
     cmd.SetComputeRootUnorderedAccessView( 9, m_History->GetGPUVirtualAddress() );
+    cmd.SetComputeRootShaderResourceView( 10, m_Cones->GetGPUVirtualAddress() );
     const UINT frame = m_E.GetFrameIndex();
     for ( UINT i = 0; i < count; ++i ) {
         if ( !views[i].Active ) continue;
@@ -507,6 +570,8 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
         ext.HiZWidth = views[i].HiZWidth;
         ext.HiZHeight = views[i].HiZHeight;
         ext.HiZMipCount = late ? views[i].HiZMipCount : 0u;
+        ext.ConeEye = views[i].ConeEye;
+        ext.ExtFlags = isMain && views[i].Cones ? kExtCones : 0u;
         memcpy( m_ExtCbPtr[frame] + v * kExtCbStride, &ext, sizeof( ext ) );
         cmd.SetComputeRootConstantBufferView( 8, m_ExtCb[frame]->GetGPUVirtualAddress() + v * kExtCbStride );
         cb.SectionRadiusSq = isMain && !gridRadius ? radius * radius : 0.0f;

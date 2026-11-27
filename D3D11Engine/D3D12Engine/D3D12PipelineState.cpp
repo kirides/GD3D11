@@ -4489,6 +4489,7 @@ bool D3D12PipelineState::CreateWorldCull() {
     rs.AddUAV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 7: u2 MaterialSeen
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 8: b1 WorldCullExtCB, per view in an upload ring
     rs.AddUAV( 3, D3D12_SHADER_VISIBILITY_ALL );   // 9: u3 History
+    rs.AddSRV( 4, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 10: t4 Cones (uploaded once)
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) ) return false;   // the Hi-Z
     Cull.WorldCullRootSig = rs.RootSig();
 

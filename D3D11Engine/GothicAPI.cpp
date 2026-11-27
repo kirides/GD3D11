@@ -6264,6 +6264,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "GpuScene", to_string_locale_independent( s.GpuScene ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuWorld", to_string_locale_independent( s.GpuWorld ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuWorldOcclusion", to_string_locale_independent( s.GpuWorldOcclusion ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuWorldConeCulling", to_string_locale_independent( s.GpuWorldConeCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     // Persisted because it is not a live toggle: MorphGpu::IsActive() freezes it at load (it decides how the
     // morph vertex buffers get created), so the only way to turn it off is for the NEXT run.
     WritePrivateProfileStringA( "Debug", "GpuMorphFold", to_string_locale_independent( s.UseGpuMorphFold ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6606,6 +6607,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.GpuScene = GetPrivateProfileBoolA( "Debug", "GpuScene", ds.GpuScene, ini );
         s.GpuWorld = GetPrivateProfileBoolA( "Debug", "GpuWorld", ds.GpuWorld, ini );
         s.GpuWorldOcclusion = GetPrivateProfileBoolA( "Debug", "GpuWorldOcclusion", ds.GpuWorldOcclusion, ini );
+        s.GpuWorldConeCulling = GetPrivateProfileBoolA( "Debug", "GpuWorldConeCulling", ds.GpuWorldConeCulling, ini );
         s.UseGpuMorphFold = GetPrivateProfileBoolA( "Debug", "GpuMorphFold", ds.UseGpuMorphFold, ini );
         s.UseGpuUploadRings = GetPrivateProfileBoolA( "Debug", "GpuUploadRings", ds.UseGpuUploadRings, ini );
         s.VertexPulling = GetPrivateProfileBoolA( "Debug", "VertexPulling", ds.VertexPulling, ini );

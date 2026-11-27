@@ -1008,6 +1008,7 @@ private:
     std::unique_ptr<D3D12GpuWorld> m_GpuWorld;
     bool m_GpuWorldActive = false;
     bool m_GpuWorldTwoPhase = false;   // this frame's main view culls early + late (CULLING_PLAN.md stage 1)
+    bool m_GpuWorldCones = false;      // ...and drops back-facing clusters (stage 2)
     // Skinned bodies (ExSkelVertexStruct) and node attachments (ExVertexStruct), requested by
     // PrepareFrameSkeletals and flushed right after the main view's prepare. See D3D12MeshArena.h.
     std::unique_ptr<D3D12MeshArena> m_SkelArena;

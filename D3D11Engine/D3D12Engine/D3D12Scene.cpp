@@ -3725,10 +3725,12 @@ D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const 
 namespace {
     /** The main view of the GPU world: Gothic's own camera frustum, which the CPU path tests meshes against
         (BuildWorldDrawCommands' playerFrustum). */
-    D3D12GpuWorld::View GpuWorldMainView( D3D12GpuWorld::Phase phase ) {
+    D3D12GpuWorld::View GpuWorldMainView( D3D12GpuWorld::Phase phase, bool cones ) {
         D3D12GpuWorld::View view{};
         view.Active = true;
         view.MainPhase = phase;
+        view.Cones = cones;
+        view.ConeEye = Engine::GAPI->GetCameraPosition();
         if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
             const XMMATRIX viewProj = XMMatrixMultiply( XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoView ) ),
                 XMLoadFloat4x4( &cam->trafoProjection ) );
@@ -3744,14 +3746,17 @@ void D3D12GraphicsEngine::CullGpuWorldMain() {
     const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
     m_GpuWorldTwoPhase = rs.GpuWorldOcclusion && m_HiZReady && m_DepthSrvSlot != UINT_MAX
         && m_Pipelines.Cull.HiZCopyPSO && m_Pipelines.Cull.HiZReducePSO && m_Pipelines.Cull.HiZRootSig;
-    const D3D12GpuWorld::View view = GpuWorldMainView( m_GpuWorldTwoPhase ? D3D12GpuWorld::Phase::Early : D3D12GpuWorld::Phase::Single );
+    // Displaced surfaces can turn front faces around, so no cones while tessellating.
+    m_GpuWorldCones = rs.GpuWorldConeCulling && !m_WorldTessActive;
+    const D3D12GpuWorld::View view = GpuWorldMainView(
+        m_GpuWorldTwoPhase ? D3D12GpuWorld::Phase::Early : D3D12GpuWorld::Phase::Single, m_GpuWorldCones );
     // On failure nothing draws the world this frame: its CPU command set was never built.
     m_GpuWorldActive = m_GpuWorld->Cull( m_CmdList, &view, D3D12GpuWorld::kViewMain, 1 );
     m_GpuWorldTwoPhase = m_GpuWorldTwoPhase && m_GpuWorldActive;
 }
 
 void D3D12GraphicsEngine::CullGpuWorldLate() {
-    D3D12GpuWorld::View view = GpuWorldMainView( D3D12GpuWorld::Phase::Late );
+    D3D12GpuWorld::View view = GpuWorldMainView( D3D12GpuWorld::Phase::Late, m_GpuWorldCones );
     // The same matrices the prepass drew with, so the Hi-Z and the boxes agree.
     const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
     const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
