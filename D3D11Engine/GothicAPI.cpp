@@ -4193,7 +4193,8 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             break;
 
         case VK_NUMPAD1:
-            if ( !Engine::ImGuiHandle->GetIsActive() && !GMPModeActive && Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys )
+            if ( !Engine::ImGuiHandle->GetIsActive() && !GMPModeActive && Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys
+                && GetLoadedWorldInfo() && GetLoadedWorldInfo()->BspTree )   // no world in the main menu
                 SpawnVegetationBoxAt( GetCameraPosition() );
             break;
         }
