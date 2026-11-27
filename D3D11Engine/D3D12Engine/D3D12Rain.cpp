@@ -492,12 +492,14 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
     static_assert( kWetSkyCbOffset + sizeof( WetSkyCBData ) <= 512, "shadow CB overflow" );
     const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
     WetSkyCBData sky = {};
-    XMVECTOR tint = XMLoadFloat3( &set.FogColorMod );
+    GSky* gsky = Engine::GAPI->GetSky();
+    const XMFLOAT3 weatherFog = gsky ? gsky->GetWeatherFogColorMod( set.FogColorMod ) : XMFLOAT3( set.FogColorMod );
+    XMVECTOR tint = XMLoadFloat3( &weatherFog );
     if ( Engine::GAPI->GetFogOverride() > 0.0f )
         tint = Engine::GAPI->GetFogColor();
     tint = XMVectorLerp( tint, XMLoadFloat3( &set.RainFogColor ), std::min( 1.0f, cb.RainFxWeight * 2.0f ) );
     XMStoreFloat3( &sky.SkyTint, tint );
-    if ( GSky* gsky = Engine::GAPI->GetSky() ) {
+    if ( gsky ) {
         sky.SunHeight = gsky->GetAtmosphereCB().AC_LightPos.y;
         const MoonLightInfo moon = gsky->GetMoonLight();
         sky.MoonDir = moon.Direction;
@@ -925,6 +927,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
         Rhi::PipelineState* boundPso = nullptr;
 
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+        BindWorldPull( cmdList, m_Pipelines.World.PullRootParam );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
 
         const D3D12_VERTEX_BUFFER_VIEW vbv = { g_RainShadowVb->GetGpuVirtualAddress(), g_RainShadowVb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
@@ -973,7 +976,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
         // One IA bind for the pass: the VOB mega-buffers + the shadow instance ring this pass' UploadVobs
         // slot wrote into (CPU-culled, never compacted — StartInstanceLocation is absolute).
         BindVobArenaIA( cmdList, m_ShadowVobInstanceBuffer[m_FrameIndex].Get(),
-            m_ShadowInstanceSliceCapacity * kShadowInstanceRingSlots );
+            m_ShadowInstanceSliceCapacity * kShadowInstanceRingSlots, 0, &m_Pipelines.World.VobPull );
         if ( !vobNoAlphaPso ) {
             cmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_RainVobDrawCount,
                 m_RainVobDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -1006,7 +1009,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
         cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
         const D3D12GpuScene& scene = *m_GpuScene;
-        if ( BindVobArenaIA( cmdList, scene.CasterInstances(), scene.CasterInstanceBytes(), D3D12GpuScene::kCasterInstanceStride ) ) {
+        if ( BindVobArenaIA( cmdList, scene.CasterInstances(), scene.CasterInstanceBytes(), D3D12GpuScene::kCasterInstanceStride, &m_Pipelines.World.VobPull ) ) {
             DrawGpuSceneCasters( cmdList, D3D12GpuScene::kCasterViewRain, false );
             if ( vobNoAlphaPso ) cmdList->SetPipelineState( m_ShadowMap.GetVobIndirectCasterPSO() );
             DrawGpuSceneCasters( cmdList, D3D12GpuScene::kCasterViewRain, true );

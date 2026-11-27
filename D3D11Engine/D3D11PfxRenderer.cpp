@@ -294,7 +294,8 @@ void D3D11PfxRenderer::BuildHeightfogCB( HeightfogConstantBuffer& cb ) {
     cb.HF_HeightFalloff = settings.FogHeightFalloff;
 
     float height = settings.FogHeight;
-    XMVECTOR color = XMLoadFloat3( &settings.FogColorMod );
+    const XMFLOAT3 weatherFog = Engine::GAPI->GetSky()->GetWeatherFogColorMod( settings.FogColorMod );
+    XMVECTOR color = XMLoadFloat3( &weatherFog );
 
     float fnear = 15000.0f;
     float ffar = 60000.0f;
@@ -336,7 +337,8 @@ void D3D11PfxRenderer::BuildHeightfogCB( HeightfogConstantBuffer& cb ) {
     XMFLOAT3 FogColorMod;
     XMStoreFloat3( &FogColorMod, XMVectorLerpV( color, XMLoadFloat3( &settings.RainFogColor ), XMVectorSet( std::min( 1.0f, rain * 2.0f ), std::min( 1.0f, rain * 2.0f ), std::min( 1.0f, rain * 2.0f ), 0 ) ) );
     cb.HF_FogColorMod = FogColorMod;
-    cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, settings.RainFogDensity, rain * fogDensityFactorRain );
+    cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, settings.RainFogDensity,
+        std::max( rain, Engine::GAPI->GetSky()->GetWeatherFogDensityWeight() ) * fogDensityFactorRain );
 }
 
 XRESULT D3D11PfxRenderer::RenderPostFXComposition(

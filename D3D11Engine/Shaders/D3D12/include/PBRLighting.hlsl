@@ -1,5 +1,19 @@
 #pragma once
 
+// IGPU_TUNING (global macro from D3D12ShaderBackend::AppendGlobalMacros): 1 on GPUs that share system memory,
+// where registers and bandwidth, not ALU, limit the lit shaders. Defaults the cheaper permutations below.
+#ifndef IGPU_TUNING
+#define IGPU_TUNING 0
+#endif
+// Feature specialisation, only ever set to 0 when IGPU_TUNING is on and the matching setting is off (see
+// D3D12ShaderBackend::AppendGlobalMacros): the code is compiled out so it stops costing registers.
+#ifndef FEAT_RT_SHADOWS
+#define FEAT_RT_SHADOWS 1       // ray-traced sun/point shadow mask decode
+#endif
+#ifndef FEAT_OPAQUE_SSR
+#define FEAT_OPAQUE_SSR 1       // temporal screen-space reflections on opaque surfaces
+#endif
+
 // Shared Forward+ lighting math for World.hlsl / Vob.hlsl / Skeletal.hlsl — previously triplicated verbatim
 // across all three; now a single source of truth. Ported from the D3D11 feat/pbr branch (Shaders/include/
 // PointLightShadows.h): Cook-Torrance GGX PBR, CSM sun shadow, point-light shadow cubes, and the tiled
@@ -37,9 +51,13 @@
 // is the depth prepass' surface may call this: the mask belongs to that surface.
 uint2 LoadRtShadowMask( float2 svposXY )
 {
+#if !FEAT_RT_SHADOWS
+    return uint2( 0, 0 );
+#else
     [branch] if ( RtShadowMaskIndex == 0u ) return uint2( 0, 0 );
     Texture2D<uint2> mask = GD_HEAP( RtShadowMaskIndex - 1u );
     return mask.Load( int3( svposXY, 0 ) );
+#endif
 }
 
 // De-lights diffuse textures by lifting baked shadows and softening baked highlights
@@ -129,6 +147,10 @@ static const float kPcfMaxTexels   = 2.0;
 // GetCascadeUVAndBounds blendFactor -> `shadow = lerp(shadow, shadowNext, blendFactor)`).
 static const float kCascadeBlendBand = 0.12;
 
+#ifndef SHADOW_PCF_LITE
+#define SHADOW_PCF_LITE IGPU_TUNING   // cheaper penumbra kernel (see SampleCascadePCF)
+#endif
+
 float SampleCascadePCF( int c, float2 uv, float depth )
 {
     const float texel = 1.0 / ShadowMapSize;
@@ -158,10 +180,20 @@ float SampleCascadePCF( int c, float2 uv, float depth )
     if ( pre == 5.0 ) return 1.0;
 
     float sh = 0.0;
+#if SHADOW_PCF_LITE
+    // Penumbra pixels: 3x3 taps at 1.5 steps (each comparison tap already filters 2x2 texels, so this covers
+    // ~75% of the 5x5's footprint) = 14 fetches in total with the pre-test instead of 30.
+    const float liteStep = pcfStep * 1.5;
+    [unroll] for ( int y = -1; y <= 1; ++y )
+    [unroll] for ( int x = -1; x <= 1; ++x )
+        sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * liteStep, c ), depth );
+    return sh / 9.0;
+#else
     [unroll] for ( int y = -2; y <= 2; ++y )
     [unroll] for ( int x = -2; x <= 2; ++x )
         sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), depth );
     return sh / 25.0;
+#endif
 }
 
 // Returns 1.0 = fully lit, 0.0 = fully occluded. Picks the first cascade whose footprint contains the point
@@ -427,6 +459,9 @@ static const float2 kSkyVisDirs[8] = {
     float2( 1.0, 0.0 ), float2( 0.7071, 0.7071 ), float2( 0.0, 1.0 ), float2( -0.7071, 0.7071 ),
     float2( -1.0, 0.0 ), float2( -0.7071, -0.7071 ), float2( 0.0, -1.0 ), float2( 0.7071, -0.7071 )
 };
+#ifndef SKY_VISIBILITY_LITE
+#define SKY_VISIBILITY_LITE IGPU_TUNING   // 9 taps instead of 25
+#endif
 #if SKY_VISIBILITY_LITE
 static const uint  SKYVIS_DIR_STEP = 2;   // 4 directions
 static const uint  SKYVIS_RADII_COUNT = 2;
@@ -901,6 +936,9 @@ bool SsrProjectToPrevUV( float3 posWS, out float2 uv, out float rawDepth )
 float3 EvaluateOpaqueSSR( float3 wpos, float3 N, float3 V, float roughness, out float confidence )
 {
     confidence = 0.0;
+#if !FEAT_OPAQUE_SSR
+    return float3( 0.0, 0.0, 0.0 );
+#else
     uint maxSteps = SsrPrevColorIndex >> kSsrStepsShift;
     if ( maxSteps == 0 || roughness > kSsrOpaqueRoughnessGate ) return float3( 0.0, 0.0, 0.0 );
     uint refineSteps = SsrPrevDepthIndex >> kSsrStepsShift;
@@ -985,4 +1023,5 @@ float3 EvaluateOpaqueSSR( float3 wpos, float3 N, float3 V, float roughness, out 
         prevLinPos = linPos;
     }
     return float3( 0.0, 0.0, 0.0 );
+#endif
 }

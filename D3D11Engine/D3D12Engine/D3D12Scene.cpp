@@ -37,6 +37,8 @@
 #include "D3D12RenderQueue.h"
 #include "D3D12RenderGraph.h"
 #include "D3D12RayTracing.h"
+#include "D3D12GeometryStreams.h"
+#include "D3D12VertexPullSelfTest.h"
 #include "InstancingUtils.h"
 #include "../ThreadPool.h"   // Engine::RenderingThreadPool — MT shadow-cascade cull/record fan-out
 
@@ -56,9 +58,12 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12VobArena.h"
 #include "D3D12GpuScene.h"
 #include "D3D12GpuWorld.h"
+#include "D3D12GpuTimers.h"
 #include "D3D12MeshArena.h"
 #include "../TransparencyQueue.h"
 #include "../StaticLightFarField.h"
+#include "../WorldTessOverrides.h"
+#include <DirectXPackedVector.h>
 
 
 // ---- The two per-frame record sets the shadow modules share with this TU (declared in D3D12EngineCommon.h) ----
@@ -216,8 +221,8 @@ namespace {
         }
 
         XMFLOAT3 fogColorBase = rs.RendererSettings.AtmosphericScattering
-            ? rs.RendererSettings.FogColorMod
-            : rs.GraphicsState.FF_FogColor;
+            ? Engine::GAPI->GetSky()->GetWeatherFogColorMod( rs.RendererSettings.FogColorMod )
+            : XMFLOAT3( rs.GraphicsState.FF_FogColor );
 
         if ( !rs.RendererSettings.DrawFog ) {
             return XMLoadFloat3( &rs.GraphicsState.FF_FogColor );
@@ -416,6 +421,8 @@ void D3D12GraphicsEngine::OnVobsReset() {
 void D3D12GraphicsEngine::OnWorldMeshReset() {
     // Not every load mode reaches OnLoadWorld, and the GPU world points into the sections being deleted.
     m_GpuWorld->Reset();
+    m_WorldTessTableVersion = UINT32_MAX;   // re-evaluated next frame; an empty table releases the resource
+    m_MaterialMapsTexVersion = UINT32_MAX;
 }
 
 
@@ -423,6 +430,8 @@ void D3D12GraphicsEngine::OnLoadWorld()
 {
     m_GpuScene->Reset();
     m_GpuWorld->Reset();
+    m_WorldTessTableVersion = UINT32_MAX;
+    m_MaterialMapsTexVersion = UINT32_MAX;
     m_MenuBackdropValid = false;   // shows the old world
     g_vobInfoVisualToBucket.clear();
     g_vobInfoVisualIndexToVisualInfo.clear();
@@ -1206,6 +1215,184 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
 }
 
 
+void D3D12GraphicsEngine::UploadWorldTessConstants() {
+	uint8_t* mapped = m_ShadowCBMapped[m_FrameIndex];
+	if ( !mapped ) return;
+	WorldTessCBData cb = {};   // tess fields zeroed while inactive: the HS then sees range 0 and factor 0
+	const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
+	cb.HeightDepth = std::max( s.HeightMapDepth, 0.0f );
+	cb.HeightShadowSteps = static_cast<float>( std::clamp( s.HeightMapShadowSteps, 0, 32 ) );
+	cb.HeightShading = s.HeightMapShading ? 1.0f : 0.0f;
+	cb.HeightRange = std::max( s.HeightMapRange, 0.0f );
+	cb.PomSteps = static_cast<float>( std::clamp( s.HeightMapPomSteps, 8, 64 ) );
+	cb.PomFlags = static_cast<float>( ( ( s.HeightMapPom && s.HeightMapShading ) ? 1 : 0 ) | ( s.HeightMapSilhouettes ? 2 : 0 ) );
+	cb.TessActive = m_WorldTessActive ? 1.0f : 0.0f;
+	if ( m_WorldTessActive ) {
+		constexpr float kTargetPixelsPerSegment = 10.0f;   // screen size one tessellated edge segment aims for
+		const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+		const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+		cb.CamPos[0] = camPos.x; cb.CamPos[1] = camPos.y; cb.CamPos[2] = camPos.z;
+		cb.MaxFactor = static_cast<float>( std::clamp( s.WorldTessellationMaxFactor, 1, 16 ) );
+		cb.UnitsPerPx = 2.0f / ( std::max( projM._22, 1e-4f ) * static_cast<float>( std::max( m_Resolution.y, 1 ) ) ) * kTargetPixelsPerSegment;
+		cb.Range = std::max( s.WorldTessellationRange, 1.0f );
+		cb.Strength = std::clamp( s.WorldTessellationStrength, 0.0f, 1.0f );
+		cb.FadeStart = 0.75f * cb.Range;
+		cb.DispScale = cb.HeightDepth;
+	}
+	memcpy( mapped + kWorldTessCbOffset, &cb, sizeof( cb ) );
+}
+
+void D3D12GraphicsEngine::UpdateWorldTessTable() {
+	WorldTessOverrides& ov = GetWorldTessOverrides();
+	// Also rebuilt (by UpdateMaterialMaps) when a canonical mesh's height slot changed: m_WorldTessTableVersion reset to UINT32_MAX
+	if ( ov.GetVersion() == m_WorldTessTableVersion ) return;
+	m_WorldTessTableVersion = ov.GetVersion();
+
+	const uint32_t meshCount = ov.GetMeshCount();
+	const std::vector<XMFLOAT4>& gpuTable = ov.GetGpuTable();
+	m_WorldTessScratch.assign( gpuTable.begin(), gpuTable.end() );
+	// Height slot of a mesh's texture: 0xFFFE = none / not loaded
+	auto meshHeightSlot = [&]( uint32_t mesh ) -> uint32_t {
+		if ( mesh >= m_WorldTessMeshTex.size() || m_WorldTessMeshTex[mesh] >= m_WorldTessUniqueHeight.size() ) return 0xFFFEu;
+		const uint32_t slot = m_WorldTessUniqueHeight[m_WorldTessMeshTex[mesh]];
+		return slot < 0xFFFEu ? slot : 0xFFFEu;
+	};
+	for ( size_t e = 0; e < m_WorldTessScratch.size(); e++ ) {
+		// .w = low 16: 0xFFFF for meshes (own material's slot), else the canonical mesh's height slot / 0xFFFE; high 16: half UV density
+		uint32_t low = 0xFFFFu, densityMesh = static_cast<uint32_t>( e );
+		if ( e >= meshCount ) {
+			densityMesh = ov.GetBoundaryCanonicalMesh( static_cast<uint32_t>( e ) - meshCount );
+			low = densityMesh < meshCount ? meshHeightSlot( densityMesh ) : 0xFFFEu;
+		}
+		const uint32_t density = densityMesh < meshCount ? DirectX::PackedVector::XMConvertFloatToHalf( ov.GetMeshUvDensity( densityMesh ) ) : 0u;
+		const uint32_t bits = low | ( density << 16 );
+		memcpy( &m_WorldTessScratch[e].w, &bits, sizeof( bits ) );
+	}
+	const std::vector<XMFLOAT4>& table = m_WorldTessScratch;
+	// Frames still in flight read the old one: keep it alive until they retire
+	if ( m_WorldTessTable ) QueueResourceForRelease( std::move( m_WorldTessTable ) );
+	if ( table.empty() ) return;
+
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = static_cast<UINT64>( table.size() ) * sizeof( XMFLOAT4 );
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	Microsoft::WRL::ComPtr<Rhi::Resource> buffer;
+	if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, buffer.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Err( "D3D12: world tessellation override table ({} entries) could not be created; tessellation off.", table.size() );
+		return;
+	}
+	buffer->SetName( L"WorldTessParams" );
+	if ( !UploadBufferData( buffer.Get(), table.data(), desc.Width ) ) {
+		Logging::Err( "D3D12: world tessellation override table upload failed; tessellation off." );
+		return;
+	}
+	FlushTextureUploads();
+	m_WorldTessTable = std::move( buffer );
+}
+
+void D3D12GraphicsEngine::UpdateMaterialMaps() {
+	const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
+	WorldTessOverrides& ov = GetWorldTessOverrides();
+	// An edited MaterialInfo (roughness override) re-resolves the GPU world materials and the GPU VOB templates.
+	if ( const uint32_t mi = g_MaterialInfoEpoch.load( std::memory_order_relaxed ); mi != m_MaterialInfoEpochSeen ) {
+		m_MaterialInfoEpochSeen = mi;
+		m_HeightPartitionEpoch++;
+		if ( m_GpuScene ) m_GpuScene->InvalidateMaterials();
+	}
+	if ( ov.GetVersion() != m_MaterialMapsTexVersion ) {
+		m_MaterialMapsTexVersion = ov.GetVersion();
+		m_WorldTessUniqueTex.clear();
+		const uint32_t meshCount = ov.GetMeshCount();
+		m_WorldTessMeshTex.assign( meshCount, UINT32_MAX );
+		for ( uint32_t m = 0; m < meshCount; m++ ) {
+			zCMaterial* mat = ov.GetMeshMaterial( m );   // unique by material: its texture is read live each frame
+			if ( !mat ) continue;
+			const auto it = std::find( m_WorldTessUniqueTex.begin(), m_WorldTessUniqueTex.end(), mat );
+			m_WorldTessMeshTex[m] = static_cast<uint32_t>( it - m_WorldTessUniqueTex.begin() );
+			if ( it == m_WorldTessUniqueTex.end() ) m_WorldTessUniqueTex.push_back( mat );
+		}
+		m_WorldTessUniqueHeight.assign( m_WorldTessUniqueTex.size(), kMaterialMapsNone );
+		m_WorldTessTableVersion = UINT32_MAX;   // canonical slots must be re-resolved into the table
+	}
+
+	const bool pomState = s.HeightMapPom && s.HeightMapShading;
+	if ( pomState != m_HeightPomState ) { m_HeightPomState = pomState; m_HeightPartitionEpoch++; }
+
+	// Heights stream in asynchronously; resolve outside the lock, GetSrvSlot may not be lock-free everywhere
+	if ( s.HeightMapShading || s.WorldTessellation ) {
+		m_MaterialMapsPending.clear();
+		for ( size_t u = 0; u < m_WorldTessUniqueTex.size(); u++ ) {
+			zCTexture* tex = m_WorldTessUniqueTex[u]->GetAniTexture();
+			// A cached-out texture's surface pointer dangles (don't force a cache-in either): it has no height slot then
+			MyDirectDrawSurface7* surface = tex && tex->GetCacheState() == zRES_CACHED_IN ? tex->GetSurface() : nullptr;
+			GfxTexture* diffuse = surface ? surface->GetEngineTexture() : nullptr;
+			D3D12Texture* d3d12Diffuse = diffuse ? D3D12Texture::From( diffuse ) : nullptr;
+			const bool resident = d3d12Diffuse && d3d12Diffuse->HasSRV();
+			uint32_t height = kMaterialMapsNone;
+			if ( GfxTexture* h = resident ? surface->GetHeightmap() : nullptr ) {
+				D3D12Texture* d3d12Height = D3D12Texture::From( h );
+				if ( d3d12Height->HasSRV() ) height = d3d12Height->GetSrvSlot();
+			}
+			if ( m_WorldTessUniqueHeight[u] != height ) {
+				m_WorldTessUniqueHeight[u] = height;
+				m_WorldTessTableVersion = UINT32_MAX;   // boundary entries carry the canonical mesh's slot
+				m_HeightPartitionEpoch++;
+			}
+			if ( resident ) m_MaterialMapsPending.emplace_back( d3d12Diffuse->GetSrvSlot(), height );
+		}
+		std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+		for ( const auto& [diffuseSlot, height] : m_MaterialMapsPending ) {
+			if ( diffuseSlot >= kMaterialMapsSlot || m_MaterialMaps.size() < ( diffuseSlot + 1 ) * 2u ) continue;
+			uint32_t& entry = m_MaterialMaps[diffuseSlot * 2u];
+			if ( entry != height ) { entry = height; m_MaterialMapsDirty = true; }
+		}
+	}
+	UploadMaterialMaps();
+}
+
+void D3D12GraphicsEngine::UploadMaterialMaps() {
+	{
+		std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+		if ( !m_MaterialMapsDirty || m_MaterialMaps.empty() ) return;
+		m_MaterialMapsScratch = m_MaterialMaps;   // FreeSrvSlot writes the mirror off-thread
+		m_MaterialMapsDirty = false;
+	}
+	const UINT64 bytes = m_MaterialMapsScratch.size() * sizeof( uint32_t );
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = bytes;
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	Microsoft::WRL::ComPtr<Rhi::Resource> buffer;
+	if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, buffer.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Err( "D3D12: material-maps table could not be created; height maps off." );
+		return;
+	}
+	buffer->SetName( L"MaterialMaps" );
+	if ( !UploadBufferData( buffer.Get(), m_MaterialMapsScratch.data(), bytes ) ) {
+		Logging::Err( "D3D12: material-maps table upload failed; height maps off." );
+		return;
+	}
+	FlushTextureUploads();
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Buffer.NumElements = static_cast<UINT>( m_MaterialMapsScratch.size() / 2 );
+	srv.Buffer.StructureByteStride = 2 * sizeof( uint32_t );
+	m_Rhi->CreateShaderResourceView( buffer.Get(), &srv, GetSrvCpuHandle( kMaterialMapsSlot ) );
+	// Frames still in flight read the old one: keep it alive until they retire
+	if ( m_MaterialMapsBuffer ) QueueResourceForRelease( std::move( m_MaterialMapsBuffer ) );
+	m_MaterialMapsBuffer = std::move( buffer );
+}
+
 void D3D12GraphicsEngine::UpdateFarField() {
 	const StaticLightFarField& farField = GetStaticLightFarField();
 	const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
@@ -1268,6 +1455,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// position / shadow index are left defaulted (world-space shading in the MVP; tiling fills them later).
 	m_FrameLightCount = 0;
 	const UINT frame = m_FrameIndex;
+	m_LightCbUsed[frame] = 0;   // the ring restarts with the frame's first light build
 	UpdateFarField();
 	const bool farFieldActive = GetStaticLightFarField().IsActive();
 	if ( !m_LightBuffer[frame] || !m_LightBufferPtr[frame] ) return;
@@ -1502,28 +1690,69 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// cleared by SetGraphicsRootSignature, and an undefined loop bound runs billions of iterations into a GPU
 	// timeout. Param indices differ per root sig: World (3,4,5), Skeletal (4,5,6), Grass (5,6,7).
 	m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_NumTilesX, 1 );         // NumTilesX  @ b*.y
-	// LimitLightIntensity @ b*.z — mirrors D3D11's ForwardPlusLighting.hlsl MAX-blend mode (swap "sum of
-	// every overlapping point light" for "brightest single light" to avoid overexposure).
-	const UINT limitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, limitLightIntensity, 2 );
-	// PointShadowDynIndex @ b*.w — the BINDLESS heap slot of the OVERLAY cube array. The static core array is a
-	// declared t-register in each shader (PointShadowCubes), but the second tier rides in this spare root
-	// constant instead (SM6.6 ResourceDescriptorHeap), which is why it needed no root signature changes. Only
-	// ever read by a light whose ShadowCubeIndex carries a non-zero HI half, so the 0 fallback is never
-	// dereferenced.
+	// LightCB is a root CBV into the per-frame LightCB ring (identical contents share one slot).
+	LightCBData cb = {};
+	cb.LightCount = m_FrameLightCount;
+	cb.NumTilesX = m_NumTilesX;
+	// LimitLightIntensity mirrors D3D11's ForwardPlusLighting.hlsl MAX-blend mode (brightest single light
+	// instead of the sum of every overlapping one).
+	cb.LimitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
+	// PointShadowDynIndex: bindless heap slot of the overlay cube array; only read by lights whose
+	// ShadowCubeIndex has a non-zero HI half, so the 0 fallback is never dereferenced.
 	const UINT dynCubeSrv = m_PointShadows.GetDynSrvSlot();
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv, 3 );
-	// RtShadowMaskIndex @ 4: the ray-traced shadow mask + 1, only while the opaque prepass surfaces shade
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_RtShadowMaskSlot == UINT_MAX ? 0u : m_RtShadowMaskSlot + 1u, 4 );
-	// ProjA/ProjB/NearZ/FarZ (P2.14): let every lit pixel shader reconstruct ITS OWN cluster Z slice from its
-	// own SV_Position.z (PBRLighting.hlsl's ComputeZSlice) — must match DispatchLightCulling's CullCB exactly,
-	// or a pixel picks a different cluster than the one the compute pass culled lights into.
+	cb.PointShadowDynIndex = dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv;
+	cb.RtShadowMaskIndex = m_RtShadowMaskSlot == UINT_MAX ? 0u : m_RtShadowMaskSlot + 1u;
+	// ProjA/ProjB/NearZ/FarZ feed PBRLighting.hlsl's ComputeZSlice; must match DispatchLightCulling's CullCB exactly.
 	const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
-	const float clusterConsts[4] = { projM._33, projM._43, Engine::GAPI->GetNearPlane(), GetClusterFarZ() };
-	m_CmdList->SetGraphicsRoot32BitConstants( countParam, 4, clusterConsts, 5 );
+	cb.ProjA = projM._33;
+	cb.ProjB = projM._43;
+	cb.NearZ = Engine::GAPI->GetNearPlane();
+	cb.FarZ = GetClusterFarZ();
+	m_CmdList->SetGraphicsRootConstantBufferView( countParam, AllocLightCb( cb ) );
 	m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
+}
+
+
+bool D3D12GraphicsEngine::CreateLightConstantBuffer() {
+	D3D12_RESOURCE_DESC bd = {};
+	bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bd.Width = static_cast<UINT64>( kLightCbSlots ) * kLightCbStride;
+	bd.Height = 1;
+	bd.DepthOrArraySize = 1;
+	bd.MipLevels = 1;
+	bd.Format = DXGI_FORMAT_UNKNOWN;
+	bd.SampleDesc.Count = 1;
+	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+		if ( FAILED( m_Rhi->CreateResource( DefaultUploadHeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LightCB[i].ReleaseAndGetAddressOf() ) ) )
+			return false;
+		m_LightCB[i]->SetName( L"LightCBRing" );
+		D3D12_RANGE noRead = { 0, 0 };
+		void* mapped = nullptr;
+		if ( FAILED( m_LightCB[i]->Map( 0, &noRead, &mapped ) ) ) return false;
+		m_LightCBMapped[i] = static_cast<uint8_t*>( mapped );
+		memset( mapped, 0, static_cast<size_t>( bd.Width ) );
+	}
+	return true;
+}
+
+
+D3D12_GPU_VIRTUAL_ADDRESS D3D12GraphicsEngine::AllocLightCb( const LightCBData& cb ) {
+	const UINT frame = m_FrameIndex;
+	const D3D12_GPU_VIRTUAL_ADDRESS base = m_LightCB[frame]->GetGPUVirtualAddress();
+	uint8_t* mapped = m_LightCBMapped[frame];
+	UINT& used = m_LightCbUsed[frame];
+	// Near-constant within a frame: reuse the last slot when unchanged, compared against a CPU copy.
+	if ( used > 0 && memcmp( &m_LightCbLast[frame], &cb, sizeof( cb ) ) == 0 )
+		return base + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( used - 1 ) * kLightCbStride;
+	m_LightCbLast[frame] = cb;
+	if ( used >= kLightCbSlots ) {
+		static bool s_logged = false;
+		if ( !s_logged ) { s_logged = true; Logging::Wrn( "D3D12: LightCB ring full ({} distinct values in a frame); reusing the last slot.", kLightCbSlots ); }
+		used = kLightCbSlots - 1;
+	}
+	memcpy( mapped + used * kLightCbStride, &cb, sizeof( cb ) );
+	return base + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( used++ ) * kLightCbStride;
 }
 
 
@@ -1683,6 +1912,11 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 	m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 	m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, camConsts, 0 );
 
+	// Pulled: the whole frame ring is the t1 root SRV; each batch passes its first element in b3.
+	const bool pulled = m_VertexPullWorld && m_Pipelines.Particle.VsBlobPull;
+	const UINT pullParam = m_Pipelines.Particle.PullRootParam;
+	if ( pulled ) m_CmdList->SetGraphicsRootShaderResourceView( pullParam, m_ParticleInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
+
 	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
 	D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
@@ -1701,11 +1935,11 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 		// Blend mode for this texture bucket (falls back to alpha blend if somehow unlisted).
 		auto infoIt = info.find( tex );
 		Rhi::PipelineState* pso = infoIt != info.end()
-			? m_Pipelines.GetOrCreateParticlePipeline( infoIt->second.BlendState )
+			? m_Pipelines.GetOrCreateParticlePipeline( infoIt->second.BlendState, pulled )
 			: nullptr;
 		if ( !pso ) {
 			GothicBlendStateInfo alpha; alpha.SetAlphaBlending();
-			pso = m_Pipelines.GetOrCreateParticlePipeline( alpha );
+			pso = m_Pipelines.GetOrCreateParticlePipeline( alpha, pulled );
 		}
 		if ( !pso ) continue;
 		if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
@@ -1733,9 +1967,14 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 		const UINT instOffset = m_ParticleInstanceBufferOffset;
 		memcpy( m_ParticleInstanceBufferPtr[frame] + instOffset, instances.data(), instBytes );
 		m_ParticleInstanceBufferOffset += instBytes;
-		const D3D12_VERTEX_BUFFER_VIEW instView = {
-			m_ParticleInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( ParticleInstanceInfo ) };
-		m_CmdList->IASetVertexBuffers( 0, 1, &instView );
+		if ( pulled ) {
+			const UINT firstInstance = instOffset / static_cast<UINT>( sizeof( ParticleInstanceInfo ) );   // the ring advances in whole instances
+			m_CmdList->SetGraphicsRoot32BitConstants( pullParam + 1, 1, &firstInstance, 0 );
+		} else {
+			const D3D12_VERTEX_BUFFER_VIEW instView = {
+				m_ParticleInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( ParticleInstanceInfo ) };
+			m_CmdList->IASetVertexBuffers( 0, 1, &instView );
+		}
 
 		D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
 		if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
@@ -2020,13 +2259,25 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	m_CmdList->RSSetScissorRects( 1, &sc );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-	const D3D12_VERTEX_BUFFER_VIEW instView = {
-		m_DecalInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( DecalInstanceInfo ) };
-	const D3D12_VERTEX_BUFFER_VIEW views[2] = { m_DecalQuadVBV, instView };
-	m_CmdList->IASetVertexBuffers( 0, 2, views );
+	// Pulled: quad VB + the whole frame ring are the t6/t7 root SRVs; b8 carries this pass's first element, and each draw adds its own index.
+	const bool pulled = m_VertexPullWorld && m_Pipelines.Decal.LitPSOPull;
+	const UINT pullParam = m_Pipelines.Decal.PullRootParam;
+	const UINT firstInstance = instOffset / static_cast<UINT>( sizeof( DecalInstanceInfo ) );   // the ring advances in whole instances
+	if ( pulled ) {
+		m_CmdList->SetGraphicsRootShaderResourceView( pullParam, m_DecalQuadVB->GetGPUVirtualAddress() );
+		m_CmdList->SetGraphicsRootShaderResourceView( pullParam + 1, m_DecalInstanceBuffer[frame]->GetGPUVirtualAddress() );
+	} else {
+		const D3D12_VERTEX_BUFFER_VIEW instView = {
+			m_DecalInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( DecalInstanceInfo ) };
+		const D3D12_VERTEX_BUFFER_VIEW views[2] = { m_DecalQuadVBV, instView };
+		m_CmdList->IASetVertexBuffers( 0, 2, views );
+	}
 
 	Rhi::PipelineState* lastPso = nullptr;
-	if ( lighting ) { m_CmdList->SetPipelineState( m_Pipelines.Decal.LitPSO.Get() ); lastPso = m_Pipelines.Decal.LitPSO.Get(); }
+	if ( lighting ) {
+		lastPso = pulled ? m_Pipelines.Decal.LitPSOPull.Get() : m_Pipelines.Decal.LitPSO.Get();
+		m_CmdList->SetPipelineState( lastPso );
+	}
 
 	zCTexture* lastTex = nullptr;
 	unsigned int drawnTris = 0;
@@ -2044,7 +2295,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 			// D3D11 skips those too rather than falling back to alpha blending.
 			default: continue;
 			}
-			Rhi::PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend );
+			Rhi::PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend, pulled );
 			if ( !pso ) continue;
 			if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
 		}
@@ -2065,7 +2316,13 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 			lastTex = tex;
 		}
 
-		m_CmdList->DrawInstanced( 6, 1, 0, static_cast<UINT>(i) );
+		if ( pulled ) {
+			const UINT instance = firstInstance + static_cast<UINT>( i );
+			m_CmdList->SetGraphicsRoot32BitConstants( pullParam + 2, 1, &instance, 0 );
+			m_CmdList->DrawInstanced( 6, 1, 0, 0 );
+		} else {
+			m_CmdList->DrawInstanced( 6, 1, 0, static_cast<UINT>(i) );
+		}
 		drawnTris += 2;
 	}
 
@@ -2176,22 +2433,29 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 			memcpy( ringBase + boneOff, ghostBoneCache.data(), boneSize );
 			m_SkeletalCBBufferOffset = boneOff + boneSize;
 
-			m_CmdList->SetPipelineState( m_Pipelines.GhostSkeletal.PSO.Get() );
+			const bool ghostPull = m_VertexPullWorld && m_Pipelines.GhostSkeletal.PSOPull;
+			m_CmdList->SetPipelineState( ghostPull ? m_Pipelines.GhostSkeletal.PSOPull.Get() : m_Pipelines.GhostSkeletal.PSO.Get() );
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.GhostSkeletal.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 			m_CmdList->SetGraphicsRootShaderResourceView( 1, m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress() );   // t3
-			m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &instRow, 0 );                                       // b10
+			m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &instRow, 0 );                                       // b10.x
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 1, &info.alpha, 0 );
+			if ( ghostPull ) BindSkelPull( m_CmdList, m_Pipelines.GhostSkeletal.PullRootParam );
 
 			for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
 				zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
 				// b6 { normal, ORM, diffuse } — same bindless material block as the lit skeletal passes; PSGhost
 				// reads only the diffuse index, but sharing the block keeps every skeletal entry point on one
 				// SampleSkelDiffuse and off descriptor tables entirely.
-				BindMaterialMaps( tex, 4, PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat ) );
+				BindMaterialMaps( tex, 4, PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat ),
+					mat ? Engine::GAPI->GetMaterialInfoFrom( mat ) : nullptr );
 				for ( auto const& mesh : meshList ) {
 					D3D12_DRAW_INDEXED_ARGUMENTS draw;
-					if ( !BindSkinnedMesh( mesh.get(), draw ) ) continue;
+					if ( !BindSkinnedMesh( mesh.get(), draw, ghostPull ) ) continue;
+					if ( ghostPull ) {
+						const UINT vertexBase = static_cast<UINT>( draw.BaseVertexLocation );
+						m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &vertexBase, 1 );   // b10.y
+					}
 					m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
 					drawnTris += draw.IndexCountPerInstance / 3;
 				}
@@ -2376,6 +2640,9 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 	Rhi::PipelineState* pso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSO.Get()
 	                                : m_Pipelines.Grass.DepthPrepassPSO.Get();
 	if ( !pso ) return;
+	Rhi::PipelineState* pullPso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSOPull.Get() : m_Pipelines.Grass.DepthPrepassPSOPull.Get();
+	const bool pulled = m_VertexPullWorld && pullPso;
+	pso = PullPick( pso, pullPso );
 
 	const auto& vegetationBoxes = Engine::GAPI->GetVegetationBoxes();
 	if ( vegetationBoxes.empty() ) return;
@@ -2456,8 +2723,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 		const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
 		const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
 		const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
-		const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
-		m_CmdList->IASetVertexBuffers( 0, 2, views );
+		BindGrassBuffers( m_CmdList, pulled, m_Pipelines.Grass.PullRootParam, vbv, instVbv );
 		const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
 		m_CmdList->IASetIndexBuffer( &ibv );
 		m_CmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );
@@ -2505,6 +2771,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 	const FogConstants fog = MakeFogConstants();
 
 	const GrassCBData gcb = MakeGrassConstants();
+	const bool pulled = m_VertexPullWorld && m_Pipelines.Grass.PSOPull;
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
@@ -2533,7 +2800,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 
 		if ( !bound ) {
 			bound = true;
-			m_CmdList->SetPipelineState( m_Pipelines.Grass.PSO.Get() );
+			m_CmdList->SetPipelineState( PullPick( m_Pipelines.Grass.PSO.Get(), m_Pipelines.Grass.PSOPull.Get() ) );
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.Grass.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &gcb, 0 );
@@ -2574,8 +2841,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 		const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
 		const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
 		const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
-		const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
-		m_CmdList->IASetVertexBuffers( 0, 2, views );
+		BindGrassBuffers( m_CmdList, pulled, m_Pipelines.Grass.PullRootParam, vbv, instVbv );
 		const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
 		m_CmdList->IASetIndexBuffer( &ibv );
 		m_CmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );
@@ -2735,6 +3001,23 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// NPCs draw this frame. Before the cascade jobs launch, which read the arenas lock-free.
 	m_SkelArena->Flush( this );
 	m_AttachArena->Flush( this );
+	// Last arena flush/growth of the frame is behind us (VOB arena, BeginSkinningFrame, the two above) and no cascade
+	// job has launched yet: rewrite this frame slot's stream table here. Passes recorded after this point may read it.
+	UpdateMaterialMaps();     // before any pass reads the table (lit world, prepass tess VS); resolves the heights UpdateWorldTessTable bakes
+	UpdateWorldTessTable();   // before the stream table so its SRV sees the new resource this frame
+	m_GeometryStreams->Update();
+	{
+		MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+		D3D12VertexBuffer* wvb = wm && wm->GetMeshVertexBuffer() ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
+		m_WorldVbSlot = m_GeometryStreams->Slot( D3D12GeometryStreams::Stream::WorldVB );
+		m_VertexPullWorld = Engine::GAPI->GetRendererState().RendererSettings.VertexPulling && !m_Pipelines.VertexPullFailed
+			&& m_WorldVbSlot != UINT_MAX && wvb && wvb->GetResource();
+		m_Pipelines.VertexPullActive = m_VertexPullWorld;
+		m_WorldTessActive = m_VertexPullWorld && Engine::GAPI->GetRendererState().RendererSettings.WorldTessellation
+			&& m_Pipelines.World.TessReady() && m_Pipelines.World.TessRootParam != UINT_MAX
+			&& wm && wm->GetMeshTessBuffer() != nullptr && m_WorldTessTable;
+	}
+	m_VertexPullSelfTest->Run();   // before BindSceneColorTarget, which rebinds the RT it disturbs
 
 	// Refresh the wind CB's player position ONCE here (before shadows/prepass/color all run this frame) — windDir/
 	// globalTime were already advanced once in OnBeginFrame; minHeight/maxHeight are refreshed per-visual right
@@ -2761,6 +3044,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// binds, and derive its inverse for the end-of-frame camera-velocity fill. Must precede the prepass; the
 	// matching StoreVobPreviousTransforms at the bottom of this function rolls it into history. See D3D12Motion.cpp.
 	UploadMotionConstants();
+	UploadWorldTessConstants();   // camera + projection are final; before the prepass reads b11
 
 	// Sky: fog fill + Gothic's atmosphere solve now, geometry later (after the depth prepass) so opaque depth
 	// rejects the sky fragments behind geometry. See PrepareSky/DrawSky.
@@ -2845,23 +3129,37 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );
+        const D3D12GpuTimerScope prepassTimer( m_GpuTimers.get(), m_CmdList, "prepass" );
 		// Swap the (write-masked-off) scene-color RTV the prepass used to bind for the two motion/normal
 		// G-buffer targets, and clear velocity to its sentinel. The three prepass passes below then run their
 		// *GBuf PSO variants and write real motion vectors + octahedral normals alongside the depth they were
 		// already laying down. No-op when the feature is unavailable, in which case they keep their old
 		// depth-only PSOs and the scene-color binding is left exactly as it was. See D3D12Motion.cpp.
 		BeginMotionGBuffer();
-        DrawDepthPrepass();
+        {
+	        const D3D12GpuTimerScope worldTimer( m_GpuTimers.get(), m_CmdList, "world prepass" );
+            DrawDepthPrepass();
+			// Two-phase world: the clusters not drawn early, tested against the Hi-Z of what was.
+			if ( m_GpuWorldTwoPhase ) {
+				BuildHiZ();
+				CullGpuWorldLate();
+				DrawDepthPrepass( true );
+			}
+        }
 		// GPU VOB culling (D3D12Cull.cpp) sits between the WORLD-MESH depth prepass and the VOB one, which is the
 		// only spot where the depth buffer holds world geometry and nothing else: BuildHiZ min-reduces it into the
 		// occlusion pyramid, then CullVobsGPU frustum+occlusion-tests every uploaded instance, compacts the
 		// survivors and rewrites the instance counts in the arg buffer DrawVobDepthPrepass/DrawVobsInstanced
 		// submit. No-ops (and both passes fall back to the CPU-written arg ring) when m_GpuVobCullActive is false.
 		if ( m_GpuVobCullActive ) {
+			const D3D12GpuTimerScope cullTimer( m_GpuTimers.get(), m_CmdList, "hiz+vob cull" );
 			BuildHiZ();
 			CullVobsGPU();
 		}
-	    DrawVobDepthPrepass();
+	    {
+		    const D3D12GpuTimerScope vobTimer( m_GpuTimers.get(), m_CmdList, "vob prepass" );
+		    DrawVobDepthPrepass();
+	    }
 	    DrawSkeletalDepthPrepass();
 		// Vegetation last in the prepass — after the GPU VOB cull, which must see world-mesh-only depth, and
 		// after every other prepass writer, so the grass cards' alpha-tested fill is rejected early wherever
@@ -2905,20 +3203,32 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// Join the shadow recorders and slot their lists in between — the lit passes below are the first thing this
 	// frame that samples the cascade map / point-shadow cubes. Also re-establishes the scene-color RT + depth.
-	FinishShadowPasses();
+	{
+		// Brackets the shadow lists, which execute between the two halves of the main list.
+		const UINT shadowZone = m_GpuTimers ? m_GpuTimers->Begin( m_CmdList, "shadows" ) : UINT_MAX;
+		FinishShadowPasses();
+		if ( m_GpuTimers ) m_GpuTimers->End( m_CmdList, shadowZone );
+	}
 	// Sky geometry, now that the depth prepass has something for it to be rejected against. After
 	// FinishShadowPasses because the fixed-function path inherits whatever OM state that re-established.
 	DrawSky();
     {
         DX_ZONE( m_CmdList.Get(), "Lit Geometry Pass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Lit Geometry Pass" );
-	    DrawWorldMesh();
+        const D3D12GpuTimerScope litTimer( m_GpuTimers.get(), m_CmdList, "lit" );
+	    {
+		    const D3D12GpuTimerScope worldTimer( m_GpuTimers.get(), m_CmdList, "lit world" );
+		    DrawWorldMesh();
+	    }
 	    {
 		    DX_ZONE( m_CmdList.Get(), "Draw skeletal (color)" );
 		    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal (color)" );
 		    DrawSkeletalColor();   // base meshes + node attachments, lit through the tile grid (both lists)
 	    }
-	    DrawVobsInstanced();
+	    {
+		    const D3D12GpuTimerScope vobTimer( m_GpuTimers.get(), m_CmdList, "vob lit" );
+		    DrawVobsInstanced();
+	    }
 	    DrawVegetation();
     }
 
@@ -3061,22 +3371,29 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderLuminanceAdapt(); };
 		} );
 
-	// FSR 1/2/3 upscale on the linear HDR scene, after bloom/luminance and before the tonemap resolve, which then
-	// samples its display-res output 1:1 (see D3D12Fsr.cpp). No-op, and the resolve upscales bilinearly, otherwise.
-	postFxGraph.AddPass( RG_PASS_NAME( "FSR Upscale" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFsrUpscale(); };
-		} );
+	// FSR 1 in AMD's order (D3D12, SDR): tonemap + SMAA at render res, EASU/RCAS on the LDR image, then the display
+	// chain (RecordFsr1Late). Otherwise, as before:
+	//   FSR 1/2/3 upscale on the linear HDR scene, after bloom/luminance and before the tonemap resolve, which then
+	//   samples its display-res output 1:1 (see D3D12Fsr.cpp). No-op, and the resolve upscales bilinearly, otherwise.
+	m_Fsr1LateFrame = UseFsr1Late();
+	if ( m_Fsr1LateFrame ) {
+		RecordFsr1Late( postFxGraph );
+	} else {
+		postFxGraph.AddPass( RG_PASS_NAME( "FSR Upscale" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+			pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFsrUpscale(); };
+			} );
 
-	// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
-	// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
-	postFxGraph.AddPass( RG_PASS_NAME( "Resolve Scene To BackBuffer" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { ResolveSceneToBackBuffer(); };
-		} );
+		// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
+		// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
+		postFxGraph.AddPass( RG_PASS_NAME( "Resolve Scene To BackBuffer" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+			pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { ResolveSceneToBackBuffer(); };
+			} );
 
-	// SMAA anti-aliasing (opt-in, RendererSettings.AntiAliasingMode == AA_SMAA): runs on the tonemapped LDR
-	// swapchain image, before Gothic's 2D UI/HUD composites on top so the HUD stays crisp. No-ops if disabled
-	// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
-	RenderSMAA( postFxGraph );
+		// SMAA anti-aliasing (opt-in, RendererSettings.AntiAliasingMode == AA_SMAA): runs on the tonemapped LDR
+		// swapchain image, before Gothic's 2D UI/HUD composites on top so the HUD stays crisp. No-ops if disabled
+		// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
+		RenderSMAA( postFxGraph );
+	}
 
 	// Post-tonemap sharpening (SHARPEN_CAS by default — this one is ON for a stock config, unlike SMAA).
 	// D3D11's "Sharpen" pass sits in the same place: after AA, on the LDR backbuffer, before the 2D UI.
@@ -3373,9 +3690,17 @@ namespace {
     }
 }
 
+UINT D3D12GraphicsEngine::DefaultOrmSlotFor( const MaterialInfo* info ) const {
+    if ( info && info->buffer.Roughness >= 0.0f ) {
+        const auto& t = m_DefaultOrmTextures[DefaultRoughness::StepFor( info->buffer.Roughness )];
+        if ( t && t->HasSRV() ) return t->GetSrvSlot();
+    }
+    return GetDefaultOrmSrvSlot();
+}
+
 D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const MeshKey& key, const std::string& visualName,
     bool cacheIn, bool resolveMaps ) const {
-    VobMaterial m{ m_BlackTexture->GetSrvSlot(), 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), true, false, false };
+    VobMaterial m{ m_BlackTexture->GetSrvSlot(), 0xFFFFFFFFu, DefaultOrmSlotFor( key.Info ), true, false, false };
     zCTexture* tex = key.Material->GetAniTexture();
     // cacheIn=false: a pure GetCacheState read, safe on a worker thread (CacheIn mutates Gothic's resource manager).
     const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
@@ -3403,33 +3728,72 @@ D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const 
     return m;
 }
 
-void D3D12GraphicsEngine::CullGpuWorldMain() {
-    // Gothic's own camera frustum, which the CPU path tests meshes against (BuildWorldDrawCommands' playerFrustum).
-    D3D12GpuWorld::View view{};
-    view.Active = true;
-    if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
-        const XMMATRIX viewProj = XMMatrixMultiply( XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoView ) ),
-            XMLoadFloat4x4( &cam->trafoProjection ) );
-        XMStoreFloat4x4( &view.CullViewProj, XMMatrixTranspose( viewProj ) );
-    } else {
-        view.NoFrustum = true;
+namespace {
+    /** The main view of the GPU world: Gothic's own camera frustum, which the CPU path tests meshes against
+        (BuildWorldDrawCommands' playerFrustum). */
+    D3D12GpuWorld::View GpuWorldMainView( D3D12GpuWorld::Phase phase, bool cones ) {
+        D3D12GpuWorld::View view{};
+        view.Active = true;
+        view.MainPhase = phase;
+        view.Cones = cones;
+        view.ConeEye = Engine::GAPI->GetCameraPosition();
+        if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+            const XMMATRIX viewProj = XMMatrixMultiply( XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoView ) ),
+                XMLoadFloat4x4( &cam->trafoProjection ) );
+            XMStoreFloat4x4( &view.CullViewProj, XMMatrixTranspose( viewProj ) );
+        } else {
+            view.NoFrustum = true;
+        }
+        return view;
     }
+}
+
+void D3D12GraphicsEngine::CullGpuWorldMain() {
+    const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    m_GpuWorldTwoPhase = rs.GpuWorldOcclusion && m_HiZReady && m_DepthSrvSlot != UINT_MAX
+        && m_Pipelines.Cull.HiZCopyPSO && m_Pipelines.Cull.HiZReducePSO && m_Pipelines.Cull.HiZRootSig;
+    // Displaced surfaces can turn front faces around, so no cones while tessellating.
+    m_GpuWorldCones = rs.GpuWorldConeCulling && !m_WorldTessActive;
+    const D3D12GpuWorld::View view = GpuWorldMainView(
+        m_GpuWorldTwoPhase ? D3D12GpuWorld::Phase::Early : D3D12GpuWorld::Phase::Single, m_GpuWorldCones );
     // On failure nothing draws the world this frame: its CPU command set was never built.
     m_GpuWorldActive = m_GpuWorld->Cull( m_CmdList, &view, D3D12GpuWorld::kViewMain, 1 );
+    m_GpuWorldTwoPhase = m_GpuWorldTwoPhase && m_GpuWorldActive;
+}
+
+void D3D12GraphicsEngine::CullGpuWorldLate() {
+    D3D12GpuWorld::View view = GpuWorldMainView( D3D12GpuWorld::Phase::Late, m_GpuWorldCones );
+    // The same matrices the prepass drew with, so the Hi-Z and the boxes agree.
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMStoreFloat4x4( &view.HiZViewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+    const bool hiz = m_HiZInSrvState && m_HiZSrvSlot != UINT_MAX;
+    view.HiZIndex = hiz ? m_HiZSrvSlot : 0u;
+    view.HiZWidth = m_HiZWidth;
+    view.HiZHeight = m_HiZHeight;
+    view.HiZMipCount = hiz ? m_HiZMipCount : 0u;   // without a pyramid the late phase draws everything not drawn early
+    if ( !m_GpuWorld->Cull( m_CmdList, &view, D3D12GpuWorld::kViewMainLate, 1 ) ) {
+        Logging::Wrn( "D3D12: the GPU world's late cull failed; two-phase culling stays off." );
+        m_GpuWorldTwoPhase = false;
+    }
 }
 
 D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(const MeshKey& key, bool cacheIn ) const {
     // normal 0xFFFFFFFF = none (the PS skips the perturb), ORM = the 1x1 default when the material has no _FX.
-    WorldMaterial m{ 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), m_BlackTexture->GetSrvSlot(),
+    WorldMaterial m{ 0xFFFFFFFFu, DefaultOrmSlotFor( key.Info ), m_BlackTexture->GetSrvSlot(),
         key.Info ? key.Info->buffer.NormalmapStrength : 1.0f, false, true };
     zCTexture* tex = key.Material->GetAniTexture();
     // CacheIn also loads the normal/ORM side textures; cacheIn=false only reads the state.
     const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
                                          : ( tex->GetCacheState() == zRES_CACHED_IN ) );
+    const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    const bool pom = rs.HeightMapPom && rs.HeightMapShading;
+    bool heightPom = false;
     if ( cached ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+            heightPom = pom && s->GetHeightmap() != nullptr;
             if ( GfxTexture* gfx = s->GetEngineTexture() ) { D3D12Texture* d = D3D12Texture::From( gfx ); if ( d->HasSRV() ) m.Diffuse = d->GetSrvSlot(); }
-            if ( GfxTexture* n = s->GetNormalmap() )       { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) m.Normal = d->GetSrvSlot(); }
+            if ( GfxTexture* n = s->GetNormalmap() )    { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) m.Normal = d->GetSrvSlot(); }
             if ( GfxTexture* o = s->GetFxMap() )           { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) m.Orm = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
         }
     }
@@ -3441,6 +3805,8 @@ D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(con
     if ( m.AlphaTested ) m.Orm |= kBacklitFoliage;
     // Waving materials take the per-material depth run too, never a merged command: their VS reads b6
     m.AlphaTested |= MaterialFx::HasWaves( key.Material );
+    // POM discards/offsets UVs in the prepass PS, so height materials need the per-material PS run
+    m.AlphaTested |= heightPom;
     m.Diffuse = PackMaterialFx( m.Diffuse, key.Material );
     return m;
 }
@@ -3672,7 +4038,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
 /** Built on m_Pipelines.World.RootSig, so rebuilt with it (RebuildRootSignatureDependents). */
 bool D3D12GraphicsEngine::CreateVobIndirectSignature() {
-    D3D12_INDIRECT_ARGUMENT_DESC args[3] = {};
+    D3D12_INDIRECT_ARGUMENT_DESC args[4] = {};
     args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
     args[0].Constant.RootParameterIndex = 10;                 // b6 MaterialCB { normal, orm, diffuse }
     args[0].Constant.DestOffsetIn32BitValues = 0;
@@ -3681,10 +4047,14 @@ bool D3D12GraphicsEngine::CreateVobIndirectSignature() {
     args[1].Constant.RootParameterIndex = 11;                 // b4 WindCB: overwrite only minHeight/maxHeight (@4,5)
     args[1].Constant.DestOffsetIn32BitValues = 4;
     args[1].Constant.Num32BitValuesToSet = 2;
-    args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[2].Constant.RootParameterIndex = m_Pipelines.World.VobPull.Draw;   // b10 { VertexBase, InstanceBase } (15): increasing parameter order
+    args[2].Constant.DestOffsetIn32BitValues = 0;
+    args[2].Constant.Num32BitValuesToSet = 2;
+    args[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
 
     D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
-    sigDesc.ByteStride = sizeof( VobDrawCommand );            // 48 B; MUST match the struct + arg layout
+    sigDesc.ByteStride = sizeof( VobDrawCommand );            // 56 B; MUST match the struct + arg layout
     sigDesc.NumArgumentDescs = _countof( args );
     sigDesc.pArgumentDescs = args;
     // Commands set root constants (b6/b4), so the signature must carry the root signature those param indices refer to.
@@ -3711,10 +4081,12 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 
     // The trailing 8 bytes (VisualIndex + LodBucket) sit PAST the arguments the GPU reads; ByteStride only has
     // to cover them, so they are ours (VobCull.hlsl's CSPatchArgs reads both out of the buffer it patches).
-    static_assert( sizeof( VobDrawCommand ) == 48, "VobDrawCommand must match the command signature arg layout (48 B stride)" );
+    static_assert( sizeof( VobDrawCommand ) == 56, "VobDrawCommand must match the command signature arg layout (56 B stride)" );
     static_assert( offsetof( VobDrawCommand, MatNormalIndex ) == 0, "b6 consts lead the VOB command" );
-    static_assert( offsetof( VobDrawCommand, Draw ) == 20, "VobDrawCommand draw args must be last of the indirect arguments" );
-    static_assert( offsetof( VobDrawCommand, VisualIndex ) == 40, "VisualIndex must follow the indirect arguments" );
+    static_assert( offsetof( VobDrawCommand, WindMinHeight ) == 12, "b4[4..5] follows b6" );
+    static_assert( offsetof( VobDrawCommand, VertexBase ) == 20 && offsetof( VobDrawCommand, InstanceBase ) == 24, "b10 follows b4 (VobCull.hlsl AppendSceneCommand)" );
+    static_assert( offsetof( VobDrawCommand, Draw ) == 28, "VobDrawCommand draw args must be last of the indirect arguments" );
+    static_assert( offsetof( VobDrawCommand, VisualIndex ) == 48 && offsetof( VobDrawCommand, LodBucket ) == 52, "VisualIndex must follow the indirect arguments" );
 
     if ( !CreateVobIndirectSignature() ) return false;
 
@@ -3838,40 +4210,49 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
 
 
 bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes,
-    UINT instanceStride ) {
+    UINT instanceStride, const D3D12PipelineState::VobPullRoots* pull ) {
     if ( !m_VobArena->Ready() || !instances || instanceBytes == 0 ) return false;
 
     // The whole buffer is bound once: a VOB command addresses its sub-mesh through
     // BaseVertexLocation/StartIndexLocation and its instances through StartInstanceLocation, so nothing
     // per-draw is left in the IA state. That is what replaces ~560 binds with this one.
-    const D3D12_VERTEX_BUFFER_VIEW views[2] = {
-        { m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(),
-          D3D12VobArena::VertexStride() },
-        { instances->GetGPUVirtualAddress(), instanceBytes, instanceStride ? instanceStride : VobInstanceStride() },
-    };
+    const UINT stride = instanceStride ? instanceStride : VobInstanceStride();
     const D3D12_INDEX_BUFFER_VIEW ibv = {
         m_VobArena->GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetIndexBytes(), DXGI_FORMAT_R16_UINT };
-    cmdList->IASetVertexBuffers( 0, 2, views );
+    if ( m_VertexPullWorld && pull && pull->InstSrv != UINT_MAX ) {
+        BindVobPull( cmdList, *pull, instances, stride, false );
+    } else {
+        const D3D12_VERTEX_BUFFER_VIEW views[2] = {
+            { m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(),
+              D3D12VobArena::VertexStride() },
+            { instances->GetGPUVirtualAddress(), instanceBytes, stride },
+        };
+        cmdList->IASetVertexBuffers( 0, 2, views );
+    }
     cmdList->IASetIndexBuffer( &ibv );
     return true;
 }
 
 
-bool D3D12GraphicsEngine::BindAttachArenaIA( D3D12CmdList& cmdList ) {
+bool D3D12GraphicsEngine::BindAttachArenaIA( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots* pull ) {
     if ( !m_AttachArena->Ready() || !m_VobInstanceBuffer[m_FrameIndex] ) return false;
     // StartInstanceLocation is an element index into the whole ring (see BuildSkeletalDrawCommands).
-    const D3D12_VERTEX_BUFFER_VIEW views[2] = {
-        m_AttachArena->VertexBufferView(),
-        { m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress(), m_VobInstanceBufferCapacity, VobInstanceStride() },
-    };
     const D3D12_INDEX_BUFFER_VIEW ibv = m_AttachArena->IndexBufferView();
-    cmdList->IASetVertexBuffers( 0, 2, views );
+    if ( m_VertexPullWorld && pull && pull->InstSrv != UINT_MAX ) {
+        BindVobPull( cmdList, *pull, m_VobInstanceBuffer[m_FrameIndex].Get(), VobInstanceStride(), true );
+    } else {
+        const D3D12_VERTEX_BUFFER_VIEW views[2] = {
+            m_AttachArena->VertexBufferView(),
+            { m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress(), m_VobInstanceBufferCapacity, VobInstanceStride() },
+        };
+        cmdList->IASetVertexBuffers( 0, 2, views );
+    }
     cmdList->IASetIndexBuffer( &ibv );
     return true;
 }
 
 
-bool D3D12GraphicsEngine::BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw ) {
+bool D3D12GraphicsEngine::BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw, bool pulled ) {
     if ( !mesh || mesh->Indices.empty() ) return false;
     m_SkelArena->Request( mesh->ArenaSlot, mesh->Vertices.data(), static_cast<UINT>( mesh->Vertices.size() ),
         mesh->Indices.data(), static_cast<UINT>( mesh->Indices.size() ) );
@@ -3879,7 +4260,7 @@ bool D3D12GraphicsEngine::BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_D
     if ( !range || !m_SkelArena->Ready() ) return false;
     const D3D12_VERTEX_BUFFER_VIEW vbv = m_SkelArena->VertexBufferView();
     const D3D12_INDEX_BUFFER_VIEW ibv = m_SkelArena->IndexBufferView();
-    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    if ( !pulled ) m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
     m_CmdList->IASetIndexBuffer( &ibv );
     draw = { range->IndexCount, 1, range->StartIndex, static_cast<INT>( range->BaseVertex ), 0 };
     return true;
@@ -4105,10 +4486,12 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 c.Draw.InstanceCount         = up.numInstances;
                 c.Draw.StartIndexLocation    = cmdIndexStart;
                 c.Draw.BaseVertexLocation    = static_cast<INT>( range->BaseVertex );
+                c.VertexBase                 = range->BaseVertex;
                 // Absolute, not range-relative: there is no per-command instance VBV any more, so the command
                 // names its visual's block inside the one buffer the pass binds. CSPatchArgs overwrites this
                 // for culled commands; the value here is what an unpatched one draws.
                 c.Draw.StartInstanceLocation = up.instanceBase;
+                c.InstanceBase               = up.instanceBase;
                 // Staged, not emitted: the visual's split mode isn't known until every sub-mesh is resolved.
                 StagedSubMesh s{};
                 s.Cmd = c;
@@ -4176,10 +4559,13 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     // Final: nothing patches this command, so both halves of the run are named outright.
                     f.Draw.InstanceCount = cpuFarCount;
                     f.Draw.StartInstanceLocation = up.instanceBase + cpuNearCount;
+                    f.InstanceBase = f.Draw.StartInstanceLocation;
                 } else {
-                    // GPU path: CSPatchArgs fills in both. 0 so an unpatched command draws nothing rather
-                    // than every instance a second time.
+                    // GPU path: CSPatchArgs fills in the count and StartInstanceLocation. 0 so an unpatched command
+                    // draws nothing rather than every instance a second time. The pulled VS must not depend on the
+                    // patch (root arguments are CPU-written), so it walks the far run backward from the block end.
                     f.Draw.InstanceCount = 0;
+                    f.InstanceBase = kVobFarRunBit | ( up.instanceBase + up.numInstances - 1u );
                 }
                 cmds[count++] = f;   // not counted in m_VobDrawnTriangles: the near command already
             }                        // counted every instance, keeping that stat a pre-cull upper bound
@@ -4207,9 +4593,9 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
 bool D3D12GraphicsEngine::CreateSkeletalIndirectSignature() {
     D3D12_INDIRECT_ARGUMENT_DESC args[3] = {};
     args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
-    args[0].Constant.RootParameterIndex = 2;                   // b10 SkelDrawCB { SkelInstanceRow }
+    args[0].Constant.RootParameterIndex = 2;                   // b10 SkelDrawCB { SkelInstanceRow, SkelVertexBase }
     args[0].Constant.DestOffsetIn32BitValues = 0;
-    args[0].Constant.Num32BitValuesToSet = 1;
+    args[0].Constant.Num32BitValuesToSet = 2;
     args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
     args[1].Constant.RootParameterIndex = 11;                  // b6 MaterialCB { normal, orm, diffuse }
     args[1].Constant.DestOffsetIn32BitValues = 0;
@@ -4237,11 +4623,12 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
 
     // Root constants and a draw, nothing else: the mesh comes from the arena (Base/StartIndex), the instance
     // and bones from the skeletal ring row. On Vulkan both constants are push constants, so DGC can run it.
-    static_assert( sizeof( SkeletalDrawCommand ) == 36, "SkeletalDrawCommand must match the command signature arg layout (36 B stride)" );
+    static_assert( sizeof( SkeletalDrawCommand ) == 40, "SkeletalDrawCommand must match the command signature arg layout (40 B stride)" );
     // D3D12 requires the arguments in increasing root-parameter order: b10 (param 2) before b6 (param 11).
     static_assert( offsetof( SkeletalDrawCommand, InstanceRow ) == 0, "SkeletalDrawCommand b10 must lead" );
-    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 4, "SkeletalDrawCommand b6 consts must follow b10" );
-    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 16, "SkeletalDrawCommand draw args must be last" );
+    static_assert( offsetof( SkeletalDrawCommand, VertexBase ) == 4, "SkeletalDrawCommand b10.y must follow b10.x" );
+    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 8, "SkeletalDrawCommand b6 consts must follow b10" );
+    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 20, "SkeletalDrawCommand draw args must be last" );
 
     if ( !CreateSkeletalIndirectSignature() ) return false;
 
@@ -4337,7 +4724,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                     // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig. The
                     // depth-prepass PS reads only the diffuse index (alpha clip) and ignores the other two, so one
                     // resolved material set serves both passes.
-                    ResolveMaterialMapSlots( tex, mats );
+                    ResolveMaterialMapSlots( tex, mats, mat ? Engine::GAPI->GetMaterialInfoFrom( mat ) : nullptr );
                     mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat );
                     // Alpha-test partition — same predicate as the world/VOB builds (see m_WorldOpaqueDrawCount).
                     alphaTested = ( tex && tex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() );
@@ -4348,6 +4735,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                 c.MatOrmIndex     = mats[1];
                 c.MatDiffuseIndex = mats[2];
                 c.InstanceRow     = d.instRow;
+                c.VertexBase      = sub.Posed;
                 c.Draw.IndexCountPerInstance = range->IndexCount;
                 c.Draw.InstanceCount         = 1;
                 c.Draw.StartIndexLocation    = range->StartIndex;
@@ -4421,7 +4809,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             if ( !range ) continue;   // requested this frame, not uploaded yet
 
             UINT mats[3];
-            ResolveMaterialMapSlots( a.tex, mats );
+            ResolveMaterialMapSlots( a.tex, mats, a.mat ? Engine::GAPI->GetMaterialInfoFrom( a.mat ) : nullptr );
             mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( a.tex ), a.mat );
             // Alpha-test partition, resolved at prepare: the prepass cutout is `clip(diffuse.a - 0.5)` and can
             // only discard where the diffuse actually has an alpha channel.
@@ -4492,7 +4880,9 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             c.Draw.InstanceCount         = static_cast<UINT>( b.members.size() );
             c.Draw.StartIndexLocation    = b.range->StartIndex;
             c.Draw.BaseVertexLocation    = static_cast<INT>( b.range->BaseVertex );
+            c.VertexBase                 = b.range->BaseVertex;
             c.Draw.StartInstanceLocation = instOffset / instBytes;
+            c.InstanceBase               = instOffset / instBytes;
             c.VisualIndex = 0xFFFFFFFFu;   // never GPU-culled: "leave the CPU's instance count alone"
             c.LodBucket   = kLodBucketNear;   // attachments never split; VisualIndex already skips them
             if ( b.alphaTested ) alphaAttachCmds.push_back( c );
@@ -4508,10 +4898,48 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
 }
 
 
-void D3D12GraphicsEngine::DrawDepthPrepass() {
+void D3D12GraphicsEngine::BindWorldPull( D3D12CmdList& cmdList, UINT rootParam ) const {
+    const UINT info[2] = { m_WorldVbSlot, 0u };
+    if ( m_VertexPullWorld && rootParam != UINT_MAX ) cmdList->SetGraphicsRoot32BitConstants( rootParam, 2, info, 0 );
+}
+
+void D3D12GraphicsEngine::BindSkelPull( D3D12CmdList& cmdList, UINT rootParam ) const {
+    if ( m_VertexPullWorld && rootParam != UINT_MAX ) cmdList->SetGraphicsRoot32BitConstants( rootParam, 1, &m_WorldVbSlot, 0 );
+}
+
+void D3D12GraphicsEngine::BindGrassBuffers( D3D12CmdList& cmdList, bool pulled, UINT rootParam, const D3D12_VERTEX_BUFFER_VIEW& mesh,
+    const D3D12_VERTEX_BUFFER_VIEW& instances ) const {
+    if ( pulled ) {
+        cmdList->SetGraphicsRootShaderResourceView( rootParam, mesh.BufferLocation );
+        cmdList->SetGraphicsRootShaderResourceView( rootParam + 1, instances.BufferLocation );
+    } else {
+        const D3D12_VERTEX_BUFFER_VIEW views[2] = { mesh, instances };
+        cmdList->IASetVertexBuffers( 0, 2, views );
+    }
+}
+
+void D3D12GraphicsEngine::BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances,
+    UINT instanceStride, bool attachArena ) const {
+    // The stream table is one block in enum order, so the arena VB is a small offset from the world VB slot.
+    const UINT streamOffset = m_GeometryStreams->Slot( attachArena ? D3D12GeometryStreams::Stream::AttachVB : D3D12GeometryStreams::Stream::VobVB ) - m_WorldVbSlot;
+    const UINT info[2] = { m_WorldVbSlot, instanceStride | ( streamOffset << 16 ) };
+    cmdList->SetGraphicsRoot32BitConstants( pull.Cb, 2, info, 0 );
+    cmdList->SetGraphicsRootShaderResourceView( pull.InstSrv, instances->GetGPUVirtualAddress() );
+}
+
+// Restores TRIANGLELIST on every exit of a world pass that drew patches (later passes assume it).
+struct WorldTessScope {
+    D3D12CmdList& cmd;
+    const bool active;
+    WorldTessScope( D3D12CmdList& c, bool a ) : cmd( c ), active( a ) {}
+    ~WorldTessScope() { if ( active ) cmd->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ); }
+};
+
+void D3D12GraphicsEngine::DrawDepthPrepass( bool lateWorld ) {
     // Forward+ opaque WORLD-MESH depth prepass, before the lit color passes. Writes depth only (color write
     // mask 0). Water is skipped: it is transparent and never writes depth, same as in the opaque pass.
-    m_WorldPrepassDrawn = false;
+    if ( lateWorld && !m_GpuWorldActive ) return;
+    if ( !lateWorld ) m_WorldPrepassDrawn = false;
     if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return;
 
@@ -4547,10 +4975,17 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // for this. See World.DepthPrepassNoAlphaPSO.
     const bool splitAlpha = !gbuf && m_Pipelines.World.DepthPrepassNoAlphaPSO != nullptr;
 
-    m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassGBufPSO.Get()
-                                      : ( splitAlpha ? m_Pipelines.World.DepthPrepassNoAlphaPSO.Get()
-                                                     : m_Pipelines.World.DepthPrepassPSO.Get() ) );
+    const D3D12PipelineState::WorldPipeline& wp = m_Pipelines.World;
+    // Tessellated (patch) twins while m_WorldTessActive; the clipping PSO is also the alpha-suffix PSO below.
+    Rhi::PipelineState* clipPso = WorldTessPick( PullPick( wp.DepthPrepassPSO.Get(), wp.DepthPrepassPSOPull.Get() ), wp.TessDepthPrepassPSO.Get() );
+    m_CmdList->SetPipelineState( gbuf ? WorldTessPick( PullPick( wp.DepthPrepassGBufPSO.Get(), wp.DepthPrepassGBufPSOPull.Get() ), wp.TessDepthPrepassGBufPSO.Get() )
+                                      : ( splitAlpha ? WorldTessPick( PullPick( wp.DepthPrepassNoAlphaPSO.Get(), wp.DepthPrepassNoAlphaPSOPull.Get() ), wp.TessDepthPrepassNoAlphaPSO.Get() )
+                                                     : clipPso ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+    BindWorldPull( m_CmdList, m_Pipelines.World.PullRootParam );
+    const WorldTessScope tessScope( m_CmdList, m_WorldTessActive );
+    if ( wp.TessRootParam != UINT_MAX )   // b11: the tess HS/DS and PSClip's POM read it
+        m_CmdList->SetGraphicsRootConstantBufferView( wp.TessRootParam, m_ShadowCBGpu[m_FrameIndex] + kWorldTessCbOffset );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
     if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSWorldGBuf)
 
@@ -4563,17 +4998,18 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
     m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
     m_CmdList->IASetIndexBuffer( &ibv );
-    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    m_CmdList->IASetPrimitiveTopology( m_WorldTessActive ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     // GPU-driven submit (P2.11): one ExecuteIndirect over the shared per-frame command buffer that
     // BuildWorldDrawCommands filled (same opaque draw set as the color pass; water already peeled). Each command
     // sets the b6 diffuse index (PSClip alpha-clips bindless) then draws its material's index range. Replaces the
     // per-material descriptor-table binds + DrawIndexedInstanced calls (the CPU cost this optimization targets).
     if ( m_GpuWorldActive ) {
-        if ( !m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) return;
-        m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
-        if ( splitAlpha ) m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
-        m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+        const UINT worldView = lateWorld ? D3D12GpuWorld::kViewMainLate : D3D12GpuWorld::kViewMain;
+        if ( !m_GpuWorld->Drawable( worldView ) ) return;
+        m_GpuWorld->Draw( m_CmdList, worldView, false );
+        if ( splitAlpha ) m_CmdList->SetPipelineState( clipPso );
+        m_GpuWorld->Draw( m_CmdList, worldView, true );
         m_WorldPrepassDrawn = true;
         return;
     }
@@ -4587,7 +5023,8 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // Opaque prefix, no pixel shader bound — the run that gets double-rate Z. Prefer the coalesced mirror of
     // it (m_WorldDepthMergedFirst): identical index coverage, far fewer commands, and the per-material
     // constants it drops are dead with no PS bound.
-    if ( m_WorldDepthMergedCount > 0 ) {
+    // Not while tessellating: the merged commands drop b6, and the tess VS/HS read the material (height slot, factors)
+    if ( m_WorldDepthMergedCount > 0 && !m_WorldTessActive ) {
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDepthMergedCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
             static_cast<UINT64>( m_WorldDepthMergedFirst ) * sizeof( WorldDrawCommand ), nullptr, 0 );
@@ -4597,7 +5034,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     }
     // Alpha-tested suffix through the clipping PSO, starting at the partition point.
     if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
-        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
+        m_CmdList->SetPipelineState( clipPso );
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
             static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );
@@ -4662,31 +5099,31 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
 }
 
 
-void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam ) {
+void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam, const MaterialInfo* info ) {
     // Set the per-material bindless indices (b6 root consts) the PBR PS reads via ResourceDescriptorHeap[...]:
     // this material's normal + ORM map SRV heap slots (loaded onto the surface by LoadAdditionalResources).
     // No normal map -> 0xFFFFFFFF (PS skips the perturb); no _FX/ORM map -> the 1x1 default ORM slot.
     UINT idx[2];
-    ResolveMaterialMapSlots( tex, idx );
+    ResolveMaterialMapSlots( tex, idx, info );
     m_CmdList->SetGraphicsRoot32BitConstants( matRootParam, 2, idx, 0 );
 }
 
 
-void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam, UINT diffuseSlot ) {
+void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam, UINT diffuseSlot, const MaterialInfo* info ) {
     // Fully-bindless variant: the same normal/ORM indices plus the DIFFUSE heap slot as the third b6 constant.
     // Used by every pass on Skeletal.RootSig (which has no SRV table at all) — one 3-DWORD root-constant push
     // per material instead of a descriptor-table bind. The b6 layout matches World.RootSig's, so the world/VOB
     // bindless PS variants read the identical struct.
     UINT idx[3];
-    ResolveMaterialMapSlots( tex, idx );
+    ResolveMaterialMapSlots( tex, idx, info );
     idx[2] = diffuseSlot;
     m_CmdList->SetGraphicsRoot32BitConstants( matRootParam, 3, idx, 0 );
 }
 
 
-void D3D12GraphicsEngine::ResolveMaterialMapSlots( zCTexture* tex, UINT* outNormalOrm ) const {
+void D3D12GraphicsEngine::ResolveMaterialMapSlots( zCTexture* tex, UINT* outNormalOrm, const MaterialInfo* info ) const {
     outNormalOrm[0] = 0xFFFFFFFFu;
-    outNormalOrm[1] = GetDefaultOrmSrvSlot();
+    outNormalOrm[1] = DefaultOrmSlotFor( info );
     if ( tex ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* n = s->GetNormalmap() ) {
@@ -4710,6 +5147,7 @@ void D3D12GraphicsEngine::BindWorldFrameRootState( const XMFLOAT4X4& viewProj ) 
     const FogConstants fog = MakeFogConstants();
 
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+    BindWorldPull( m_CmdList, m_Pipelines.World.PullRootParam );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
     BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — MUST set both or the
@@ -4720,6 +5158,8 @@ void D3D12GraphicsEngine::BindWorldFrameRootState( const XMFLOAT4X4& viewProj ) 
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );
     m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) );   // t5 point-shadow cubes
     m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
+    if ( m_Pipelines.World.TessRootParam != UINT_MAX )   // b11: tessellation stages and the height-map shading in ShadeWorld
+        m_CmdList->SetGraphicsRootConstantBufferView( m_Pipelines.World.TessRootParam, m_ShadowCBGpu[m_FrameIndex] + kWorldTessCbOffset );
 }
 
 
@@ -4753,11 +5193,16 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
     // Opaque run depth-EQUAL against the prepass (no clip, early depth); alpha-tested run keeps PSO's clip.
-    Rhi::PipelineState* opaquePso = m_WorldPrepassDrawn && m_Pipelines.World.OpaquePSO
-        ? m_Pipelines.World.OpaquePSO.Get() : m_Pipelines.World.PSO.Get();
+    // Tessellated (patch) twins while m_WorldTessActive, matching the prepass of this frame.
+    const D3D12PipelineState::WorldPipeline& wp = m_Pipelines.World;
+    Rhi::PipelineState* clipPso = WorldTessPick( PullPick( wp.PSO.Get(), wp.PSOPull.Get() ), wp.TessPSO.Get() );
+    Rhi::PipelineState* opaquePso = m_WorldPrepassDrawn && wp.OpaquePSO
+        ? WorldTessPick( PullPick( wp.OpaquePSO.Get(), wp.OpaquePSOPull.Get() ), wp.TessOpaquePSO.Get() )
+        : clipPso;
     m_WorldPrepassDrawn = false;
     m_CmdList->SetPipelineState( opaquePso );
     BindWorldFrameRootState( viewProj );
+    const WorldTessScope tessScope( m_CmdList, m_WorldTessActive );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -4768,7 +5213,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
     m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
     m_CmdList->IASetIndexBuffer( &ibv );
-    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    m_CmdList->IASetPrimitiveTopology( m_WorldTessActive ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     // GPU-driven submit (P2.11): one ExecuteIndirect over the shared per-frame command buffer (built by
     // BuildWorldDrawCommands before the depth prepass; water already peeled into g_FrameWaterSurfaces). Each
@@ -4776,11 +5221,16 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     // the whole opaque world is one API call with zero per-draw descriptor binds (the CPU cost this targets).
     // Frame-constant root args (b0 ViewProj, b1 fog, lights, CSM, point-shadow cubes) are already set above.
     if ( m_GpuWorldActive ) {
+        // Both phases, in the PSOs the prepass drew them with.
+        const bool late = m_GpuWorldTwoPhase && m_GpuWorld->Drawable( D3D12GpuWorld::kViewMainLate );
         if ( m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) {
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
-            m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+            if ( late ) m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMainLate, false );
+            m_CmdList->SetPipelineState( clipPso );
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+            if ( late ) m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMainLate, true );
         }
+        if ( m_GpuTimers ) m_GpuWorld->RecordStats( m_CmdList );
         return XR_SUCCESS;
     }
     if ( m_WorldDrawCount == 0 ) return XR_SUCCESS;
@@ -4789,7 +5239,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
             m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
     if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
-        m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+        m_CmdList->SetPipelineState( clipPso );
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
             static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );
@@ -5066,9 +5516,9 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
     const bool splitAlpha = !gbuf && m_Pipelines.World.DepthPrepassVobNoAlphaPSO != nullptr;
 
-    m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassVobGBufPSO.Get()
-                                      : ( splitAlpha ? m_Pipelines.World.DepthPrepassVobNoAlphaPSO.Get()
-                                                     : m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() ) );
+    m_CmdList->SetPipelineState( gbuf ? PullPick( m_Pipelines.World.DepthPrepassVobGBufPSO.Get(), m_Pipelines.World.DepthPrepassVobGBufPSOPull.Get() )
+                                      : ( splitAlpha ? PullPick( m_Pipelines.World.DepthPrepassVobNoAlphaPSO.Get(), m_Pipelines.World.DepthPrepassVobNoAlphaPSOPull.Get() )
+                                                     : PullPick( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get(), m_Pipelines.World.DepthPrepassVobIndirectPSOPull.Get() ) ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
     if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSDepthGBuf)
@@ -5081,7 +5531,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws() ) )
+    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws(), 0, &m_Pipelines.World.VobPull ) )
         return;
 
     // One GPU-driven submit over the shared command set BuildVobDrawCommands filled (same set the color pass draws).
@@ -5106,7 +5556,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     // The alpha-tested run, whole — no distance trim. Leaving alpha-tested surfaces out of the prepass lets
     // grass and other later geometry draw on top of them.
     const UINT alphaCount = cpuDraws ? m_VobDrawCount - m_VobOpaqueDrawCount : 0u;
-    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
+    m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get(), m_Pipelines.World.DepthPrepassVobIndirectPSOPull.Get() ) );
     if ( alphaCount > 0 ) {
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), alphaCount, drawArgs,
             static_cast<UINT64>( m_VobOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
@@ -5144,7 +5594,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 
     const FogConstants fog = MakeFogConstants();
 
-    m_CmdList->SetPipelineState( m_Pipelines.World.VobIndirectPSO.Get() );
+    m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.VobIndirectPSO.Get(), m_Pipelines.World.VobIndirectPSOPull.Get() ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
@@ -5162,7 +5612,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws() ) )
+    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws(), 0, &m_Pipelines.World.VobPull ) )
         return XR_SUCCESS;
 
     static_assert( sizeof( VS_ExConstantBuffer_Wind ) == 48, "WindCB (b4) layout must match Vob.hlsl's WindCB" );
@@ -5650,17 +6100,17 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         const bool skelGbuf = motionCb && MotionGBufferActive();
         // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
         const bool splitAlpha = !skelGbuf && m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO != nullptr;
-        m_CmdList->SetPipelineState( skelGbuf ? m_Pipelines.Skeletal.DepthPrepassGBufPSO.Get()
-                                              : ( splitAlpha ? m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO.Get()
-                                                             : m_Pipelines.Skeletal.DepthPrepassPSO.Get() ) );
+        m_CmdList->SetPipelineState( skelGbuf ? PullPick( m_Pipelines.Skeletal.DepthPrepassGBufPSO.Get(), m_Pipelines.Skeletal.DepthPrepassGBufPSOPull.Get() )
+                                              : ( splitAlpha ? PullPick( m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO.Get(), m_Pipelines.Skeletal.DepthPrepassNoAlphaPSOPull.Get() )
+                                                             : PullPick( m_Pipelines.Skeletal.DepthPrepassPSO.Get(), m_Pipelines.Skeletal.DepthPrepassPSOPull.Get() ) ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         if ( skelGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 7, motionCb );   // b9 MotionCB
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        BindSkinnedGeometry( m_CmdList, 1 );
-        // Each command sets only its b6 material consts + b10 instance row, then DrawIndexed into the arena.
+        BindSkinnedGeometry( m_CmdList, 1, m_Pipelines.Skeletal.PullRootParam );
+        // Each command sets only its b6 material consts + b10 { instance row, vertex base }, then DrawIndexed into the arena.
         if ( !splitAlpha ) {
             m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
                 m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -5670,7 +6120,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
                     m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
             }
             if ( m_SkeletalDrawCount > m_SkeletalOpaqueDrawCount ) {
-                m_CmdList->SetPipelineState( m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
+                m_CmdList->SetPipelineState( PullPick( m_Pipelines.Skeletal.DepthPrepassPSO.Get(), m_Pipelines.Skeletal.DepthPrepassPSOPull.Get() ) );
                 m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(),
                     m_SkeletalDrawCount - m_SkeletalOpaqueDrawCount, m_SkeletalDrawArgs[m_FrameIndex].Get(),
                     static_cast<UINT64>( m_SkeletalOpaqueDrawCount ) * sizeof( SkeletalDrawCommand ), nullptr, 0 );
@@ -5688,9 +6138,9 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         const bool attachGbuf = motionCb && MotionGBufferActive();
         // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
         const bool attachSplit = !attachGbuf && m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSO != nullptr;
-        m_CmdList->SetPipelineState( attachGbuf ? m_Pipelines.World.DepthPrepassVobAttachGBufPSO.Get()
-                                                : ( attachSplit ? m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSO.Get()
-                                                                : m_Pipelines.World.DepthPrepassVobAttachPSO.Get() ) );
+        m_CmdList->SetPipelineState( attachGbuf ? PullPick( m_Pipelines.World.DepthPrepassVobAttachGBufPSO.Get(), m_Pipelines.World.DepthPrepassVobAttachGBufPSOPull.Get() )
+                                                : ( attachSplit ? PullPick( m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSO.Get(), m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSOPull.Get() )
+                                                                : PullPick( m_Pipelines.World.DepthPrepassVobAttachPSO.Get(), m_Pipelines.World.DepthPrepassVobAttachPSOPull.Get() ) ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         if ( attachGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB
@@ -5700,7 +6150,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        BindAttachArenaIA( m_CmdList );
+        BindAttachArenaIA( m_CmdList, &m_Pipelines.World.VobPull );
         if ( !attachSplit ) {
             m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
                 m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -5710,7 +6160,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
                     m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
             }
             if ( m_AttachDrawCount > m_AttachOpaqueDrawCount ) {
-                m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
+                m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.DepthPrepassVobAttachPSO.Get(), m_Pipelines.World.DepthPrepassVobAttachPSOPull.Get() ) );
                 m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(),
                     m_AttachDrawCount - m_AttachOpaqueDrawCount, m_AttachDrawArgs[m_FrameIndex].Get(),
                     static_cast<UINT64>( m_AttachOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
@@ -5746,7 +6196,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex] && m_SkelArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Draw skeletal" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal" );
-        m_CmdList->SetPipelineState( m_Pipelines.Skeletal.PSO.Get() );
+        m_CmdList->SetPipelineState( PullPick( m_Pipelines.Skeletal.PSO.Get(), m_Pipelines.Skeletal.PSOPull.Get() ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &fog, 0 );   // b3 fog
@@ -5758,7 +6208,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        BindSkinnedGeometry( m_CmdList, 1 );
+        BindSkinnedGeometry( m_CmdList, 1, m_Pipelines.Skeletal.PullRootParam );
         m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
             m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
@@ -5771,7 +6221,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig && m_AttachArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Draw attachments" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw attachments" );
-        m_CmdList->SetPipelineState( m_Pipelines.World.VobAttachPSO.Get() );
+        m_CmdList->SetPipelineState( PullPick( m_Pipelines.World.VobAttachPSO.Get(), m_Pipelines.World.VobAttachPSOPull.Get() ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)
@@ -5787,7 +6237,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
         // Each command sets its b6 { normal, ORM, diffuse } bindless material constants, then DrawIndexed into
         // the arena — PSMainBindless reads the identical MaterialCB layout the base meshes use.
-        BindAttachArenaIA( m_CmdList );
+        BindAttachArenaIA( m_CmdList, &m_Pipelines.World.VobPull );
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
             m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }

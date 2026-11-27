@@ -172,6 +172,7 @@ protected:
     void RenderVegetationTab();
     void RenderSelectionTab();
     void RenderTextureSelectionPanel();
+    void RenderWorldTessellationGroup();
     void RenderVegetationSelectionPanel();
     void RenderVobSettingsDialog();
 
@@ -234,9 +235,17 @@ protected:
     float SelectedTexNrmStr;
     float SelectedTexSpecIntens;
     float SelectedTexSpecPower;
-    float SelectedTexDisplacement;
+    bool SelectedTexRoughOverride = false;   // MaterialInfo::Buffer::Roughness >= 0
+    float SelectedTexRoughness = 0.65f;
+
+    /** World tessellation overrides of the selected world mesh (SelectedTessMesh == UINT_MAX: none) */
     float SelectedMeshTessAmount;
+    float SelectedMeshDisplacement;
     float SelectedMeshRoundness;
+    unsigned int SelectedTessMesh;
+    int SelectedTessSectionX;
+    int SelectedTessSectionY;
+    std::string SelectedTessKey;
 
     /** Tab state */
     int MainTabIndex;
@@ -245,9 +254,6 @@ protected:
     /** Panel visibility */
     bool ShowVobSettingsDialog;
     bool ShowMaterialInfoDialog;
-
-    /** Thumbnail texture */
-    GfxTexture* SelectedImageThumbnail;
 
     WidgetContainer* Widgets;
 };

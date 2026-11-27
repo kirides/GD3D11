@@ -57,8 +57,16 @@ struct VS_OUT
 // pixel shader — the scattering march is entirely a function of that position relative to AC_SpherePosition.
 // Only POSITION is read (the input layout declares nothing else); the dome's normals/UVs/colour are unused,
 // since the cloud layers are sampled by world XZ, not by mesh UV.
+// VERTEX_PULL: the dome's 60 B ExVertexStruct VB as a root SRV at offset 0 (position @0); the dome draw has base vertex 0.
+#ifdef VERTEX_PULL
+ByteAddressBuffer SkyDomeVb : register( t0 );
+VS_OUT VSMain( uint vid : SV_VertexID )
+{
+    const float3 pos = asfloat( SkyDomeVb.Load3( vid * 60 ) );
+#else
 VS_OUT VSMain( float3 pos : POSITION )
 {
+#endif
     VS_OUT o;
     float3 positionWorld = mul( float4( pos, 1.0f ), World ).xyz;
     o.clip = mul( float4( positionWorld, 1.0f ), ViewProj );
@@ -92,10 +100,16 @@ float3 ApplySkyLayers( float3 atmoColor, float3 worldPos )
         night = SrgbToLinear( nightTex.Sample( smpSky, 0.5f + worldPos.xz / 200000.0f + frac( AC_Time * 0.0001f ) ).rgb );
     }
 
+    // Overcast: grey veil over the clear sky (daytime only), clouds greyer, darker and more opaque
+    const float overcast = AC_Weather.x;
+    const float dayVeil = 0.5f * overcast * saturate( AC_LightPos.y );
+    atmoColor = lerp( atmoColor, dot( atmoColor, float3( 0.2126f, 0.7152f, 0.0722f ) ) * AC_Weather.yzw, dayVeil );
+
     clouds.rgb *= lerp( atmoColor, 1.0f, saturate( AC_LightPos.y ) );
+    clouds.rgb = lerp( clouds.rgb, dot( clouds.rgb, float3( 0.2126f, 0.7152f, 0.0722f ) ) * AC_Weather.yzw, 0.6f * overcast ) * ( 1.0f - 0.25f * overcast );
     night = lerp( 0.0f, night, saturate( -AC_LightPos.y * 4 ) ); // Make sure stars are only visible at night
 
-    atmoColor = lerp( atmoColor, clouds.rgb, clouds.a * 0.4f );
+    atmoColor = lerp( atmoColor, clouds.rgb, clouds.a * lerp( 0.4f, 0.85f, overcast ) );
 
     // Apply stars
     atmoColor += night * 0.4f;

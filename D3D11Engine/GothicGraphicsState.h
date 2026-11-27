@@ -556,21 +556,13 @@ struct GTAOSettings {
     float DepthMIPSamplingOffset;       // [2.0, 6.0] bandwidth/quality trade-off in the MIP selection
 };
 
-/** D3D12 only: the discrete roughness values the default (no _FX/_ORM map) material can be set to.
-    The D3D12 backend can't sample an arbitrary roughness for these materials — it hands the shader a
-    bindless 1x1 ORM texture, so every selectable value needs its own texture created up front (see
-    D3D12GraphicsEngine::CreateWhiteTexture / m_DefaultOrmTextures). 14 steps of 0.05 from 0.25 to 0.90
-    is 14 1x1 textures, i.e. nothing, and covers everything from damp stone to chalky plaster. kMin is
-    floored at 0.25 deliberately: below that the GGX specular lobe (PBRLighting.hlsl's
-    PBR_DistributionGGX) gets so tight that a directional-light highlight almost never lines up with
-    a given pixel, and with no local reflection probes the lost specular energy has nowhere to go —
-    default (no-map) materials just read as uniformly darker rather than glossier. Real materials with
-    an authored _ORM map are unaffected; they aren't limited to this step table.
-    Kept here rather than in the D3D12 headers so ImGuiShim can drive the slider without including them. */
+/** D3D12 only: the discrete roughness values a material with no _FX/_ORM map can use (global default and
+    per-material override). The shader gets a bindless 1x1 ORM texture, so every value needs its own texture
+    up front (D3D12GraphicsEngine::m_DefaultOrmTextures). Kept here so ImGui can use it without the D3D12 headers. */
 namespace DefaultRoughness {
-    constexpr float kMin  = 0.25f;
+    constexpr float kMin  = 0.05f;
     constexpr float kStep = 0.05f;
-    constexpr int   kNumSteps = 14;                         // 0.25 0.30 ... 0.90
+    constexpr int   kNumSteps = 18;                         // 0.05 0.10 ... 0.90
     constexpr float kMax = kMin + kStep * ( kNumSteps - 1 );
 
     /** Roughness for step index i (clamped). */
@@ -806,6 +798,9 @@ struct GothicRendererSettings {
         LowCloudSpeed = 1.0f;
         LowCloudSunLight = 1.0f;
         LowCloudDayColor = SwitchG1G2( XMFLOAT3( 0.90f, 0.80f, 0.65f ), XMFLOAT3( 1.05f, 1.15f, 1.15f ) );
+        DynamicWeather = true;
+        WeatherVariety = 1.0f;
+        WeatherBias = 0.0f;
         FogRange = SwitchG1G2(1.0f, 3.0f);
         EnableHDR = false;
         HDRToneMap = E_HDRToneMap::ToneMap_Simple;
@@ -926,7 +921,11 @@ struct GothicRendererSettings {
         GpuVobOcclusionCulling = false;
         GpuScene = false;
         GpuWorld = false;
+        GpuWorldOcclusion = true;
+        GpuWorldConeCulling = true;
+        ShadowTriangleCulling = false;
         UseGpuUploadRings = false;
+        VertexPulling = true;
         EnableVSync = true;
         DoZPrepass = false;
         SortRenderQueue = false;
@@ -1034,10 +1033,29 @@ struct GothicRendererSettings {
         BinkVideoRunning = false;
         WaterWaves = WATER_WAVES_ORIGINAL;
         WaterSimulation = WATER_SIM_OFF;
-        WaterSeaState = 1.0f;
+        WaterTessellation = false;
+        WaterTessellationMaxFactor = 64;
+        WorldTessellation = false;
+        WorldTessellationMaxFactor = 8;
+        WorldTessellationRange = 4000.0f;
+        WorldTessellationStrength = 1.0f;
+#ifdef PUBLIC_RELEASE
+        HeightMapShading = false;   // hidden in public builds
+        HeightMapPom = false;
+#else
+        HeightMapShading = true;
+        HeightMapPom = true;
+#endif
+        HeightMapDepth = 10.0f;
+        HeightMapShadowSteps = 12;
+        HeightMapRange = 8000.0f;
+        HeightMapPomSteps = 24;
+        HeightMapSilhouettes = true;
+        WaterSeaState = 0.0f;
         WaterWaveScale = 1.0f;
         WaterChoppiness = 1.0f;
         WaterWindAngle = 0.0f;
+        WaterWindDrift = true;
         WaterSSRQuality = WATER_SSR_MEDIUM;
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
         WaterReflectionMode = WATER_REFLECTION_GEOMETRY_SKY;
@@ -1155,6 +1173,8 @@ struct GothicRendererSettings {
         DebugSettings.FeatureSet.UseMDIOverride = FEATURE_AUTO;
         DebugSettings.FeatureSet.UseLayeredRenderingOverride = FEATURE_AUTO;
         DebugSettings.FeatureSet.UseTransientAliasingOverride = FEATURE_AUTO;
+        DebugSettings.FeatureSet.IntegratedGpuTuningOverride = FEATURE_AUTO;
+        DebugSettings.FeatureSet.IntegratedGpuTuning = false;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1229,6 +1249,9 @@ struct GothicRendererSettings {
     float LowCloudSpeed;
     float LowCloudSunLight;     // sun glow on cloud tops and through thin cloud
     XMFLOAT3 LowCloudDayColor;  // per world, not persisted (SetupXWorldSpecificValues)
+    bool DynamicWeather;        // each day gets clear, cloudy or overcast weather (needs AtmosphericScattering)
+    float WeatherVariety;       // 0..1: how far the daily weather can range
+    float WeatherBias;          // -1..1: shifts the overcast estimate (+ = gloomier)
     float FogRange;
     int WindQuality;
     bool HeroAffectsObjects;
@@ -1265,9 +1288,18 @@ struct GothicRendererSettings {
     // D3D12: the world mesh's clusters are culled per view on the GPU, which also writes its draw commands;
     // water, portals and blended surfaces stay CPU-collected (GPU_SCENE_PLAN.md).
     bool GpuWorld;
+    // GPU world culling stages (CULLING_PLAN.md), each a live A/B toggle: two-phase Hi-Z occlusion of the main view's
+    // clusters and normal-cone backface rejection.
+    bool GpuWorldOcclusion;
+    bool GpuWorldConeCulling;
+    // Stage 4: the cascades draw only the world triangles that can cover a shadow-map texel.
+    bool ShadowTriangleCulling;
     // D3D12/Vulkan: the light, skeletal and VOB/shadow instance rings live in CPU-writable VRAM (GPU_UPLOAD /
     // ReBAR) instead of system memory. Read when the rings are created, so it takes effect after a restart.
     bool UseGpuUploadRings;
+    // D3D12/Vulkan, temporary A/B: the world mesh is read by vertex pulling instead of the input assembler.
+    // Live (latched per frame). To be removed after measuring (VERTEX_PULLING_PLAN.md phase 1).
+    bool VertexPulling;
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;
@@ -1509,10 +1541,24 @@ struct GothicRendererSettings {
     bool BinkVideoRunning;
     E_WaterWaves WaterWaves;
     E_WaterSimulation WaterSimulation;   // FFT ocean on MT_Ocean; overrides WaterWaves there. Quality change reallocates.
+    bool WaterTessellation;              // D3D12/Vulkan: distance-adaptive tessellation of water in the DX11 wave mode; presplit needs a world reload
+    int WaterTessellationMaxFactor;      // hull-shader cap, 4..64
+    bool WorldTessellation;              // D3D12/Vulkan, needs VertexPulling: PN-smoothed main-view world mesh
+    int WorldTessellationMaxFactor;      // hull-shader cap, 1..16
+    float WorldTessellationRange;        // world units; smoothing fades out over the last 25%, no tessellation beyond
+    float WorldTessellationStrength;     // global roundness scale, 0..1
+    bool HeightMapShading;               // D3D12/Vulkan: per-pixel micro shadows, cavity AO and normals from _HEIGHT.DDS maps
+    float HeightMapDepth;                // height-map peak-to-peak range in cm, 0..50; shading and tessellation displacement (0 = off)
+    int HeightMapShadowSteps;            // micro-shadow ray steps, 0..32 (0 = no micro shadows)
+    float HeightMapRange;                // world units: how far height shading/POM reaches (full to 75%), 2000..20000
+    bool HeightMapPom;                   // parallax occlusion mapping beyond the tessellation range (everywhere without tessellation)
+    int HeightMapPomSteps;               // POM linear-search steps, 8..64
+    bool HeightMapSilhouettes;           // curved silhouettes cut by the POM ray (needs HeightMapPom)
     float WaterSeaState;                 // 0 calm .. 3 storm (interpolated)
     float WaterWaveScale;                // amplitude multiplier
     float WaterChoppiness;               // horizontal displacement multiplier
     float WaterWindAngle;                // degrees, direction the wind blows towards
+    bool WaterWindDrift;                 // the wind direction wanders over the game days around WaterWindAngle
     E_WaterSSRQuality WaterSSRQuality;
     // D3D12 only: temporal SSR on opaque wet/glossy surfaces (D3D12Ssr.cpp's history + the Forward+ PS
     // marcher). Reuses E_WaterSSRQuality's step-count tiers/DISABLED value rather than a parallel enum —
@@ -1640,7 +1686,11 @@ struct GothicRendererSettings {
             bool UseLayeredRendering;
             // D3D12/Vulkan: render-graph scratch textures placed in one aliased heap instead of committed.
             bool UseTransientAliasing;
+            // Shader permutations tuned for GPUs that share system memory (cheaper shadow/sky-visibility
+            // sampling, fewer registers). Feeds the IGPU_TUNING shader macro; changing it recompiles shaders.
+            bool IntegratedGpuTuning;
 
+            E_FeatureOverride IntegratedGpuTuningOverride;
             E_FeatureOverride EnableDriverExtensionsOverride;
             E_FeatureOverride UseMDIOverride;
             E_FeatureOverride UseLayeredRenderingOverride;
@@ -1667,9 +1717,12 @@ struct GothicRendererSettings {
         } WaterDebug;
     } DebugSettings;
 
-    // TAA stores its accumulated weight in the history alpha, which R11G11B10 lacks.
-    bool GetUseCompressedBackBuffer() const {
-        return CompressBackBuffer && AntiAliasingMode != E_AntiAliasingMode::AA_TAA;
+    // TAA stores its accumulated weight in the history alpha, which R11G11B10 lacks. The integrated-GPU tuning
+    // compresses the scene colour too (half the bytes in every post pass); the format is fixed at startup.
+    // taaNeedsAlpha = false: D3D12 keeps its TAA history in its own RGBA16F pair, so TAA no longer blocks it there.
+    bool GetUseCompressedBackBuffer( bool taaNeedsAlpha = true ) const {
+        return ( CompressBackBuffer || DebugSettings.FeatureSet.IntegratedGpuTuning )
+            && ( !taaNeedsAlpha || AntiAliasingMode != E_AntiAliasingMode::AA_TAA );
     }
 
     // FSR 2/3 are temporal: they replace the TAA resolve and need AA_FSR. FSR 1 is spatial.

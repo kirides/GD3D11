@@ -32,6 +32,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12VobArena.h"
 #include "D3D12MeshArena.h"
 #include "D3D12GpuScene.h"
+#include "D3D12GpuTimers.h"
 #include "D3D12GpuWorld.h"
 
 static_assert( D3D12ShadowMap::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
@@ -214,6 +215,30 @@ bool D3D12ShadowMap::Init() {
 }
 
 
+Rhi::PipelineState* D3D12ShadowMap::GetWorldCasterPSO() const {
+	return m_E->PullPick( m_CasterWorldPSO.Get(), m_CasterWorldPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetWorldCasterNoAlphaPSO() const {
+	return m_E->PullPick( m_CasterWorldNoAlphaPSO.Get(), m_CasterWorldNoAlphaPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetVobIndirectCasterPSO() const {
+	return m_E->PullPick( m_CasterVobIndirectPSO.Get(), m_CasterVobIndirectPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetVobIndirectCasterNoAlphaPSO() const {
+	return m_E->PullPick( m_CasterVobIndirectNoAlphaPSO.Get(), m_CasterVobIndirectNoAlphaPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetVobAttachCasterPSO() const {
+	return m_E->PullPick( m_CasterVobAttachPSO.Get(), m_CasterVobAttachPSOPull.Get() );
+}
+
+Rhi::PipelineState* D3D12ShadowMap::GetVobAttachCasterNoAlphaPSO() const {
+	return m_E->PullPick( m_CasterVobAttachNoAlphaPSO.Get(), m_CasterVobAttachNoAlphaPSOPull.Get() );
+}
+
 /** The caster PSOs, built on m_Pipelines.World/Skeletal root signatures: rebuilt whenever those are. */
 bool D3D12ShadowMap::CreateCasterPipelines() {
 	// Caster PSO. Void PS (PSShadowClip) so no RTV is needed; front-face cull + slope-scaled depth bias fight
@@ -260,6 +285,41 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 			m_CasterWorldNoAlphaPSO.Reset();
 		}
 	}
+
+	// [Debug] VertexPulling A/B twins of the two world casters.
+	{
+		Rhi::GraphicsPipelineStateDesc pull = pso;
+		pull.InputLayout = { nullptr, 0 };
+		ID3DBlob* vs = m_E->m_Pipelines.World.CasterVsBlobPull ? m_E->m_Pipelines.World.CasterVsBlobPull.Get() : m_E->m_Pipelines.World.DepthPrepassVsBlobPull.Get();
+		bool ok = vs != nullptr;
+		if ( ok ) {
+			pull.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+			ok = SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &pull, m_CasterWorldPSOPull.ReleaseAndGetAddressOf() ) );
+			pull.PS = {};
+			ok = ok && SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &pull, m_CasterWorldNoAlphaPSOPull.ReleaseAndGetAddressOf() ) );
+		}
+		if ( !ok ) {
+			Logging::Wrn( "D3D12: vertex-pulling PSO unavailable (shadow world casters); the world mesh stays on the input assembler." );
+			m_E->m_Pipelines.VertexPullFailed = true;
+		}
+	}
+
+	// [Debug] VertexPulling A/B twins of the arena VOB casters: `desc` with the pulled VS and no input layout, plus its no-PS twin.
+	auto pullCaster = [this]( Rhi::GraphicsPipelineStateDesc desc, ID3DBlob* pulledVs, ComPtr<Rhi::PipelineState>& clip,
+		ComPtr<Rhi::PipelineState>& noAlpha, const char* what ) {
+		desc.InputLayout = { nullptr, 0 };
+		bool ok = pulledVs != nullptr;
+		if ( ok ) {
+			desc.VS = { pulledVs->GetBufferPointer(), pulledVs->GetBufferSize() };
+			ok = SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &desc, clip.ReleaseAndGetAddressOf() ) );
+			desc.PS = {};
+			ok = ok && SUCCEEDED( m_E->m_Rhi->CreateGraphicsPipelineState( &desc, noAlpha.ReleaseAndGetAddressOf() ) );
+		}
+		if ( !ok ) {
+			Logging::Wrn( "D3D12: vertex-pulling PSO unavailable (shadow {} casters); geometry stays on the input assembler.", what );
+			m_E->m_Pipelines.VertexPullFailed = true;
+		}
+	};
 
 	// VOB caster PSO (P2.9c-2): reuse the VOB depth-prepass VSDepth (two-stream: packed vertex + per-instance
 	// world matrix) + m_Pipelines.World.RootSig, with the same caster state (front cull, bias, LESS_EQUAL, no RTV). Also
@@ -309,6 +369,7 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 				m_CasterVobIndirectNoAlphaPSO.Reset();
 			}
 		}
+		pullCaster( pso, m_E->m_Pipelines.World.DepthPrepassVobVsBlobPull.Get(), m_CasterVobIndirectPSOPull, m_CasterVobIndirectNoAlphaPSOPull, "VOB" );
 	}
 
 	// Node-attachment CSM caster variant (VSDepthAttach: Fatness/Scaling inflate-along-normal instead of wind —
@@ -346,6 +407,7 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 				m_CasterVobAttachNoAlphaPSO.Reset();
 			}
 		}
+		pullCaster( pso, m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlobPull.Get(), m_CasterVobAttachPSOPull, m_CasterVobAttachNoAlphaPSOPull, "VOB attachment" );
 	}
 
 	// Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth + m_Pipelines.Skeletal.RootSig over the
@@ -369,6 +431,7 @@ bool D3D12ShadowMap::CreateCasterPipelines() {
 				m_CasterSkeletalNoAlphaPSO.Reset();
 			}
 		}
+		pullCaster( pso, m_E->m_Pipelines.Skeletal.DepthPrepassVsBlobPull.Get(), m_CasterSkeletalPSOPull, m_CasterSkeletalNoAlphaPSOPull, "skeletal" );
 	}
 	return true;
 }
@@ -426,6 +489,16 @@ bool D3D12ShadowMap::CreateGrassCaster() {
 	if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterGrassPSO.ReleaseAndGetAddressOf() ) ) ) {
 		Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass shadow caster)." );
 		return false;
+	}
+	{
+		Rhi::GraphicsPipelineStateDesc pulled = pso;
+		ID3DBlob* pulledVs = m_E->m_Pipelines.Grass.DepthVsBlobPull.Get();
+		pulled.InputLayout = { nullptr, 0 };
+		if ( pulledVs ) pulled.VS = { pulledVs->GetBufferPointer(), pulledVs->GetBufferSize() };
+		if ( !pulledVs || FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pulled, m_CasterGrassPSOPull.ReleaseAndGetAddressOf() ) ) ) {
+			Logging::Wrn( "D3D12: vertex-pulling PSO unavailable (shadow grass casters); geometry stays on the input assembler." );
+			m_E->m_Pipelines.VertexPullFailed = true;
+		}
 	}
 	return true;
 }
@@ -776,7 +849,7 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 	// Rain dims the sun toward RainSunLightStrength (parity with D3D11's SQ_LightColor.a lerp).
 	const float rain = Engine::GAPI->GetRainFXWeight();
 	const float sunStrength = set.SunLightStrength
-		+ (set.RainSunLightStrength - set.SunLightStrength) * std::min( 1.0f, rain * 2.0f );
+		+ (set.RainSunLightStrength - set.SunLightStrength) * Engine::GAPI->GetSky()->GetSunDimWeight( rain );
 
 	// BSP-indoor override (parity with D3D11): interiors get NO direct sun at all — Prepare() forces sunUp
 	// false for indoor worlds, so the cascades are cleared to unshadowed and never rendered — and worldAO
@@ -905,7 +978,14 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 	// GPU world: the cascades' world casters are culled and listed on the GPU, recorded here ahead of the jobs.
 	if ( haveWorld && castersNeeded && m_E->m_GpuWorldActive ) {
 		D3D12GpuWorld::View views[kShadowCascades] = {};
-		for ( UINT c = 0; c < kShadowCascades; ++c ) views[c] = { m_CascadeCullViewProj[c], m_ShouldUpdateCascade[c], false };
+		const bool compact = Engine::GAPI->GetRendererState().RendererSettings.ShadowTriangleCulling;
+		for ( UINT c = 0; c < kShadowCascades; ++c ) {
+			views[c] = { m_CascadeCullViewProj[c], m_ShouldUpdateCascade[c], false };
+			views[c].Compact = compact;
+			views[c].CompactViewProj = m_CascadeViewProj[c];
+			views[c].CompactMapSize = m_MapSize;
+		}
+		const D3D12GpuTimerScope cullTimer( m_E->m_GpuTimers.get(), m_E->m_CmdList, "csm cull" );
 		m_WorldGpu = m_E->m_GpuWorld->Cull( m_E->m_CmdList, views, 1, kShadowCascades );
 	}
 
@@ -1179,6 +1259,7 @@ void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
 				const bool alphaTested = !snap || snap->alphaTested;
 				SkelCmd cmd{};
 				cmd.InstanceRow = d.instRow;
+				cmd.VertexBase = sub.Posed;
 				cmd.MatNormalIndex = 0xFFFFFFFFu;
 				cmd.MatOrmIndex = defaultOrm;
 				cmd.MatDiffuseIndex = snap ? snap->slot : blackSlot;
@@ -1223,7 +1304,9 @@ void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
 			cmd.Draw.InstanceCount = 1;
 			cmd.Draw.StartIndexLocation = range->StartIndex;
 			cmd.Draw.BaseVertexLocation = static_cast<INT>( range->BaseVertex );
+			cmd.VertexBase = range->BaseVertex;
 			cmd.Draw.StartInstanceLocation = a.instIndex;
+			cmd.InstanceBase = a.instIndex;
 			cmd.VisualIndex = 0xFFFFFFFFu;   // not GPU-culled
 			cmd.LodBucket = D3D12GraphicsEngine::kLodBucketNear;
 			if ( a.alphaTested ) alphaAttach.push_back( cmd );
@@ -1406,6 +1489,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 	DX_ZONE( cmdList.Get(), "Sun Shadow Cascade" );
 	TracyD3D12ZoneCGX( cmdList.Get(), "Sun Shadow Cascade" );
+	static constexpr const char* kTimerNames[] = { "csm0", "csm1", "csm2", "csm3" };
+	const D3D12GpuTimerScope cascadeTimer( m_E->m_GpuTimers.get(), cmdList, kTimerNames[std::min<UINT>( c, 3u )] );
 
 	cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // DSV stays bound across the PSO switches below
 	// normal-Z under the LESS_EQUAL comparison sampler: far (1.0) reads as unshadowed, near (0.0) as
@@ -1433,23 +1518,28 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	if ( ( gpuWorld || ( m_WorldDrawCount[c] > 0 && m_WorldDrawArgs[c][frame] ) ) && vb && ib ) {
 		DX_ZONE( cmdList.Get(), "World Mesh" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
+		const D3D12GpuTimerScope worldTimer( m_E->m_GpuTimers.get(), cmdList, "csm world" );
 
 		// Split at the alpha-test partition CullCascade laid out: the leading opaque run needs no cutout, so it
 		// draws with no pixel shader bound (double-rate depth); only the tail pays for PSShadowClip.
 		const bool splitAlpha = m_CasterWorldNoAlphaPSO != nullptr;
 
-		cmdList->SetPipelineState( splitAlpha ? m_CasterWorldNoAlphaPSO.Get() : m_CasterWorldPSO.Get() );
+		cmdList->SetPipelineState( splitAlpha ? GetWorldCasterNoAlphaPSO() : GetWorldCasterPSO() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
+		m_E->BindWorldPull( cmdList, m_E->m_Pipelines.World.PullRootParam );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 
 		const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-		const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+		// Triangle culling: the GPU world's commands index its compacted copy of the world IB, which is just as large.
+		Rhi::Resource* compacted = gpuWorld ? m_E->m_GpuWorld->CompactIndices( c + 1 ) : nullptr;
+		const D3D12_INDEX_BUFFER_VIEW  ibv = { compacted ? compacted->GetGPUVirtualAddress() : ib->GetGpuVirtualAddress(),
+			ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
 		cmdList->IASetVertexBuffers( 0, 1, &vbv );
 		cmdList->IASetIndexBuffer( &ibv );
 
 		if ( gpuWorld ) {
 			m_E->m_GpuWorld->Draw( cmdList, c + 1, false );
-			if ( splitAlpha ) cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
+			if ( splitAlpha ) cmdList->SetPipelineState( GetWorldCasterPSO() );
 			m_E->m_GpuWorld->Draw( cmdList, c + 1, true );
 		} else if ( !splitAlpha ) {
 			cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldDrawCount[c],
@@ -1468,7 +1558,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 					m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
 			}
 			if ( m_WorldDrawCount[c] > m_WorldOpaqueDrawCount[c] ) {
-				cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
+				cmdList->SetPipelineState( GetWorldCasterPSO() );
 				cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(),
 					m_WorldDrawCount[c] - m_WorldOpaqueDrawCount[c], m_WorldDrawArgs[c][frame].Get(),
 					static_cast<UINT64>( m_WorldOpaqueDrawCount[c] ) * sizeof( D3D12GraphicsEngine::WorldDrawCommand ),
@@ -1485,7 +1575,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		// Same alpha-test split as the world casters above — BuildVobDrawCommands partitioned this cascade's
 		// command set (its outOpaqueCount landed in m_VobOpaqueDrawCount[c]).
 		const bool splitAlpha = m_CasterVobIndirectNoAlphaPSO != nullptr;
-		cmdList->SetPipelineState( splitAlpha ? m_CasterVobIndirectNoAlphaPSO.Get() : m_CasterVobIndirectPSO.Get() );
+		cmdList->SetPipelineState( splitAlpha ? GetVobIndirectCasterNoAlphaPSO() : GetVobIndirectCasterPSO() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );   // b4 frame-global wind baseline
@@ -1493,7 +1583,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		// CPU-culled and never GPU-compacted, so this is the raw upload ring, and each command's
 		// StartInstanceLocation is the absolute element index UploadVobs handed it).
 		m_E->BindVobArenaIA( cmdList, m_E->m_ShadowVobInstanceBuffer[frame].Get(),
-			m_E->m_ShadowInstanceSliceCapacity * D3D12GraphicsEngine::kShadowInstanceRingSlots );
+			m_E->m_ShadowInstanceSliceCapacity * D3D12GraphicsEngine::kShadowInstanceRingSlots, 0, &m_E->m_Pipelines.World.VobPull );
 		if ( !splitAlpha ) {
 			cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(), m_VobDrawCount[c],
 				m_VobDrawArgs[c][frame].Get(), 0, nullptr, 0 );
@@ -1503,7 +1593,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 					m_VobDrawArgs[c][frame].Get(), 0, nullptr, 0 );
 			}
 			if ( m_VobDrawCount[c] > m_VobOpaqueDrawCount[c] ) {
-				cmdList->SetPipelineState( m_CasterVobIndirectPSO.Get() );
+				cmdList->SetPipelineState( GetVobIndirectCasterPSO() );
 				cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(),
 					m_VobDrawCount[c] - m_VobOpaqueDrawCount[c], m_VobDrawArgs[c][frame].Get(),
 					static_cast<UINT64>( m_VobOpaqueDrawCount[c] ) * sizeof( D3D12GraphicsEngine::VobDrawCommand ),
@@ -1518,14 +1608,14 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		TracyD3D12ZoneCGX( cmdList.Get(), "Scene Vobs" );
 		const D3D12GpuScene& scene = *m_E->m_GpuScene;
 		const bool splitAlpha = m_CasterVobIndirectNoAlphaPSO != nullptr;
-		cmdList->SetPipelineState( splitAlpha ? m_CasterVobIndirectNoAlphaPSO.Get() : m_CasterVobIndirectPSO.Get() );
+		cmdList->SetPipelineState( splitAlpha ? GetVobIndirectCasterNoAlphaPSO() : GetVobIndirectCasterPSO() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );
 		if ( m_E->BindVobArenaIA( cmdList, scene.CasterInstances(), scene.CasterInstanceBytes(),
-			D3D12GpuScene::kCasterInstanceStride ) ) {
+			D3D12GpuScene::kCasterInstanceStride, &m_E->m_Pipelines.World.VobPull ) ) {
 			m_E->DrawGpuSceneCasters( cmdList, c, false );
-			if ( splitAlpha ) cmdList->SetPipelineState( m_CasterVobIndirectPSO.Get() );
+			if ( splitAlpha ) cmdList->SetPipelineState( GetVobIndirectCasterPSO() );
 			m_E->DrawGpuSceneCasters( cmdList, c, true );
 		}
 	}
@@ -1537,10 +1627,11 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Skeletal.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-		if ( m_E->BindSkinnedGeometry( cmdList, 1 ) ) {
+		if ( m_E->BindSkinnedGeometry( cmdList, 1, m_E->m_Pipelines.Skeletal.PullRootParam ) ) {
 			ExecuteIndirectAlphaSplit( cmdList, m_E->m_SkeletalIndirectCmdSig.Get(), m_SkelDrawArgs[c][frame].Get(), 0,
 				sizeof( D3D12GraphicsEngine::SkeletalDrawCommand ), m_SkelDrawCount[c], m_SkelOpaqueDrawCount[c],
-				m_CasterSkeletalPSO.Get(), m_CasterSkeletalNoAlphaPSO.Get() );
+				m_E->PullPick( m_CasterSkeletalPSO.Get(), m_CasterSkeletalPSOPull.Get() ),
+				m_E->PullPick( m_CasterSkeletalNoAlphaPSO.Get(), m_CasterSkeletalNoAlphaPSOPull.Get() ) );
 		}
 	}
 
@@ -1554,10 +1645,10 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		// The signature also writes b4[4..5]; bind the frame wind baseline so the rest of b4 is defined.
 		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );
-		if ( m_E->BindAttachArenaIA( cmdList ) ) {
+		if ( m_E->BindAttachArenaIA( cmdList, &m_E->m_Pipelines.World.VobPull ) ) {
 			ExecuteIndirectAlphaSplit( cmdList, m_E->m_VobIndirectCmdSig.Get(), m_AttachDrawArgs[c][frame].Get(), 0,
 				sizeof( D3D12GraphicsEngine::VobDrawCommand ), m_AttachDrawCount[c], m_AttachOpaqueDrawCount[c],
-				m_CasterVobAttachPSO.Get(), m_CasterVobAttachNoAlphaPSO.Get() );
+				GetVobAttachCasterPSO(), GetVobAttachCasterNoAlphaPSO() );
 		}
 	}
 
@@ -1569,6 +1660,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		TracyD3D12ZoneCGX( cmdList.Get(), "Grass" );
 
 		bool grassBound = false;
+		const bool grassPulled = m_E->m_VertexPullWorld && m_CasterGrassPSOPull;
 		for ( GVegetationBox* box : g_GrassBoxes[c] ) {
 			GMeshSimple* mesh = box->GetVegetationMesh();
 			GfxVertexBuffer* instBuf = box->GetInstancingBuffer();
@@ -1580,7 +1672,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 			if ( !grassBound ) {
 				grassBound = true;
-				cmdList->SetPipelineState( m_CasterGrassPSO.Get() );
+				cmdList->SetPipelineState( grassPulled ? m_CasterGrassPSOPull.Get() : m_CasterGrassPSO.Get() );
 				cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Grass.RootSig.Get() );
 				cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 				cmdList->SetGraphicsRoot32BitConstants( 3, 8, &g_GrassCB, 0 );   // b1 GrassCB (wind sway)
@@ -1597,8 +1689,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 			const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
 			const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
 			const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
-			const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
-			cmdList->IASetVertexBuffers( 0, 2, views );
+			m_E->BindGrassBuffers( cmdList, grassPulled, m_E->m_Pipelines.Grass.PullRootParam, vbv, instVbv );
 			const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
 			cmdList->IASetIndexBuffer( &ibv );
 			cmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );

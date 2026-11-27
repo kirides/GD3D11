@@ -16,6 +16,17 @@ VS_OUT VSCube( VS_IN i )
     return o;
 }
 
+// World caster pulling the world VB (VERTEX_PULLING_PLAN.md phase 1); the skinned casters keep VSCube over the posed IA stream.
+#include "include/WorldVertexPull.hlsl"
+VS_OUT VSCubeWorldPull( uint vid : SV_VertexID, uint iid : SV_InstanceID )
+{
+    float3 pos; float2 uv;
+    LoadPosUv( WorldVb(), VF_PACKED36, vid, pos, uv );
+    VS_IN i;
+    i.pos = pos; i.uv = uv; i.iid = iid;
+    return VSCube( i );
+}
+
 // VOB caster: instanceID spans (numInstances * 6). The per-instance world stream uses InstanceDataStepRate=6, so
 // each real instance is fetched for 6 consecutive instanceIDs; face = iid % 6 picks the face view-proj + slice.
 // iworld is row_major (applied as mul(M, v)) so element k is row k in both DXIL and SPIR-V.
@@ -29,6 +40,34 @@ VS_OUT VSCubeVob( VSVOB_IN i )
     o.uv   = i.uv;
     o.rt   = face;
     return o;
+}
+
+// The same pulling the arena runs of a cube bake (attachments, GPU-scene points) use: instance = InstanceBase + iid / 6.
+// Both instance streams start with a VobInstanceInfo (stride 112, or 64 for the tight point/caster regions).
+#include "include/VobVertexPull.hlsl"
+VS_OUT VSCubeVobPull( uint vid : SV_VertexID, uint iid : SV_InstanceID )
+{
+    float3 pos; float2 uv;
+    LoadPosUv( VobVb(), VF_EX60, VobVertexIndex( vid ), pos, uv );
+    const uint face = iid % 6u;
+    const VobInstance inst = LoadPulledVobInstance( iid / 6u );
+    VS_OUT o;
+    float3 wp = mul( inst.world, float4( pos, 1.0 ) ).xyz;
+    o.clip = mul( float4( wp, 1.0 ), PCR_ViewProj[face] );
+    o.uv   = uv;
+    o.rt   = face;
+    return o;
+}
+
+// Skinned casters pulling the {pos, uv} stream SkinVertices.hlsl posed in world space; b10.x = the posed vertex base, b9.x = the stream-table base.
+#include "include/SkinnedVertexPull.hlsl"
+VS_OUT VSCubeSkinnedPull( uint vid : SV_VertexID, uint iid : SV_InstanceID )
+{
+    float3 pos; float2 uv;
+    LoadPosUv( PosedPosUvVb( WorldVbIndex ), VF_POSED, vid + VobVertexBase, pos, uv );
+    VS_IN i;
+    i.pos = pos; i.uv = uv; i.iid = iid;
+    return VSCube( i );
 }
 
 // Depth-only (void PS, no SV_Depth) so the caster keeps early-Z / Hi-Z rejection and the PSO's hardware slope-

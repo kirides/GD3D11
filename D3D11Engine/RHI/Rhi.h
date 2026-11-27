@@ -245,6 +245,8 @@ namespace Rhi {
         bool EnhancedBarriers = false;
         bool LayeredRendering = false;
         bool TypedUAVLoadAdditionalFormats = false;
+        /** Native 16-bit shader ops (D3D12_OPTIONS4); Polaris lacks them and rejects such DXIL. */
+        bool Native16BitShaderOps = true;
         /** Root signature 1.1 (per-parameter data-static promises reach the driver). */
         bool RootSignature11 = false;
         bool GpuUploadHeap = false;
@@ -255,6 +257,8 @@ namespace Rhi {
         bool ShaderStoresAllStages = true;
         /** Hull/domain stages with patch topologies (always on D3D12; Vulkan needs the tessellationShader feature). */
         bool Tessellation = true;
+        /** The GPU shares system memory (D3D12 UMA / Vulkan integrated device type): a mobile or APU iGPU. */
+        bool Integrated = false;
         UINT VendorId = 0;
         LUID AdapterLuid = {};
     };

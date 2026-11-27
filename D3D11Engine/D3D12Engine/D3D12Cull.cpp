@@ -379,7 +379,7 @@ void D3D12GraphicsEngine::CullVobsGPU() {
         // frame that actually overflowed — i.e. essentially never, since the cap is 16384 visuals.
         const bool seedCulled = m_VobCullVisualOverflowed && m_VobInstanceBufferOffset > 0;
         if ( m_VobCulledInstancesInVertexState ) {
-            pre[n++] = { m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+            pre[n++] = { m_VobCulledInstances.Get(), kVobInstanceRead,
                 seedCulled ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
             m_VobCulledInstancesInVertexState = false;
         }
@@ -455,7 +455,7 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     if ( runScene ) CullGpuScene( &cb );
     if ( !runCpu ) {
         m_CmdList->TransitionBarrier( m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER );
+            kVobInstanceRead );
         m_VobCulledInstancesInVertexState = true;
         return;
     }
@@ -492,7 +492,7 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     // --- Hand both buffers to the two VOB passes ---
     m_CmdList->TransitionBarriers( {
     	{ m_VobDrawArgsGpu.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
-    	{ m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER },
+    	{ m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kVobInstanceRead },
     } );
     m_VobDrawArgsGpuInIndirectState = true;
     m_VobCulledInstancesInVertexState = true;
@@ -583,7 +583,7 @@ bool D3D12GraphicsEngine::CullGpuSceneCasters( const GpuSceneCasterView* views, 
         D3D12ResourceTransition pre[4] = {};
         UINT n = 0;
         if ( scene.CasterInstancesDrawable ) {
-            pre[n++] = { scene.CasterInstances(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            pre[n++] = { scene.CasterInstances(), kVobInstanceRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
             scene.CasterInstancesDrawable = false;
         }
         if ( scene.CasterCountsReadable ) {
@@ -656,7 +656,7 @@ bool D3D12GraphicsEngine::CullGpuSceneCasters( const GpuSceneCasterView* views, 
     m_CmdList->TransitionBarriers( {
         { scene.CasterArgs(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
         { scene.CasterArgCount(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
-        { scene.CasterInstances(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER },
+        { scene.CasterInstances(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kVobInstanceRead },
     } );
     scene.CasterArgsDrawable = true;
     scene.CasterInstancesDrawable = true;
@@ -681,7 +681,7 @@ bool D3D12GraphicsEngine::CullGpuScenePoints( const GpuScenePointView* views, UI
         D3D12ResourceTransition pre[4] = {};
         UINT n = 0;
         if ( scene.PointInstancesDrawable ) {
-            pre[n++] = { scene.PointInstances(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            pre[n++] = { scene.PointInstances(), kVobInstanceRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
             scene.PointInstancesDrawable = false;
         }
         if ( scene.PointCountsReadable ) {
@@ -757,7 +757,7 @@ bool D3D12GraphicsEngine::CullGpuScenePoints( const GpuScenePointView* views, UI
     m_CmdList->TransitionBarriers( {
         { scene.PointArgs(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
         { scene.PointArgCount(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
-        { scene.PointInstances(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER },
+        { scene.PointInstances(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kVobInstanceRead },
     } );
     scene.PointArgsDrawable = true;
     scene.PointInstancesDrawable = true;

@@ -81,6 +81,7 @@ namespace {
         static const LPCWSTR kArgs[] = {
             L"-spirv", L"-fspv-target-env=vulkan1.3", L"-fvk-use-dx-layout",
             L"-fspv-use-unknown-image-format", L"-fvk-support-nonzero-base-instance",
+            L"-fvk-support-nonzero-base-vertex",
             L"-fvk-b-shift", L"0", L"0", L"-fvk-t-shift", L"16", L"0",
             L"-fvk-u-shift", L"32", L"0", L"-fvk-s-shift", L"48", L"0",
             L"-fvk-bind-resource-heap", L"0", L"1",
@@ -127,6 +128,7 @@ namespace {
 
     // GD_SHADER_ID -> "File.hlsl:Entry", for the heap-check reports.
     bool g_HeapCheck = false;
+    bool g_Native16Bit = true;   // DXIL only; false on Polaris-class GPUs
     std::mutex g_ShaderIdMutex;
     std::unordered_map<uint32_t, std::string> g_ShaderIds;
 
@@ -406,7 +408,8 @@ namespace {
         arguments.push_back( DXC_ARG_OPTIMIZATION_LEVEL3 );   // -O3 (Maximum optimization for release)
         if ( il == ShaderIL::SPIRV && GpuDebug::VkAftermath() ) arguments.push_back( DXC_ARG_DEBUG );   // source lines in crash dumps
 #endif
-        arguments.push_back( L"-enable-16bit-types" ); // Enable 16-bit types for SM6+ (half, min16float, etc.)
+        if ( il == ShaderIL::SPIRV || g_Native16Bit )
+            arguments.push_back( L"-enable-16bit-types" ); // Enable 16-bit types for SM6+ (half, min16float, etc.)
         if ( il == ShaderIL::SPIRV ) {
             AppendSpirvArguments( arguments );
         } else {
@@ -507,7 +510,43 @@ bool D3D12ShaderBackend::LoadShaderSource( const std::string& fileName, std::str
     return false;
 }
 
-void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list ) {
+namespace {
+    std::atomic<uint32_t> g_CompiledSettingsKey{ ~0u };
+
+    constexpr uint32_t kKeyTuning = 1u << 0, kKeyRtShadows = 1u << 1, kKeyOpaqueSsr = 1u << 2, kKeyWetness = 1u << 3;
+
+    std::atomic<bool> g_WetSeen{ false };   // see ObserveWeather
+
+    // The pixel shaders that include include/PBRLighting.hlsl; only they read the tuning macros.
+    bool IsLitShaderFile( const std::string& fileName ) {
+        const size_t slash = fileName.find_last_of( "/\\" );
+        const char* base = fileName.c_str() + ( slash == std::string::npos ? 0 : slash + 1 );
+        for ( const char* lit : { "World.hlsl", "Vob.hlsl", "Skeletal.hlsl", "Vegetation.hlsl", "Decal.hlsl" } )
+            if ( _stricmp( base, lit ) == 0 ) return true;
+        return false;
+    }
+}
+
+void D3D12ShaderBackend::ObserveWeather( const GothicRendererSettings& s ) {
+    if ( g_WetSeen || !s.DebugSettings.FeatureSet.IntegratedGpuTuning ) return;
+    if ( s.RainSceneWettness > 0.0f || Engine::GAPI->GetSceneWetness() > 0.0f ) g_WetSeen = true;
+}
+
+uint32_t D3D12ShaderBackend::SettingsKey( const GothicRendererSettings& s ) {
+    // Feature bits only matter while the tuning is on: the desktop permutation never reads them.
+    uint32_t key = 0;
+    if ( !s.DebugSettings.FeatureSet.IntegratedGpuTuning ) return key;
+    key |= kKeyTuning;
+    if ( s.RayTracedSunShadows != GothicRendererSettings::RT_SHADOWS_OFF || s.RayTracedPointShadows != GothicRendererSettings::RT_SHADOWS_OFF )
+        key |= kKeyRtShadows;
+    if ( s.OpaqueSSRQuality != GothicRendererSettings::WATER_SSR_DISABLED ) key |= kKeyOpaqueSsr;
+    if ( g_WetSeen ) key |= kKeyWetness;
+    return key;
+}
+
+uint32_t D3D12ShaderBackend::CompiledSettingsKey() { return g_CompiledSettingsKey.load(); }
+
+void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list, const std::string& fileName, const char* target ) {
     const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 
     // Mirrors the D3D11 ShaderRegistry's normalmappingConfigurationBuilder so a normal map decodes the
@@ -517,6 +556,17 @@ void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list
     static const char* const sNums[] = { "0", "1", "2" };
     list.push_back( { "NORMAL_MAP_RESTORE_Z", s.CompressedNormalsSupport ? "1" : "0" } );
     list.push_back( { "NORMAL_MAP_MODE", sNums[std::clamp<int>( s.AllowNormalmaps, 1, 2 )] } );
+    // Integrated GPUs: the lit shaders pick the cheaper permutations (PBRLighting.hlsl).
+    if ( !IsLitShaderFile( fileName ) || !target || target[0] != 'p' ) return;   // ps_*
+    list.push_back( { "IGPU_TUNING", s.DebugSettings.FeatureSet.IntegratedGpuTuning ? "1" : "0" } );
+    const uint32_t key = SettingsKey( s );
+    g_CompiledSettingsKey = key;
+    if ( key & kKeyTuning ) {
+        // Features that are switched off compile out of the lit shaders (they would only cost registers).
+        list.push_back( { "FEAT_RT_SHADOWS", ( key & kKeyRtShadows ) ? "1" : "0" } );
+        list.push_back( { "FEAT_OPAQUE_SSR", ( key & kKeyOpaqueSsr ) ? "1" : "0" } );
+        list.push_back( { "FEAT_WETNESS", ( key & kKeyWetness ) ? "1" : "0" } );
+    }
 }
 
 bool D3D12ShaderBackend::Reflect( ID3DBlob* code, ID3D12ShaderReflection** ppReflection ) {
@@ -564,7 +614,8 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
         for ( const D3D_SHADER_MACRO* m = defines; m->Name != nullptr; ++m )
             macros.push_back( *m );
     }
-    AppendGlobalMacros( macros );
+    AppendGlobalMacros( macros, fileName, target );
+    if ( il == ShaderIL::DXIL && !g_Native16Bit ) macros.push_back( { "USE_FP16_LIGHTING", "0" } );   // also keys the cache
     char shaderId[16] = {};
     if ( g_HeapCheck ) {
         snprintf( shaderId, sizeof( shaderId ), "0x%08Xu", RegisterShaderId( shaderName ) );
@@ -590,6 +641,10 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
     ShaderNames::Register( ( *ppCode )->GetBufferPointer(), ( *ppCode )->GetBufferSize(), shaderName );
     if ( dumpSpirv ) DumpSpirv( shaderName, *ppCode );
     return true;
+}
+
+void D3D12ShaderBackend::SetNative16Bit( bool enabled ) {
+    g_Native16Bit = enabled;
 }
 
 void D3D12ShaderBackend::SetHeapCheck( bool enabled ) {

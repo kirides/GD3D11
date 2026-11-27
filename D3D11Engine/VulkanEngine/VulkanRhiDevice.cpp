@@ -276,6 +276,7 @@ namespace VulkanRhi {
         m_Caps.RootSignature11 = true;
         m_Caps.ShaderStoresAllStages = vk.VertexStoresAndAtomics && vk.FragmentStoresAndAtomics;
         m_Caps.Tessellation = vk.TessellationShader;
+        m_Caps.Integrated = vk.DeviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
         // GPU_UPLOAD = device-local + host-visible + coherent: the 256 MB BAR, or all of VRAM with ReBAR.
         VkPhysicalDeviceMemoryProperties memory = {};
         vkGetPhysicalDeviceMemoryProperties( m_Vk.GetPhysicalDevice(), &memory );

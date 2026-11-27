@@ -17,6 +17,7 @@
 #include "WorldConverter.h"
 #include "D3D12Engine/D3D12Texture.h"
 #include "WorldMeshSection.h"
+#include "WorldTessOverrides.h"
 
 static XMFLOAT3 GetCameraPosition() {
     if (oCGame::GetGame() && oCGame::GetGame()->_zCSession_camVob) {
@@ -97,10 +98,11 @@ ImGuiEditorView::ImGuiEditorView() {
     SelectedTexNrmStr = 1.0f;
     SelectedTexSpecIntens = 1.0f;
     SelectedTexSpecPower = 90.0f;
-    SelectedTexDisplacement = 1.0f;
-    SelectedMeshTessAmount = 0.0f;
+    SelectedMeshTessAmount = 1.0f;
     SelectedMeshRoundness = 1.0f;
-    SelectedImageThumbnail = nullptr;
+    SelectedMeshDisplacement = 1.0f;
+    SelectedTessMesh = UINT_MAX;
+    SelectedTessSectionX = SelectedTessSectionY = 0;
 
     MainTabIndex = 0;
     SelectionTabIndex = 0;
@@ -265,10 +267,15 @@ void ImGuiEditorView::RenderSelectionTab() {
 }
 
 void ImGuiEditorView::RenderTextureSelectionPanel() {
-    // Thumbnail image
-    if (SelectedImageThumbnail
-        && GetImTextureIdFromGfx(SelectedImageThumbnail)) {
-        ImGui::Image(GetImTextureIdFromGfx(SelectedImageThumbnail), ImVec2(128, 128));
+    // Thumbnail image, resolved per frame: a texture purge (e.g. toggling normal maps) frees the engine texture
+    GfxTexture* thumbnail = nullptr;
+    if (zCTexture* tx = Selection.SelectedMaterial ? Selection.SelectedMaterial->GetTextureSingle() : nullptr) {
+        if (MyDirectDrawSurface7* surface = tx->GetSurface(); surface && surface->IsSurfaceReady()) {
+            thumbnail = surface->GetEngineTexture();
+        }
+    }
+    if (ImTextureID id = thumbnail ? GetImTextureIdFromGfx(thumbnail) : ImTextureID{}) {
+        ImGui::Image(id, ImVec2(128, 128));
     } else {
         ImGui::Dummy(ImVec2(128, 128));
     }
@@ -320,25 +327,108 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
         }
     }
 
-    /* per (World) Mesh settings are obsolete and not used. (tesselation  etc.) 
+    // Per-material roughness (D3D12/Vulkan): picks the same 1x1 ORM steps as the default roughness.
+    bool roughChanged = false;
+    ImGui::TextUnformatted("Roughness:");
+    ImGui::SameLine(80);
+    if (ImGui::Checkbox("Override##RoughOverride", &SelectedTexRoughOverride)) {
+        roughChanged = true;
+    }
+    ImGui::BeginDisabled(!SelectedTexRoughOverride);
+    if (ImGui::SliderFloat("##RoughValue", &SelectedTexRoughness, DefaultRoughness::kMin, DefaultRoughness::kMax, "%.2f")) {
+        SelectedTexRoughness = DefaultRoughness::ForStep(DefaultRoughness::StepFor(SelectedTexRoughness));
+    }
+    roughChanged |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("(only for materials without an _FX/_ORM map; D3D12/Vulkan)");
+    if (Selection.SelectedMaterial) {
+        zCTexture* roughTex = Selection.SelectedMaterial->GetTextureSingle();
+        MyDirectDrawSurface7* roughSurface = roughTex && roughTex->GetCacheState() == zRES_CACHED_IN ? roughTex->GetSurface() : nullptr;
+        if (roughSurface && roughSurface->GetFxMap()) {
+            ImGui::TextDisabled("This texture has an _FX/_ORM map: the map takes precedence.");
+        }
+    }
+
+    if (roughChanged && Selection.SelectedMaterial && Selection.SelectedMaterial->GetTextureSingle()) {
+        if (MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial)) {
+            info->buffer.Roughness = SelectedTexRoughOverride ? SelectedTexRoughness : -1.0f;
+            g_MaterialInfoEpoch.fetch_add(1, std::memory_order_relaxed);
+            info->WriteToFile(Selection.SelectedMaterial->GetTextureSingle()->GetNameWithoutExtView());
+        }
+    }
+
+    RenderWorldTessellationGroup();
+}
+
+void ImGuiEditorView::RenderWorldTessellationGroup() {
+    auto& overrides = GetWorldTessOverrides();
+    if (!Selection.SelectedMesh || SelectedTessMesh >= overrides.GetMeshCount()) {
+        return;
+    }
+
     ImGui::Separator();
-    ImGui::Text("WorldMesh-Settings:");
+    ImGui::TextUnformatted("World tessellation");
+    ImGui::Text("Section %d/%d  %s", SelectedTessSectionX, SelectedTessSectionY, SelectedTessKey.c_str());
 
-    ImGui::Text("Displacement:");
+    const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    if (!Engine::IsModernBackend()) {
+        ImGui::TextWrapped("Needs the D3D12 or Vulkan backend.");
+    } else if (!rs.VertexPulling) {
+        ImGui::TextWrapped("Needs Vertex Pulling to be enabled.");
+    } else if (!rs.WorldTessellation) {
+        ImGui::TextWrapped("World Tessellation is off in the settings; values are stored but not visible.");
+    }
+
+    // Applied on slider release: every change rebuilds the GPU table.
+    ImGui::TextUnformatted("Roundness:");
     ImGui::SameLine(80);
-    ImGui::SliderFloat("##Displacement", &SelectedTexDisplacement, -2.0f, 2.0f, "%.2f");
+    ImGui::SliderFloat("##TessRoundness", &SelectedMeshRoundness, 0.0f, 1.0f, "%.2f");
+    bool changed = ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::Text("Tesselation:");
+    ImGui::TextUnformatted("Tessellation:");
     ImGui::SameLine(80);
-    ImGui::SliderFloat("##TessAmount", &SelectedMeshTessAmount, 0.0f, 2.0f, "%.2f");
+    ImGui::SliderFloat("##TessFactor", &SelectedMeshTessAmount, 0.0f, 8.0f, "%.2f");
+    changed |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::Text("Roundness:");
+    ImGui::TextUnformatted("Displacement:");
     ImGui::SameLine(80);
-    ImGui::SliderFloat("##Roundness", &SelectedMeshRoundness, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("##TessDisplacement", &SelectedMeshDisplacement, 0.0f, 4.0f, "%.2f");
+    changed |= ImGui::IsItemDeactivatedAfterEdit();
 
-    ImGui::Spacing();
-    ImGui::TextWrapped("Press Space to subdivide the selected surface. (Not saved yet)");
-    */
+    if (changed) {
+        WorldTessParams p = overrides.Get(SelectedTessMesh);
+        p.Roundness = SelectedMeshRoundness;
+        p.Factor = SelectedMeshTessAmount;
+        p.Displacement = SelectedMeshDisplacement;
+        overrides.Set(SelectedTessMesh, p);
+    }
+
+    zCTexture* meshTex = overrides.GetMeshTexture(SelectedTessMesh);
+    MyDirectDrawSurface7* heightSurface = meshTex && meshTex->GetCacheState() == zRES_CACHED_IN ? meshTex->GetSurface() : nullptr;
+    if (!Engine::IsModernBackend() || !heightSurface || !heightSurface->HasHeightmapFile()) {
+        ImGui::TextUnformatted("Height map: none");
+    } else {
+        ImGui::TextUnformatted(heightSurface->GetHeightmap() ? "Height map: loaded" : "Height map: not loaded");
+    }
+
+    zCTexture* tex = Selection.SelectedMaterial ? Selection.SelectedMaterial->GetTextureSingle() : nullptr;
+    if (tex && ImGui::Button("Apply to all meshes with this texture")) {
+        WorldTessParams p = overrides.Get(SelectedTessMesh);
+        p.Roundness = SelectedMeshRoundness;
+        p.Factor = SelectedMeshTessAmount;
+        p.Displacement = SelectedMeshDisplacement;
+        overrides.SetForTexture(tex, p);
+    }
+    if (ImGui::Button("Reset mesh")) {
+        overrides.ResetMesh(SelectedTessMesh);
+        SelectedMeshRoundness = 1.0f;
+        SelectedMeshTessAmount = 1.0f;
+        SelectedMeshDisplacement = 1.0f;
+    }
+
+    if (overrides.IsDirty()) {
+        ImGui::TextWrapped("Unsaved changes: press Save Level.");
+    }
 }
 
 void ImGuiEditorView::RenderVegetationSelectionPanel() {
@@ -855,32 +945,31 @@ void ImGuiEditorView::UpdateSelectionPanel() {
     ShowVobSettingsDialog = Selection.SelectedSkeletalVob != nullptr || Selection.SelectedVobInfo != nullptr;
     
     if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTextureSingle()) {
-        auto tx = Selection.SelectedMaterial->GetTextureSingle();
-        // Select preferred texture for the texture settings
-        // Engine::AntTweakBar->SetPreferredTextureForSettings(tx->GetNameWithoutExt());
-
-        // Update thumbnail
-
-        if (MyDirectDrawSurface7* surface = tx->GetSurface(); surface && surface->IsSurfaceReady()) {
-            if (GfxTexture* engineTex = surface->GetEngineTexture()) {
-                SelectedImageThumbnail = engineTex;
-            }
-        }
-
         // Load texture settings
         MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial);
         if (info) {
             SelectedTexNrmStr = info->buffer.NormalmapStrength;
             SelectedTexSpecIntens = info->buffer.SpecularIntensity;
             SelectedTexSpecPower = info->buffer.SpecularPower;
+            SelectedTexRoughOverride = info->buffer.Roughness >= 0.0f;
+            if (SelectedTexRoughOverride) {
+                SelectedTexRoughness = DefaultRoughness::ForStep(DefaultRoughness::StepFor(info->buffer.Roughness));
+            }
         }
     }
 
-    if (Selection.SelectedMesh) {
-        // Reset mesh settings
-        SelectedTexDisplacement = 0.f;
-        SelectedMeshRoundness = 0.f;
-        SelectedMeshTessAmount = 0.f;
+    // World tessellation overrides of the selected mesh (looked up once per selection, not per frame)
+    SelectedTessMesh = UINT_MAX;
+    if (auto* worldMesh = dynamic_cast<WorldMeshInfo*>(Selection.SelectedMesh)) {
+        auto& overrides = GetWorldTessOverrides();
+        if (worldMesh->TessMeshIndex < overrides.GetMeshCount()
+            && overrides.GetMeshInfo(worldMesh->TessMeshIndex, SelectedTessSectionX, SelectedTessSectionY, SelectedTessKey)) {
+            SelectedTessMesh = worldMesh->TessMeshIndex;
+            const WorldTessParams p = overrides.Get(SelectedTessMesh);
+            SelectedMeshRoundness = p.Roundness;
+            SelectedMeshTessAmount = p.Factor;
+            SelectedMeshDisplacement = p.Displacement;
+        }
     }
 }
 

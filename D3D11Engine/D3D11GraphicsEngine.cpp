@@ -4086,7 +4086,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             float4 fogColor = isIndoorWorld
                 ? float4( 0.0f, 0.0f, 0.0f, 0.0f )
                 : float4( rendererState.RendererSettings.AtmosphericScattering
-                    ? rendererState.RendererSettings.FogColorMod
+                    ? Engine::GAPI->GetSky()->GetWeatherFogColorMod( rendererState.RendererSettings.FogColorMod )
                     : rendererState.GraphicsState.FF_FogColor, 0.0f );
             GetContext()->ClearRenderTargetView( graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&fogColor) );
         };
@@ -5763,6 +5763,9 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         for ( int c = 0; c < cascades.count; ++c ) oc.Tile[c] = cascades.c[c].length;
         oc.Params[0] = static_cast<float>( cascades.size );
         oc.Params[1] = OceanFFT::UnitsPerMetre;
+        oc.Params[3] = Engine::GAPI->GetTimeSeconds();   // PS_Water's RI_Time: the shore swell must match its normals
+        oc.Direction[0] = OceanFFT::GetSurface().WindDrift();
+        oc.Direction[1] = OceanFFT::GetSurface().SwellHeight();
         if ( ShoreField* shoreField = Engine::GAPI->GetShoreField() ) {
             oceanShoreSrv = D3D11Texture::From( shoreField->GetTexture() )->GetShaderResourceView().Get();
             const XMFLOAT4 map = shoreField->GetMapping();
@@ -7406,7 +7409,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             MaterialInfo::Buffer b = {};
 
                             b.Color = meshKey.Material->GetColor();
-                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->UpdateBuffer("MI_MaterialInfo", &b, sizeof(b));
+                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->UpdateBuffer("MI_MaterialInfo", &b, offsetof(MaterialInfo::Buffer, Roughness));
 
                         } else {
                             continue;

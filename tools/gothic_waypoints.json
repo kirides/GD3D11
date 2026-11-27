@@ -1,0 +1,22 @@
+{
+  "_note": "Khorinis (NewWorld) aliases for gothic_auto.py beam:/tp: steps. Names are way-net waypoints dumped from the running game (step 'waypoints'); any raw waypoint, freepoint or vob name also works.",
+  "city_gate": "NW_CITY_ENTRANCE_01",
+  "main_street": "NW_CITY_MAINSTREET_01",
+  "market": "NW_CITY_MERCHANT_TRADE_01",
+  "upper_quarter": "NW_CITY_UPTOWN_PATH_05",
+  "harbor": "NW_CITY_HABOUR_STOMPER_01",
+  "poor_quarter": "NW_CITY_HABOUR_POOR_AREA_01",
+  "kaserne": "NW_CITY_HABOUR_KASERN_MAIN_ENTRY",
+  "onars_farm": "NW_BIGFARM_HOUSE_OUT_02",
+  "lake": "NW_BIGFARM_LAKE_01",
+  "forest": "NW_FOREST_PATH_04",
+  "farm2": "NW_FARM2_PATH_01",
+  "farm3": "NW_FARM3_PATH_01",
+  "mill": "NW_BIGMILL_PATH_05",
+  "monastery": "NW_MONASTERY_PLACE_01",
+  "lighthouse": "NW_LIGHTHOUSE_IN_01",
+  "xardas_tower": "NW_XARDAS_TOWER_IN1_30",
+  "pass": "NW_PASS_GATE_01",
+  "castle_mine": "NW_CASTLEMINE_PATH_01",
+  "troll_area": "NW_TROLLAREA_PATH_01"
+}

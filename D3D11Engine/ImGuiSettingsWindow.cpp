@@ -677,6 +677,12 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
     CheckRow( "Low Clouds", &settings.EnableLowClouds,
         "Drifting cloud banks above the valleys and along the horizon. Costs a half-resolution ray march.", "LowClouds" );
 
+    CheckRow( "Dynamic Weather", &settings.DynamicWeather,
+        "Each day gets its own weather - clear, cloudy or overcast - derived from the game's sky. Needs Atmospheric Scattering." );
+    ImGui::BeginDisabled( !settings.DynamicWeather );
+    SliderFloatRow( "Weather Variety", "##WeatherVariety", &settings.WeatherVariety, 0.0f, 1.0f );
+    ImGui::EndDisabled();
+
     CheckRow( "Rain", &settings.EnableRain, nullptr, "Rain" );
     ImGui::BeginDisabled( !settings.EnableRain );
     CheckRow( "Rain Effects", &settings.EnableRainEffects,
@@ -694,6 +700,53 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         if ( !IsD3D12() ) shadersToReload |= ShaderCategory::Water;
     } );
 
+#if defined( BUILD_GOTHIC_2_6_fix ) && !defined( PUBLIC_RELEASE )
+    if ( IsD3D12() && settings.WaterWaves == GothicRendererSettings::WATER_WAVES_D3D11 ) {
+        CheckRow( "Water Tessellation", &settings.WaterTessellation,
+            "Evaluates the DX11 waves on a finely tessellated water mesh that adapts to distance, instead of only at Gothic's coarse vertices. Big lakes only get their full detail after the next world load. The FFT sea (Water Simulation) is always tessellated." );
+        ImGui::BeginDisabled( !settings.WaterTessellation );
+        SliderIntRow( "Tessellation Detail", "##WaterTessellationMaxFactor", &settings.WaterTessellationMaxFactor, 4, 64, "%d",
+            "Maximum subdivision per water edge. Lower is faster; near the camera the wave spacing is about 38 m divided by this." );
+        ImGui::EndDisabled();
+    }
+#endif //BUILD_GOTHIC_2_6_fix && !PUBLIC_RELEASE
+
+#ifndef PUBLIC_RELEASE
+    if ( IsD3D12() ) {
+        CheckRow( "World Tessellation", &settings.WorldTessellation,
+            "Smooths the terrain and buildings by tessellating the world mesh near the camera; hard edges stay sharp. Needs Vertex Pulling (D3D12/Vulkan). Objects and decals resting on smoothed terrain can float or sink slightly." );
+        ImGui::BeginDisabled( !settings.WorldTessellation );
+        SliderIntRow( "World Tessellation Detail", "##WorldTessellationMaxFactor", &settings.WorldTessellationMaxFactor, 1, 16, "%d",
+            "Maximum subdivision per world triangle edge. Lower is faster." );
+        SliderFloatRow( "World Tessellation Range", "##WorldTessellationRange", &settings.WorldTessellationRange, 500.0f, 20000.0f, "%.0f",
+            "Distance in world units up to which the world is smoothed; it fades out over the last quarter." );
+        SliderFloatRow( "World Tessellation Strength", "##WorldTessellationStrength", &settings.WorldTessellationStrength, 0.0f, 1.0f, "%.2f",
+            "How strongly surfaces are rounded. 0 keeps the original shape." );
+        ImGui::EndDisabled();
+    }
+
+    if ( IsD3D12() ) {
+        CheckRow( "Height Map Shading", &settings.HeightMapShading,
+            "Micro shadows from the sun, cavity occlusion, and normals for materials without a normal map, from <texture>_HEIGHT.DDS height maps (R channel, 0.5 = rest surface). Materials without a height map are unaffected." );
+        ImGui::BeginDisabled( !settings.HeightMapShading );
+        SliderFloatRow( "Height Map Depth (cm)", "##HeightMapDepth", &settings.HeightMapDepth, 0.0f, 50.0f, "%.1f",
+            "Peak-to-peak height of the height maps in cm. Also drives the displacement when World Tessellation is on. 0 disables height effects." );
+        SliderIntRow( "Height Map Shadow Quality", "##HeightMapShadowSteps", &settings.HeightMapShadowSteps, 0, 32, "%d",
+            "Ray steps for the sun's micro shadows. 0 turns them off; higher is smoother and slower." );
+        SliderFloatRow( "Height Map Range", "##HeightMapRange", &settings.HeightMapRange, 2000.0f, 20000.0f, "%.0f",
+            "How far height shading and parallax reach, in world units; they fade out over the last quarter." );
+        CheckRow( "Parallax", &settings.HeightMapPom,
+            "Parallax occlusion mapping: gives height maps apparent depth beyond the tessellation range (everywhere when World Tessellation is off)." );
+        ImGui::BeginDisabled( !settings.HeightMapPom );
+        SliderIntRow( "Parallax Steps", "##HeightMapPomSteps", &settings.HeightMapPomSteps, 8, 64, "%d",
+            "Ray steps of the parallax search. Higher is better quality and slower." );
+        CheckRow( "Parallax Silhouettes", &settings.HeightMapSilhouettes,
+            "Curved edges are cut out by the parallax ray. Needs Parallax." );
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+    }
+#endif // !PUBLIC_RELEASE
+
     constexpr ListItem<GothicRendererSettings::E_WaterSimulation> waterSims[] = {
         { "Off", GothicRendererSettings::WATER_SIM_OFF, "The sea uses the Water Waves mode above." },
         { "Low", GothicRendererSettings::WATER_SIM_LOW, "Simulated ocean waves, 3 cascades of 128x128." },
@@ -704,10 +757,11 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         "Physically based sea waves with choppy crests and whitecaps, on the sea only. Needs hardware tessellation and compute shaders; uses video memory. Switching it on from Off takes effect on the next world load." );
     ImGui::BeginDisabled( settings.WaterSimulation == GothicRendererSettings::WATER_SIM_OFF );
     SliderFloatRow( "Sea State", "##WaterSeaState", &settings.WaterSeaState, 0.0f, 3.0f, "%.1f",
-        "0 = calm, 1 = moderate, 2 = rough, 3 = storm." );
+        "0 = calm, 1 = moderate, 2 = rough, 3 = storm. Rain roughens the sea towards 2, thunderstorms towards 3." );
     SliderFloatRow( "Wave Height", "##WaterWaveScale", &settings.WaterWaveScale, 0.0f, 3.0f );
     SliderFloatRow( "Wave Choppiness", "##WaterChoppiness", &settings.WaterChoppiness, 0.0f, 2.0f );
     SliderFloatRow( "Wind Direction", "##WaterWindAngle", &settings.WaterWindAngle, -180.0f, 180.0f, "%.0f" );
+    CheckRow( "Changing Wind", &settings.WaterWindDrift, "The wind direction wanders over the course of each day, around the direction above." );
     ImGui::EndDisabled();
 
     constexpr ListItem<GothicRendererSettings::E_OceanColor> oceanColors[] = {
@@ -739,6 +793,7 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         { "Simple", GothicRendererSettings::WATER_FOAM_STYLE_SIMPLE, "Foam bands from the water depth under each pixel. No waves." },
         { "Coast Simulation", GothicRendererSettings::WATER_FOAM_STYLE_COAST,
             "Waves roll in along the coast, break in the shallows and carry the foam up the beach and back.\n"
+            "With Ocean Simulation on, the simulated sea runs up to the surf zone and the swell rolls the surface in.\n"
             "Bakes a map of the coastline when the world loads (or when you switch to it)." },
     };
     ImGui::BeginDisabled( settings.WaterShoreFoam == GothicRendererSettings::WATER_FOAM_OFF );

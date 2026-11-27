@@ -8,6 +8,7 @@
 #include "../zFILE_VDFS.h"
 #include "../ThreadPool.h"
 #include "../UIRenderer2D.h"
+#include "../SkyWeather.h"
 
 #include <unordered_set>
 
@@ -115,6 +116,7 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
     EngineTexture = nullptr;
     Normalmap = nullptr;
     FxMap = nullptr;
+    Heightmap = nullptr;
     LockedData = nullptr;
     GothicTexture = nullptr;
     IsReady = false;
@@ -168,8 +170,10 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
     // only deletes them if no other surface still uses the same replacement file.
     Normalmap.store( nullptr, std::memory_order_release );
     FxMap.store( nullptr, std::memory_order_release );
+    Heightmap.store( nullptr, std::memory_order_release );
     NormalmapRef.reset();
     FxMapRef.reset();
+    HeightmapRef.reset();
 }
 
 /** Returns the engine texture of this surface */
@@ -180,6 +184,10 @@ GfxTexture* MyDirectDrawSurface7::GetEngineTexture() {
 /** Returns the engine texture of this surface. Null until the async load publishes it. */
 GfxTexture* MyDirectDrawSurface7::GetNormalmap() {
     return Normalmap.load( std::memory_order_acquire );
+}
+
+GfxTexture* MyDirectDrawSurface7::GetHeightmap() {
+    return Heightmap.load( std::memory_order_acquire );
 }
 
 /** Returns the fx-map for this surface. Null until the async load publishes it. */
@@ -291,8 +299,11 @@ void MyDirectDrawSurface7::ReleaseAllEngineTextures() {
         surface->EngineTexture = nullptr;
         surface->Normalmap.store( nullptr, std::memory_order_release );
         surface->FxMap.store( nullptr, std::memory_order_release );
+        surface->Heightmap.store( nullptr, std::memory_order_release );
+        surface->HeightmapFileExists.store( false, std::memory_order_release );
         surface->NormalmapRef.reset();
         surface->FxMapRef.reset();
+        surface->HeightmapRef.reset();
     }
     Logging::Inf( "Released the engine textures of {} live DirectDraw surfaces", s_LiveSurfaces.size() );
 }
@@ -346,9 +357,12 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
 
     Normalmap.store( nullptr, std::memory_order_release );
     FxMap.store( nullptr, std::memory_order_release );
+    Heightmap.store( nullptr, std::memory_order_release );
+    HeightmapFileExists.store( false, std::memory_order_release );
     AvailableMaterials.store( EAdditionalMaterial::None, std::memory_order_release );
     NormalmapRef.reset();
     FxMapRef.reset();
+    HeightmapRef.reset();
 
     AdditionalResourcesResolved = true;
 
@@ -397,7 +411,10 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         }
     }
 
-    if ( normalPath.empty() && materialPath.empty() ) {
+    // Height maps are only sampled by the modern backends' tessellation.
+    const std::string heightPath = Engine::IsModernBackend() ? ResolveResourcePath( TextureName, "_HEIGHT.DDS", gameName ) : std::string{};
+
+    if ( normalPath.empty() && materialPath.empty() && heightPath.empty() ) {
         return; // No replacements for this texture — nothing to hand off.
     }
 
@@ -407,6 +424,8 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     // needed at all.
     NormalmapRef = normalPath.empty() ? nullptr : AcquireAdditionalTexture( normalPath );
     FxMapRef = materialPath.empty() ? nullptr : AcquireAdditionalTexture( materialPath );
+    HeightmapRef = heightPath.empty() ? nullptr : AcquireAdditionalTexture( heightPath );
+    HeightmapFileExists.store( !heightPath.empty(), std::memory_order_release );
 
     // Another surface already loaded these files (or this texture was cached back in while another
     // surface still held them). Publish straight away — no file IO, no upload, no job.
@@ -415,7 +434,11 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         Normalmap.store( PeekAdditionalTexture( NormalmapRef ), std::memory_order_release );
         AvailableMaterials.store( fx ? materialType : EAdditionalMaterial::None, std::memory_order_release );
         FxMap.store( fx, std::memory_order_release );
-        return;
+        if ( IsAdditionalTextureResolved( HeightmapRef ) ) {
+            Heightmap.store( PeekAdditionalTexture( HeightmapRef ), std::memory_order_release );
+            return;
+        }
+        // Only the height map still needs loading: fall through to the job (normal/FX are already published).
     }
 
     // --- Read + decode + upload on a worker ---
@@ -429,11 +452,13 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         Normalmap.store( nrm, std::memory_order_release );
         AvailableMaterials.store( fx ? materialType : EAdditionalMaterial::None, std::memory_order_release );
         FxMap.store( fx, std::memory_order_release );
+        GfxTexture* hgt = HeightmapRef ? HeightmapRef->EnsureLoaded( TextureName + "_HEIGHT.DDS", storage ) : nullptr;
+        Heightmap.store( hgt, std::memory_order_release );
         return;
     }
 
     auto task = Engine::WorkerThreadPool->enqueue(
-        [this, nrmRef = NormalmapRef, fxRef = FxMapRef, materialType, materialSuffix, name = TextureName]( const std::stop_token& token ) {
+        [this, nrmRef = NormalmapRef, fxRef = FxMapRef, hgtRef = HeightmapRef, materialType, materialSuffix, name = TextureName]( const std::stop_token& token ) {
             if ( token.stop_requested() ) {
                 // Cancelled before a worker picked it up (world change / pool flush). Leave the maps
                 // null; the surface renders diffuse-only until the texture is cached in again.
@@ -453,6 +478,10 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
             Normalmap.store( nrm, std::memory_order_release );
             AvailableMaterials.store( fx ? materialType : EAdditionalMaterial::None, std::memory_order_release );
             FxMap.store( fx, std::memory_order_release );
+
+            // Last, so a large or missing height file never delays the normal/FX maps.
+            GfxTexture* hgt = hgtRef ? hgtRef->EnsureLoaded( name + "_HEIGHT.DDS", storage ) : nullptr;
+            Heightmap.store( hgt, std::memory_order_release );
         } );
 
     std::scoped_lock lock( s_PendingSurfaceLoadsMutex );
@@ -699,6 +728,34 @@ HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {
     int alphaBits = Toolbox::GetNumberOfBits( OriginalSurfaceDesc.ddpfPixelFormat.dwRGBAlphaBitMask );
 
     int bpp = redBits + greenBits + blueBits + alphaBits;
+
+    // Dynamic weather biases itself on Gothic's sky day textures: summarize them once as they load.
+    if ( LockedData && EngineTexture ) {
+        if ( zCTexture* loading = Engine::GAPI->GetLoadingTexture();
+            loading && SkyWeather::IsSkyDayTexture( loading->GetNameView() ) ) {
+            SkyWeather::PixelFormat fmt = SkyWeather::PixelFormat::BGRA8;
+            bool known = true;
+            if ( bpp == 16 ) {
+                fmt = OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC == 1 ? SkyWeather::PixelFormat::B5G5R5A1
+                    : OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC == 2 ? SkyWeather::PixelFormat::B4G4R4A4
+                    : SkyWeather::PixelFormat::B5G6R5;
+            } else if ( bpp == 0 ) {
+                switch ( OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC ) {
+                case FOURCC_DXT1: fmt = SkyWeather::PixelFormat::DXT1; break;
+                case FOURCC_DXT2:
+                case FOURCC_DXT3: fmt = SkyWeather::PixelFormat::DXT3; break;
+                case FOURCC_DXT4:
+                case FOURCC_DXT5: fmt = SkyWeather::PixelFormat::DXT5; break;
+                default: known = false; break;
+                }
+            }
+            if ( known ) {
+                SkyWeather::RecordSkyTexture( loading->GetNameWithoutExtView(), LockedData,
+                    static_cast<int>( OriginalSurfaceDesc.dwWidth ), static_cast<int>( OriginalSurfaceDesc.dwHeight ),
+                    static_cast<int>( EngineTexture->GetRowPitchBytes( 0 ) ), fmt, alphaBits > 0 || bpp == 0 );
+            }
+        }
+    }
 
     // No conversion needed
     if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {

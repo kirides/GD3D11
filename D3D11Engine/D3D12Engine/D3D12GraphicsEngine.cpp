@@ -1,6 +1,7 @@
 // D3D12GraphicsEngine — core: device/queues/swapchain/frame/present/uploads/resources.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12Fsr1Late.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12Ocean.h"
 #include "D3D12VertexBuffer.h"
@@ -32,9 +33,12 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12GpuScene.h"
 #include "D3D12GpuWorld.h"
 #include "D3D12HeapCheck.h"
+#include "D3D12GpuTimers.h"
 #include "../RHI/GpuDebug.h"
 #include "D3D12MeshArena.h"
 #include "D3D12RayTracing.h"
+#include "D3D12GeometryStreams.h"
+#include "D3D12VertexPullSelfTest.h"
 #include "D3D12RenderGraph.h"
 #include "../WorldObjects.h"
 #include "../MorphGpu.h"
@@ -61,6 +65,8 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_V
     m_AttachArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExVertexStruct ) ),
         L"AttachmentVertexArena", L"AttachmentIndexArena", "Attachment mesh" ) ) {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
+    m_GeometryStreams = std::make_unique<D3D12GeometryStreams>( *this );
+    m_VertexPullSelfTest = std::make_unique<D3D12VertexPullSelfTest>( *this );
     m_BackbufferResolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
     m_AppliedResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
@@ -141,6 +147,7 @@ XRESULT D3D12GraphicsEngine::Init() {
     m_DeviceCapabilities.MultiDrawIndirect = true;
     m_DeviceCapabilities.UAVOverlap = true;
     m_DeviceCapabilities.Native16BitTextures = true;
+    D3D12ShaderBackend::SetNative16Bit( caps.Native16BitShaderOps );
     m_DeviceCapabilities.LayeredRendering = caps.LayeredRendering;
     // Gated at adapter selection (DeviceSupportsBindless), so a device that got this far has it.
     m_DeviceCapabilities.BindlessResources = true;
@@ -148,7 +155,10 @@ XRESULT D3D12GraphicsEngine::Init() {
     m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = caps.TypedUAVLoadAdditionalFormats;
     m_DeviceCapabilities.RayQuery = caps.RayQuery;
     m_DeviceCapabilities.TransientAliasing = caps.VendorId != 0x10DE;
+    m_DeviceCapabilities.IntegratedGpu = caps.Integrated;
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
+    Logging::Inf( "Device is {}integrated; integrated-GPU shader tuning {}.", m_DeviceCapabilities.IntegratedGpu ? "" : "not ",
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.IntegratedGpuTuning ? "on" : "off" );
 
     if ( !CreateUploadObjects() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create upload objects." );
@@ -177,6 +187,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         }
         D3D12ShaderBackend::SetHeapCheck( m_HeapCheck != nullptr );
     }
+    if ( GpuDebug::GpuTimers() && m_Api == Rhi::Backend::D3D12 ) {
+        m_GpuTimers = std::make_unique<D3D12GpuTimers>();
+        if ( !m_GpuTimers->Init( m_Rhi.Get(), kBackBufferMax ) ) m_GpuTimers.reset();
+    }
     if ( !m_TexturePool.Attach( *this ) ) {
         // Non-fatal: nothing consumes the pool yet (see D3D12RenderGraph.h), so a failure here just means
         // that infrastructure stays unavailable until the next Init(). Nothing in today's frame depends on it.
@@ -192,15 +206,15 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     // Must run BEFORE any Create*() too: every scene PSO bakes kSceneColorFormat into RTVFormats[0].
-    // R11G11B10 drops alpha, which TAA's history weight needs; it is also an optional typed-UAV format.
+    // R11G11B10 drops alpha (TAA keeps its own RGBA16F history for that); it is also an optional typed-UAV format.
     {
         auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
-        if ( rs.CompressBackBuffer && !rs.GetUseCompressedBackBuffer() ) {
-            Logging::Inf( "D3D12: CompressBackBuffer ignored while TAA is active; keeping R16G16B16A16_FLOAT." );
-        } else if ( rs.CompressBackBuffer ) {
+        // TAA keeps its history in its own RGBA16F pair (D3D12Taa.cpp), so it does not need the scene colour's alpha.
+        if ( rs.GetUseCompressedBackBuffer( false ) ) {
             if ( m_DeviceCapabilities.TypedUAVLoadAdditionalFormats ) {
                 kSceneColorFormat = DXGI_FORMAT_R11G11B10_FLOAT;
-                Logging::Inf( "D3D12: compressed scene colour (R11G11B10_FLOAT)." );
+                Logging::Inf( "D3D12: compressed scene colour (R11G11B10_FLOAT){}.",
+                    rs.CompressBackBuffer ? "" : ", integrated-GPU tuning" );
             } else {
                 Logging::Wrn( "D3D12: CompressBackBuffer requested but the device lacks "
                     "TypedUAVLoadAdditionalFormats; keeping R16G16B16A16_FLOAT." );
@@ -319,7 +333,7 @@ bool D3D12GraphicsEngine::InitScene() {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the skeletal ExecuteIndirect resources." );
         return false;
     }
-    if ( !CreateShadowConstantBuffer() || !m_ShadowMap.Init() ) {
+    if ( !CreateLightConstantBuffer() || !CreateShadowConstantBuffer() || !m_ShadowMap.Init() ) {
         // Fatal: the lit world PSO samples the shadow map (t4) + CB (b3) unconditionally, so a missing map would
         // leave those root slots unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced/opt-in).
         // Runs after the depth-prepass + VOB + skeletal pipelines so the caster PSOs can reuse all three depth VS blobs.
@@ -983,7 +997,8 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 	static_assert( kMaterialFxTableSlot == kSrvHeapCapacity - 1, "the MaterialFx table owns the heap's last slot" );
 	static_assert( kSrvHeapCapacity - 1 <= MaterialFx::kDiffuseSlotMask, "packed diffuse indices hold 16-bit slots" );
 	static_assert( D3D12HeapCheck::kReportSlot == kSrvHeapCapacity - 3 && D3D12HeapCheck::kLiveSlot == kSrvHeapCapacity - 2
-		&& kFarFieldVertexSlot == kSrvHeapCapacity - kReservedTopSlots && D3D12HeapCheck::kFirstReservedSlot == kFarFieldVertexSlot
+		&& kMaterialMapsSlot == kSrvHeapCapacity - kReservedTopSlots && kFarFieldVertexSlot == kMaterialMapsSlot + 1
+		&& D3D12HeapCheck::kFirstReservedSlot == kMaterialMapsSlot
 		&& D3D12HeapCheck::kHeapSize == kSrvHeapCapacity, "heap-check slots sit just below the MaterialFx table" );
 	m_SrvHeapCapacity = kSrvHeapCapacity - kReservedTopSlots;
 	m_SrvAllocated = 0;
@@ -1042,6 +1057,14 @@ bool D3D12GraphicsEngine::CreateMaterialFxTable() {
 	farSrv.Buffer.NumElements = 1;
 	farSrv.Buffer.StructureByteStride = sizeof( uint32_t );
 	m_Rhi->CreateShaderResourceView( m_FarFieldVertexBuffer.Get(), &farSrv, GetSrvCpuHandle( kFarFieldVertexSlot ) );
+
+	// Material maps: all "none"; the first world frame uploads the table (UpdateMaterialMaps) before any pass reads it
+	{
+		std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+		m_MaterialMaps.assign( static_cast<size_t>( kMaterialMapsSlot + kReservedTopSlots ) * 2, 0u );
+		for ( size_t i = 0; i < m_MaterialMaps.size(); i += 2 ) m_MaterialMaps[i] = kMaterialMapsNone;
+		m_MaterialMapsDirty = true;
+	}
 	return true;
 }
 
@@ -1137,6 +1160,12 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	device->CreateShaderResourceView( m_WhiteTexture->GetResource(), &nullDesc, cpuHandle );
 
 	m_FreeSrvSlots.push_back( slot );
+	// A recycled diffuse slot must not inherit the old texture's height map (the mirror is guarded by this lock)
+	if ( static_cast<size_t>( slot ) * 2 + 1 < m_MaterialMaps.size() && m_MaterialMaps[slot * 2] != kMaterialMapsNone ) {
+		m_MaterialMaps[slot * 2] = kMaterialMapsNone;
+		m_MaterialMaps[slot * 2 + 1] = 0;
+		m_MaterialMapsDirty = true;
+	}
 	if ( m_HeapCheck ) m_HeapCheck->SetLive( slot, false );
 	if ( m_GpuScene ) m_GpuScene->OnSrvSlotFreed( slot );
 	if ( m_GpuWorld ) m_GpuWorld->OnSrvSlotFreed( slot );
@@ -1193,6 +1222,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // [kWetSkyCbOffset,  ..) UploadWetnessConstants        — wet-sky tint + moon direction
     // [kRtSunCbOffset,  512) UploadRtSunConstants          — the transparents' inline sun ray
     // [kFarFieldCbOffset, ..) UpdateFarField               — the static-light far-field crossfade
+    // [kWorldTessCbOffset,..) UploadWorldTessConstants     — world tessellation camera/factor block (b11)
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};
@@ -1587,7 +1617,7 @@ void D3D12GraphicsEngine::PlanDisplayChain() {
 	if ( !m_LdrCopyReady ) return;
 
 	int passes = 0;
-	if ( WillRunSMAA() ) ++passes;
+	if ( WillRunSMAA() && !m_Fsr1LateFrame ) ++passes;   // late FSR 1 already ran SMAA at render res
 	if ( WillRunSharpen() ) ++passes;
 	if ( WillRunUnderwaterFX() ) ++passes;
 	if ( passes == 0 ) return;
@@ -2126,9 +2156,9 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
     // Fixed RTV slots: 0..kBackBufferMax-1 unused (keeps the offsets below stable), kBackBufferMax scene colour,
     // +3 HDR display, +4/+5 motion/normal G-buffer (D3D12Motion.cpp), +6/+7 LDR display-chain scratches (D3D12PostFX.cpp),
-    // +8 FSR reactive mask (D3D12Fsr.cpp).
+    // +8 FSR reactive mask, +9/+10 FSR 1 late render-res LDR pair (D3D12Fsr.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferMax + 9;
+    rtvHeapDesc.NumDescriptors = kBackBufferMax + 11;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( m_Rhi->CreateDescriptorHeap( &rtvHeapDesc, m_RtvHeap.ReleaseAndGetAddressOf() ) ) )
@@ -2199,6 +2229,9 @@ void D3D12GraphicsEngine::WaitForFrameLatencyWaitable() {
 
 XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
+    m_VertexPullWorld = false;   // re-latched in OnStartWorldRendering; a frame without it stays on the IA path
+    m_Pipelines.VertexPullActive = false;
+    m_WorldTessActive = false;
 
     if ( !g_MainLoopFramePacingInstalled ) {
         FrameMark;
@@ -2265,6 +2298,24 @@ XRESULT D3D12GraphicsEngine::OpenFrame() {
     // Same spot, same reasoning, for an AO-resolution change (ImGui combo / ini).
     ApplyPendingAoResolutionChange();
 
+    // Settings that select shader permutations (integrated-GPU tuning and the features it compiles out): when
+    // they no longer match what was compiled, recompile. The static stops a failing compile from retrying
+    // every frame (ApplyPendingShaderReload rolls back, so the keys would keep differing).
+    {
+        static uint32_t requestedKey = ~0u;
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        D3D12ShaderBackend::ObserveWeather( rs );
+        const uint32_t compiled = D3D12ShaderBackend::CompiledSettingsKey();
+        const uint32_t wanted = D3D12ShaderBackend::SettingsKey( rs );
+        if ( compiled != ~0u && wanted != compiled && wanted != requestedKey ) {
+            Logging::Inf( "D3D12: shader feature settings changed (0x{:x} -> 0x{:x}), reloading shaders.", compiled, wanted );
+            requestedKey = wanted;
+            ReloadShaders( ShaderCategory::All );
+        } else if ( wanted == compiled ) {
+            requestedKey = ~0u;
+        }
+    }
+
     // Same spot, same reasoning, for a pending shader hot-reload request (ReloadShaders only records it —
     // see ApplyPendingShaderReload's comment for the GPU-flush + rollback-on-failure this does).
     ApplyPendingShaderReload();
@@ -2308,6 +2359,10 @@ XRESULT D3D12GraphicsEngine::OpenFrame() {
     m_CmdList.ResetStats();
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
     if ( m_HeapCheck ) m_HeapCheck->BeginFrame( m_CmdList, m_FrameIndex );
+    if ( m_GpuTimers ) {
+        m_GpuTimers->BeginFrame( m_FrameIndex );
+        m_GpuFrameZone = m_GpuTimers->Begin( m_CmdList, "frame" );
+    }
 
     m_CmdList->TransitionBarrier( m_BackBuffers[m_BackBufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
     UploadMaterialFxTable();
@@ -2738,6 +2793,10 @@ XRESULT D3D12GraphicsEngine::Present() {
     {
         DX_ZONE( m_CmdList.Get(), "Texture upload flush (end of frame)" );
         FlushTextureUploads();
+    }
+    if ( m_GpuTimers ) {
+        m_GpuTimers->End( m_CmdList, m_GpuFrameZone );
+        m_GpuTimers->Resolve( m_CmdList );
     }
 
     if ( FAILED( m_CmdList->Close() ) ) return XR_FAILED;

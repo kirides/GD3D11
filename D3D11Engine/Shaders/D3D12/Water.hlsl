@@ -75,7 +75,8 @@ cbuffer WaterCB : register(b2)
     uint   OceanDerivIndex;
 
     float4 OceanTile;            // cascade tile sizes in metres, 0 = unused
-    float4 OceanParams;          // x tile texels N, y world units per metre, z tessellation pixels per edge, w unused
+    float4 OceanParams;          // x tile texels N, y world units per metre, z unused, w max tess factor of the tessellated wave water
+    float4 OceanDirection;       // x wind drift (rad, rotates the whole sea), y shore swell height (world units), zw unused
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -95,6 +96,21 @@ float3 DecodeOctNormal( float2 e )
 }
 
 struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; float2 scroll : TEXCOORD1; float4 col : DIFFUSE; };
+// VERTEX_PULL: the VS entry points take only the vertex id and read the same fields from the world VB (include/WorldVertexPull.hlsl).
+#ifdef VERTEX_PULL
+#include "include/WorldVertexPull.hlsl"
+struct VS_ENTRY_IN { uint vid : SV_VertexID; };
+VS_IN FetchWaterVertex( VS_ENTRY_IN e )
+{
+    const WorldRawVertex v = LoadWorldRaw( e.vid );
+    VS_IN i;
+    i.pos = v.pos; i.nrm = v.nrm; i.uv = v.uv; i.scroll = v.scroll; i.col = v.col;
+    return i;
+}
+#else
+typedef VS_IN VS_ENTRY_IN;
+VS_IN FetchWaterVertex( VS_ENTRY_IN e ) { return e; }
+#endif
 struct VS_OUT
 {
     float4 clip    : SV_POSITION;
@@ -106,8 +122,9 @@ struct VS_OUT
     float2 oxz     : TEXCOORD5;   // undisplaced world xz (simulated ocean only; the FFT is sampled there)
 };
 
-VS_OUT VSMain( VS_IN i )
+VS_OUT VSMain( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWaterVertex( e );
     VS_OUT o;
     float3 pos = i.pos;
     [branch] if ( WaveAnimation != WATER_WAVES_OFF ) pos += WaterWaveOffset( pos, i.col, RI_TotalTime, WaveAnimation );
@@ -386,8 +403,11 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
 
 #include "../include/OceanSurface.hlsl"
 
-// Wave height damping towards the shore: calm in the shallows and near land (OceanShoreWeight)
-float OceanDepthWeight( float2 xz ) { float4 f = WaterShoreField( xz ); return OceanShoreWeight( f.y, f.x ); }
+// The sea at an undisplaced position: calmed and turned towards the shore by the baked field
+OceanSurfaceSample OceanAt( float2 xz, float footprintM, float4 field )
+{
+    return OceanEvaluateAtShore( xz, footprintM, field, OceanDirection.x );
+}
 
 #include "../include/WaterShading.hlsl"
 
@@ -407,10 +427,11 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     px.oceanNormal = float3( 0.0f, 1.0f, 0.0f );
     px.oceanFoam = 0.0f;
     px.oceanActive = 0.0f;
+    px.restXZ = Input.oxz;
     float2 oceanFootprint = abs( ddx( Input.oxz ) ) + abs( ddy( Input.oxz ) );
     [branch] if ( IsOcean != 0 && OceanDispIndex != 0xFFFFFFFFu )
     {
-        OceanSurfaceSample os = OceanEvaluate( Input.oxz, max( oceanFootprint.x, oceanFootprint.y ) / OceanUnitsPerMetre, OceanDepthWeight( Input.oxz ) );
+        OceanSurfaceSample os = OceanAt( Input.oxz, max( oceanFootprint.x, oceanFootprint.y ) / OceanUnitsPerMetre, WaterShoreField( Input.oxz ) );
         px.oceanNormal = normalize( float3( -os.slope.x, 1.0f, -os.slope.y ) );
         px.oceanFoam = os.foam;
         px.oceanActive = 1.0f;
@@ -432,6 +453,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     fr.skyReflection = SkyReflection;
     fr.shoreFoam = ShoreFoam;
     fr.shoreFieldState = ShoreFieldIndex != 0xFFFFFFFFu ? ShoreFieldState : 0.0f;
+    fr.swellHeight = OceanDirection.y;
 
     // Opaque write: the see-through look is composited from the scene copy, exactly like D3D11
     return float4( WaterToLinear( ShadeWater( px, fr ) ), 1.0f );
@@ -448,8 +470,9 @@ struct TessVertex
     float4 col  : TEXCOORD1;
 };
 
-TessVertex VSOcean( VS_IN i )
+TessVertex VSOcean( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchWaterVertex( e );
     TessVertex o;
     o.pos = i.pos;
     o.wnrm = DecodeOctNormal( i.nrm );
@@ -513,11 +536,83 @@ VS_OUT DSOcean( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatch<
     VS_OUT o;
     o.oxz = pos.xz;
     float dist = length( pos - RI_CameraPosition );
-    OceanSurfaceSample s = OceanEvaluate( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, OceanDepthWeight( pos.xz ) );
+    float4 field = WaterShoreField( pos.xz );
+    OceanSurfaceSample s = OceanAt( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, field );
     pos += s.offset;
+    // The coast simulation's swell carries the sea in where the long FFT waves hand over to it
+    [branch] if ( ShoreFieldIndex != 0xFFFFFFFFu )
+        pos.y += WaterSurfAt( WaterShoreFromField( field ), o.oxz, RI_Time, true, OceanDirection.y ).swellHeight;
     o.clip = mul( float4( pos, 1.0 ), ViewProj );
     o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
     o.col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;
+    o.wnrm = normalize( p[0].wnrm * bary.x + p[1].wnrm * bary.y + p[2].wnrm * bary.z );
+    o.wpos = pos;
+    o.vz.x = mul( float4( pos, 1.0 ), RI_View ).z;
+    o.vz.y = length( mul( float4( pos, 1.0 ), RI_View ) );
+    return o;
+}
+
+//--------------------------------------------------------------------------------------
+// Tessellated wave water (DX11 Gerstner mode only): the same VSOcean control points, WaterGerstnerOffset per domain point.
+// The depth prepass and the colour pass bind the same HS/DS blobs, and the factors depend only on the patch geometry.
+//--------------------------------------------------------------------------------------
+#define WaterTessMaxFactor OceanParams.w
+
+// Symmetric in its endpoints, so patches sharing the edge agree; an edge between two wave-free vertices stays one segment
+float WaterEdgeFactor( float3 a, float4 ca, float3 b, float4 cb )
+{
+    if ( ca.z <= 0.0f && cb.z <= 0.0f ) return 1.0f;
+    return clamp( OceanEdgeFactor( a, b ), 1.0f, WaterTessMaxFactor );
+}
+
+PatchTess WaterPatchConstants( InputPatch<TessVertex, 3> p )
+{
+    PatchTess t;
+    // Cull with the full wave amplitude as slack: |offset| <= amplitude, so each clip coordinate moves by at most amplitude * its matrix column length
+    const float amp = max( p[0].col.z, max( p[1].col.z, p[2].col.z ) ) * 1275.0f;
+    const float3 slack = amp * float3( length( float3( ViewProj[0][0], ViewProj[1][0], ViewProj[2][0] ) ),
+                                       length( float3( ViewProj[0][1], ViewProj[1][1], ViewProj[2][1] ) ),
+                                       length( float3( ViewProj[0][3], ViewProj[1][3], ViewProj[2][3] ) ) );
+    const float4 c0 = mul( float4( p[0].pos, 1.0f ), ViewProj ), c1 = mul( float4( p[1].pos, 1.0f ), ViewProj ), c2 = mul( float4( p[2].pos, 1.0f ), ViewProj );
+    const float sx = slack.x + slack.z, sy = slack.y + slack.z;
+    const bool outside =
+        ( c0.x + c0.w + sx < 0.0f && c1.x + c1.w + sx < 0.0f && c2.x + c2.w + sx < 0.0f ) || ( c0.w - c0.x + sx < 0.0f && c1.w - c1.x + sx < 0.0f && c2.w - c2.x + sx < 0.0f ) ||
+        ( c0.y + c0.w + sy < 0.0f && c1.y + c1.w + sy < 0.0f && c2.y + c2.w + sy < 0.0f ) || ( c0.w - c0.y + sy < 0.0f && c1.w - c1.y + sy < 0.0f && c2.w - c2.y + sy < 0.0f ) ||
+        ( c0.w + slack.z < 0.0f && c1.w + slack.z < 0.0f && c2.w + slack.z < 0.0f );
+    const float f0 = WaterEdgeFactor( p[1].pos, p[1].col, p[2].pos, p[2].col );   // edge i is opposite corner i
+    const float f1 = WaterEdgeFactor( p[2].pos, p[2].col, p[0].pos, p[0].col );
+    const float f2 = WaterEdgeFactor( p[0].pos, p[0].col, p[1].pos, p[1].col );
+    t.edge[0] = outside ? 0.0f : f0;
+    t.edge[1] = outside ? 0.0f : f1;
+    t.edge[2] = outside ? 0.0f : f2;
+    t.inside = outside ? 0.0f : max( f0, max( f1, f2 ) );
+    return t;
+}
+
+[domain( "tri" )]
+[partitioning( "fractional_odd" )]
+[outputtopology( "triangle_cw" )]
+[outputcontrolpoints( 3 )]
+[patchconstantfunc( "WaterPatchConstants" )]
+TessVertex HSWater( InputPatch<TessVertex, 3> p, uint id : SV_OutputControlPointID )
+{
+    return p[id];
+}
+
+// Wave amplitude (.z) and speed (.w) are per-material bytes and equal at shared vertices (WorldConverter waveByPos), so they are
+// interpolated; the packed grid/wall bits (.xy) only matter in Original mode, which is never tessellated.
+[domain( "tri" )]
+VS_OUT DSWater( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatch<TessVertex, 3> p )
+{
+    precise float3 rest = p[0].pos * bary.x + p[1].pos * bary.y + p[2].pos * bary.z;
+    const float4 col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;
+    precise float3 pos = rest;
+    [branch] if ( col.z > 0.0f ) pos += WaterGerstnerOffset( rest, col, RI_TotalTime );
+    VS_OUT o;
+    o.oxz = rest.xz;
+    o.clip = mul( float4( pos, 1.0 ), ViewProj );
+    o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
+    o.col = col;
     o.wnrm = normalize( p[0].wnrm * bary.x + p[1].wnrm * bary.y + p[2].wnrm * bary.z );
     o.wpos = pos;
     o.vz.x = mul( float4( pos, 1.0 ), RI_View ).z;

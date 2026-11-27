@@ -1,5 +1,11 @@
 #pragma once
 
+// FEAT_WETNESS 0 (only ever set with IGPU_TUNING, while the scene has never been wet; see D3D12ShaderBackend): the
+// wetness code is compiled out of the lit shaders, which frees ~12 registers there. 1 = as before.
+#ifndef FEAT_WETNESS
+#define FEAT_WETNESS 1
+#endif
+
 // Scene wetness for the D3D12 Forward+ lit passes (World/Vob/Skeletal.hlsl): D3D11's deferred wet surface
 // (Shaders/include/RainWetnessSample.h, included by PBRLighting.hlsl) evaluated per fragment in world space.
 // Needs ShadowCB's wetness and wet-sky blocks, FogCB's CamPosWS, and the samplers `smp` (wrap) and `shadowCmp`.
@@ -67,6 +73,9 @@ WetSurface ApplySceneWetness( float3 wpos, float3 geomN, inout float3 N, inout f
     wet.roughness = WET_FILM_ROUGHNESS;
     wet.rippleN = N;
     wet.coatN = N;
+#if !FEAT_WETNESS
+    return wet;       // compiled dry
+#endif
     if ( SceneWetness <= 0.0 || RainShadowIndex == 0xffffffff || DistortionIndex == 0xffffffff )
         return wet;   // not raining / dried, or the rain map / distortion2.dds never loaded
 
@@ -85,6 +94,9 @@ WetSurface ApplySceneWetness( float3 wpos, float3 geomN, inout float3 N, inout f
 // already reflects the sky. Not gated by SunSpecularEnabled, which toggles material highlights only.
 float3 ApplyWetCoat( float3 rgb, WetSurface wet, float3 wpos, float shadow, float vertLighting, float ao, float ssao )
 {
+#if !FEAT_WETNESS
+    return rgb;
+#endif
     [branch]
     if ( wet.wetness <= 0.0 ) return rgb;
 

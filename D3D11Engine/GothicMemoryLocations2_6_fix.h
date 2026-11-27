@@ -190,6 +190,7 @@ struct GothicMemoryLocations {
 
     struct oCNPC {
         static const unsigned int Offset_focus_vob = 0x9ac;
+        static const unsigned int BeamTo = 0x00736EE0; // int __thiscall (const zSTRING& waypoint/freepoint/vob name)
         static const unsigned int ResetPos = 0x006824D0;
         static const unsigned int InitModel = 0x00738480;
         static const unsigned int Enable = 0x00745D40;
@@ -198,6 +199,7 @@ struct GothicMemoryLocations {
         static const unsigned int GetName = 0x0072F820;
         static const unsigned int HasFlag = 0x007309E0;
         static const unsigned int GetInvSlot_zString = 0x00749ae0;
+        static const unsigned int Offset_variousFlags = 0x1B4;   // NPC_FLAG_* (ZenGin API header)
     };
     
     struct zCViewDraw {
@@ -240,6 +242,8 @@ struct GothicMemoryLocations {
         // float resultFogScale — fades the planets out on foggy days (zCSkyControler_Outdoor::RenderPlanets).
         static const unsigned int Offset_ResultFogScale = 0x574;
         static const unsigned int Offset_MasterTime = 0x80;
+        // float dayCounter (zCSkyControler_Outdoor::dayCounter), 0 = unknown offset
+        static const unsigned int Offset_DayCounter = 0x534;
         static const unsigned int Offset_LastMasterTime = 0x84;
         static const unsigned int Offset_MasterState = 0x88;
         static const unsigned int Offset_SkyLayer1 = 0x5A8;
@@ -277,6 +281,8 @@ struct GothicMemoryLocations {
         static const unsigned int VTBL_RenderSkyPost = 28;
         static const unsigned int static_skyEffectsEnabled = 0x8A5DB0; // int*
         static const unsigned int ClearBackground = 0x005df930;
+        // int zrenderMan.hintLightning (0x0099AA44 + 0x24): the barrier's lightning flash, 0 = unknown
+        static const unsigned int ADDR_HintLightning = 0x0099AA68;
     };
 
     struct zCParticleEmitter {
@@ -790,6 +796,7 @@ struct GothicMemoryLocations {
         static const unsigned int VobAddedToWorld = 0x00624830;
         static const unsigned int Call_Render_zCBspTreeRender = 0x00621830;
         static const unsigned int Offset_GlobalVobTree = 0x24;
+        static const unsigned int Offset_WayNet = 0x90;
         static const unsigned int LoadWorld = 0x006270D0;
 #ifdef BUILD_SPACER_NET
         static const unsigned int CompileWorld = 0x00622EC0;

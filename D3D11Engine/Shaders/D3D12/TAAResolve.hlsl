@@ -120,6 +120,8 @@ cbuffer TaaCB : register( b1 )
     uint   HistoryValid;    // 0 = no accumulated history yet; forces the no-history branch (see the main body)
     float2 PrevJitter;      // PREVIOUS frame's sub-pixel jitter, in PIXELS — the previous depth buffer was
                             // rasterized with this offset baked in (see GetDepthConfidenceFactor)
+    uint   SceneOutIndex;   // UAV the resolved RGB also goes to when the scene colour is R11G11B10 (the host copies it
+                            // over the scene colour); 0xFFFFFFFF = none, the host copies the history instead
 };
 
 SamplerState MinMagLinearMipPointClamp : register( s0 );
@@ -658,6 +660,14 @@ void CSMain( uint3 inDispatchIdx : SV_DispatchThreadID, uint3 inGroupID : SV_Gro
 
     RWTexture2D<float4> outTexture = GD_HEAP( OutIndex );
     outTexture[ inDispatchIdx.xy ] = float4( finalColour );
+
+    // Compressed scene colour: the history stays RGBA16F (the weight lives in its alpha, and an 11/10-bit history
+    // would accumulate quantisation error), so the RGB the rest of the frame needs goes to its own target.
+    [branch] if ( SceneOutIndex != 0xFFFFFFFFu )
+    {
+        RWTexture2D<float4> sceneOut = GD_HEAP( SceneOutIndex );
+        sceneOut[ inDispatchIdx.xy ] = float4( max( float3( finalColour.xyz ), 0.0f ), 1.0f );
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

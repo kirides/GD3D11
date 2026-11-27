@@ -397,7 +397,9 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
         cb.HF_HeightFalloff = settings.FogHeightFalloff;
 
         float height = settings.FogHeight;
-        XMVECTOR color = XMLoadFloat3( &settings.FogColorMod );
+        GSky* weatherSky = Engine::GAPI->GetSky();
+        const XMFLOAT3 weatherFog = weatherSky ? weatherSky->GetWeatherFogColorMod( settings.FogColorMod ) : XMFLOAT3( settings.FogColorMod );
+        XMVECTOR color = XMLoadFloat3( &weatherFog );
 
         const float fnear = 15000.0f;
         const float ffar = 60000.0f;
@@ -440,7 +442,8 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
         XMStoreFloat3( &fogColorMod, XMVectorLerpV( color, XMLoadFloat3( &settings.RainFogColor ),
             XMVectorReplicate( std::min( 1.0f, rain * 2.0f ) ) ) );
         cb.HF_FogColorMod = fogColorMod;
-        cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, settings.RainFogDensity, rain * fogDensityFactorRain );
+        cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, settings.RainFogDensity,
+            std::max( rain, weatherSky ? weatherSky->GetWeatherFogDensityWeight() : 0.0f ) * fogDensityFactorRain );
 
         memcpy( m_FogCBMapped[m_FrameIndex], &cb, sizeof( cb ) );
 

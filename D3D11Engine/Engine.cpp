@@ -9,6 +9,7 @@
 #include "D3D12Engine/D3D12GraphicsEngine.h"
 #include "SqliteBlobStore.h"
 #include "Toolbox.h"
+#include "AutomationInput.h"
 #include "D3D7/MyDirectDrawSurface7.h"
 #include "D3D7/MyDirect3DVertexBuffer7.h"
 
@@ -72,6 +73,7 @@ namespace Engine {
     /** Creates main graphics engine */
     void CreateGraphicsEngine() {
         Logging::Inf( "Creating Main graphics engine" );
+        AutomationInput::Init();
 
         // Backend selection. D3D11 is the default and the fallback for both D3D12 and Vulkan.
         GraphicsEngine = nullptr;

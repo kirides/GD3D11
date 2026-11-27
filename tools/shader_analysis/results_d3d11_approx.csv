@@ -1,0 +1,12 @@
+shader,scratch,lds,sgpr,vgpr,vgpr_spill,isa
+PS_Diffuse.hlsl,0,0,30,22,0,1496
+PS_DS_AtmosphericScattering.hlsl,0,0,40,34,0,2428
+PS_Water.hlsl,0,0,106,117,0,43220
+PS_DS_PointLight.hlsl,0,0,50,55,0,6508
+PS_DS_PointLightDynShadow.hlsl,0,0,50,75,0,10548
+CS_TiledShading.hlsl,0,0,74,93,0,22780
+CS_LightCulling.hlsl,0,1536,22,28,0,1372
+PS_PFX_TAA.hlsl,0,0,46,62,0,3152
+PS_PFX_HDR.hlsl,0,0,32,10,0,536
+PS_World.hlsl,0,0,34,11,0,616
+PS_Transparency.hlsl,0,0,34,20,0,1728

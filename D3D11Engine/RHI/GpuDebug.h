@@ -25,4 +25,6 @@ namespace GpuDebug {
     inline bool VkAftermath() { static const bool s = CommandLineHas( "-VKAFTERMATH" ); return s; }
     /** D3D12: debug layer with GPU-based validation, also in release builds. */
     inline bool D3D12Gbv() { static const bool s = CommandLineHas( "-D3D12GBV" ); return s; }
+    /** D3D12: timestamp queries around the main passes, averages logged every few seconds (D3D12GpuTimers). */
+    inline bool GpuTimers() { static const bool s = CommandLineHas( "-GPUTIMERS" ); return s; }
 }

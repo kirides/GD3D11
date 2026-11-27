@@ -14,6 +14,8 @@
 // Everything is bound through root descriptors / root constants (no descriptor tables); the Hi-Z pyramid is
 // the one texture and it comes in bindlessly (SM6.6 ResourceDescriptorHeap) as a full-mip-chain SRV.
 
+#include "include/HiZTest.hlsl"
+
 // Mirrors D3D12GraphicsEngine::VobCullVisual (32 B) — one record per visible VISUAL, describing where its
 // instances live in the ring and the LOCAL-space bounding box shared by all of them.
 struct VobCullVisual
@@ -224,31 +226,7 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
     if ( EnableOcclusion == 0 || HiZMipCount == 0 || !allInFront )
         return true;
 
-    Texture2D<float> hiz = GD_HEAP( HiZIndex );
-
-    float2 hizSize = float2( HiZWidth, HiZHeight );
-    float2 p0 = saturate(uvMin) * hizSize;
-    float2 p1 = saturate(uvMax) * hizSize;
-
-    // Pick the level where the box's footprint spans at most 2x2 texels, so four taps cover it completely.
-    float2 extent = max( p1 - p0, 1e-4 );
-    int    mip    = (int)clamp( ceil( log2( max( extent.x, extent.y ) ) ), 0.0, (float)( HiZMipCount - 1 ) );
-
-    float  mipScale = exp2( (float)mip );
-    int2   mipSize  = max( int2( HiZWidth >> mip, HiZHeight >> mip ), int2( 1, 1 ) );
-    int2   t0 = clamp( int2( p0 / mipScale ), int2( 0, 0 ), mipSize - 1 );
-    int2   t1 = clamp( int2( p1 / mipScale ), int2( 0, 0 ), mipSize - 1 );
-
-    float occluderDepth = hiz.Load( int3( t0.x, t0.y, mip ) );
-    occluderDepth = min( occluderDepth, hiz.Load( int3( t1.x, t0.y, mip ) ) );
-    occluderDepth = min( occluderDepth, hiz.Load( int3( t0.x, t1.y, mip ) ) );
-    occluderDepth = min( occluderDepth, hiz.Load( int3( t1.x, t1.y, mip ) ) );
-
-    // Occluded when the FARTHEST world-mesh pixel over the footprint is still CLOSER than the box's nearest
-    // point (reversed-Z: greater == closer). No epsilon: the tested depth belongs to the world mesh, never to
-    // the VOB itself, so there is no self-occlusion to bias against — and the min-reduced pyramid plus the
-    // "any corner in front" bail-out already err on the side of keeping geometry.
-    return !( occluderDepth > closestDepth );
+    return !HiZRectOccluded( uvMin, uvMax, closestDepth, HiZIndex, uint2( HiZWidth, HiZHeight ), HiZMipCount );
 }
 #endif
 
@@ -463,6 +441,8 @@ void CSPatchArgs( uint3 DTid : SV_DispatchThreadID )
     const VobCullVisual v = PatchVisuals[visualIdx];
     const uint start = v.InstanceBase + ( ( bucket == 0u ) ? 0u : ( v.InstanceCount - count ) );
 
+    // Only the draw arguments: the command's InstanceBase root constant is CPU-written (a far run names its block end with
+    // the far bit and the pulled VS walks it backward), so the Vulkan CPU replay never needs a GPU-patched root argument.
     PatchArgs.Store( base + PatchInstCountOffset, count );
     PatchArgs.Store( base + PatchStartInstOffset, start );
 }
@@ -510,7 +490,7 @@ RWByteAddressBuffer             SceneArgCount : register( u1 );   // [0] opaque,
 // Cube commands only: { count, visual indices } of the casters left out because their texture is not resident.
 RWByteAddressBuffer             BakeReport    : register( u2 );
 
-#define VOB_DRAW_COMMAND_STRIDE 48u
+#define VOB_DRAW_COMMAND_STRIDE 56u   // D3D12GraphicsEngine::VobDrawCommand
 
 [numthreads(1, 1, 1)]
 void CSClearCounts()
@@ -526,9 +506,11 @@ void AppendSceneCommand( SceneTemplate t, uint indexCount, uint startIndex, uint
     if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) ) return;   // the draw clamps the count to capacity
 
     const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * VOB_DRAW_COMMAND_STRIDE;
+    // b6 x3, b4[4..5], { VertexBase, InstanceBase } (the pulled VS), then the draw; a far run is final here, so no far bit.
     SceneArgs.Store4( at,      uint4( t.MatNormalIndex, t.MatOrmIndex, t.MatDiffuseIndex, asuint( t.WindMinHeight ) ) );
-    SceneArgs.Store4( at + 16, uint4( asuint( t.WindMaxHeight ), indexCount, count, startIndex ) );
-    SceneArgs.Store4( at + 32, uint4( asuint( t.BaseVertex ), start, t.VisualIndex, lodBucket ) );
+    SceneArgs.Store4( at + 16, uint4( asuint( t.WindMaxHeight ), asuint( t.BaseVertex ), start, indexCount ) );
+    SceneArgs.Store4( at + 32, uint4( count, startIndex, asuint( t.BaseVertex ), start ) );
+    SceneArgs.Store2( at + 48, uint2( t.VisualIndex, lodBucket ) );
 }
 
 [numthreads(64, 1, 1)]
@@ -563,7 +545,7 @@ void CSBuildCasterArgs( uint3 DTid : SV_DispatchThreadID )
 
 // A point light's cube commands over CSCullSphere's { count, first } pairs, in D3D12PointShadows'
 // PointShadowCasterCommand layout: b1 diffuse + a draw whose instances repeat per cube face.
-#define CUBE_COMMAND_STRIDE 24u
+#define CUBE_COMMAND_STRIDE 32u
 #define REPORT_CAPACITY 62u        // D3D12PointShadows::kReportCapacity
 #define REPORT_OVERFLOW_WORD 63u   // non-zero: commands (1) or instances (2) were dropped
 
@@ -597,6 +579,7 @@ void CSBuildCubeArgs( uint3 DTid : SV_DispatchThreadID )
         return;
     }
     const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * CUBE_COMMAND_STRIDE;
-    SceneArgs.Store3( at,      uint3( t.MatDiffuseIndex, t.IndexCount, count * 6u ) );
-    SceneArgs.Store3( at + 12, uint3( t.StartIndex, asuint( t.BaseVertex ), SceneCounts[t.VisualIndex * 2u + 1u] ) );
+    const uint first = SceneCounts[t.VisualIndex * 2u + 1u];   // the visual's first element in the view's instance region
+    SceneArgs.Store4( at,      uint4( t.MatDiffuseIndex, asuint( t.BaseVertex ), first, t.IndexCount ) );
+    SceneArgs.Store4( at + 16, uint4( count * 6u, t.StartIndex, asuint( t.BaseVertex ), first ) );
 }

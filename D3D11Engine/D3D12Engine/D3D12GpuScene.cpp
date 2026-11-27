@@ -5,6 +5,7 @@
 #include "../StaticLightFarField.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12VobArena.h"
+#include "D3D12GpuTimers.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../MaterialFx.h"
@@ -214,6 +215,16 @@ bool D3D12GpuScene::OnVobLeft( const zCVob* vob, XMFLOAT4* bakedSphere ) {
 void D3D12GpuScene::OnSrvSlotFreed( UINT slot ) {
     std::lock_guard<std::mutex> lock( m_FreedMutex );
     if ( m_Built ) m_FreedSlots.push_back( slot );
+}
+
+
+void D3D12GpuScene::InvalidateMaterials() {
+    for ( uint32_t v = 0; v < VisualCount(); ++v ) {
+        Visual& vis = m_Visuals[v];
+        if ( vis.State != kVisualReady || vis.Queued ) continue;
+        vis.Queued = true;
+        m_BuildQueue.push_back( v );
+    }
 }
 
 
@@ -1055,6 +1066,22 @@ bool D3D12GpuScene::BeginFrame( Rhi::CmdList& cmd, const zCVob* focusVob, bool m
         Reset();   // baked into the instances, templates and records
     }
     ++m_Frame;
+    // -GPUTIMERS: how much of the scene's near geometry sits in sub-meshes big enough to split (CULLING_PLAN.md stage 5).
+    if ( m_E.m_GpuTimers && m_Built && ( m_Frame & 63u ) == 0u ) {
+        double all = 0.0, big = 0.0, bigTemplates = 0.0;
+        for ( const Visual& vis : m_Visuals ) {
+            if ( vis.State != kVisualReady ) continue;
+            for ( uint32_t t = 0; t < vis.TemplateUsed; ++t ) {
+                const Template& tp = m_Templates[vis.TemplateBase + t];
+                if ( ( tp.Flags & kTemplateCaster ) || tp.LodBucket != D3D12GraphicsEngine::kLodBucketNear ) continue;
+                const double tris = tp.IndexCount / 3.0 * vis.SlotCount;
+                all += tris;
+                if ( tp.IndexCount >= 1536u ) { big += tris; bigTemplates += 1.0; }
+            }
+        }
+        m_E.m_GpuTimers->Note( "scene big templates", bigTemplates );
+        m_E.m_GpuTimers->Note( "scene big tri %", all > 0.0 ? 100.0 * big / all : 0.0 );
+    }
     if ( !m_Built ) {
         if ( m_BuildFailed ) return false;
         if ( !Build( cmd ) ) {

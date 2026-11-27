@@ -33,4 +33,6 @@ struct GraphicsDeviceCapabilities {
     bool RayQuery = false;
     /** D3D12/Vulkan: render-graph textures may alias one placed heap. Off on NVIDIA (Vulkan device loss). */
     bool TransientAliasing = false;
+    /** The GPU shares system memory (mobile/APU iGPU): fill rate, registers and bandwidth are the limits. */
+    bool IntegratedGpu = false;
 };

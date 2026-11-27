@@ -58,6 +58,28 @@ struct VS_IN
     row_major float4x4 iworld : INSTANCE_WORLD_MATRIX;
     float4   icolor : INSTANCE_COLOR;          // .a = ghost alpha, .r = shade-lit flag, .gb unused
 };
+// VERTEX_PULL: the shared 20 B quad ({pos, uv}, 6 verts) and the frame's 80 B DecalInstanceInfo ring ({row_major world, color}) are root
+// SRVs bound at offset 0; b8 = the draw's instance element (SV_InstanceID excludes StartInstanceLocation).
+#ifdef VERTEX_PULL
+#include "include/VertexFetch.hlsl"
+ByteAddressBuffer DecalQuadVb    : register(t6);
+ByteAddressBuffer DecalInstances : register(t7);
+cbuffer DecalPullCB : register(b8) { uint DecalInstanceBase; };
+struct VS_ENTRY_IN { uint vid : SV_VertexID; uint iid : SV_InstanceID; };
+VS_IN FetchDecal( VS_ENTRY_IN e )
+{
+    const uint a = ( DecalInstanceBase + e.iid ) * 80;
+    VS_IN i;
+    LoadPosUv( DecalQuadVb, VF_POSED, e.vid, i.pos, i.uv );
+    i.iworld = LoadFloat4x4Rows( DecalInstances, a );
+    i.icolor = asfloat( DecalInstances.Load4( a + 64 ) );
+    return i;
+}
+#else
+typedef VS_IN VS_ENTRY_IN;
+VS_IN FetchDecal( VS_ENTRY_IN e ) { return e; }
+#endif
+
 struct VS_OUT
 {
     float4 clip    : SV_POSITION;
@@ -69,8 +91,9 @@ struct VS_OUT
     float  lit     : TEXCOORD5;
 };
 
-VS_OUT VSMain( VS_IN i )
+VS_OUT VSMain( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchDecal( e );
     VS_OUT o;
     float3 worldPos = mul( i.iworld, float4( i.pos, 1.0 ) ).xyz;
     o.clip  = mul( float4( worldPos, 1.0 ), ViewProj );

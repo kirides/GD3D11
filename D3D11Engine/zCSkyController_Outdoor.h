@@ -34,6 +34,9 @@ enum zESkyLayerMode {
 class zCSkyLayerData {
 public:
     zESkyLayerMode SkyMode;
+#ifdef BUILD_GOTHIC_1_08k
+    zCTexture* TexBox[5];   // G1 only: box-mode faces precede tex
+#endif
     zCTexture* Tex;
     char zSTring_TexName[20];
 
@@ -41,6 +44,11 @@ public:
     float TexScale;
     XMFLOAT2 TexSpeed;
 };
+#ifdef BUILD_GOTHIC_1_08k
+static_assert( sizeof( zCSkyLayerData ) == 0x40 && offsetof( zCSkyLayerData, TexAlpha ) == 0x30 );
+#else
+static_assert( sizeof( zCSkyLayerData ) == 0x2C && offsetof( zCSkyLayerData, TexAlpha ) == 0x1C );
+#endif
 
 class zCSkyState {
 public:
@@ -54,6 +62,7 @@ public:
     int	CloudShadowOn;
     zCSkyLayerData	Layer[2];
 };
+static_assert( offsetof( zCSkyState, Layer ) == 0x40 );
 
 enum zTWeather {
     zTWEATHER_SNOW,
@@ -225,6 +234,21 @@ public:
 #endif
     }
 
+    /** Gothic's noon-to-noon day number (saved in the savegame); 0 / no-op where the offset is unknown. */
+    float GetDayCounter() {
+        if constexpr ( GothicMemoryLocations::zCSkyController_Outdoor::Offset_DayCounter != 0 )
+            return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_DayCounter ));
+        else
+            return 0.0f;
+    }
+
+    void SetDayCounter( float dayCounter ) {
+        if constexpr ( GothicMemoryLocations::zCSkyController_Outdoor::Offset_DayCounter != 0 )
+            *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_DayCounter )) = dayCounter;
+        else
+            (void)dayCounter;
+    }
+
     float GetTimeStartRain() {
         return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_TimeStartRain ));
     }
@@ -255,6 +279,21 @@ public:
 #else
         (void)renderLighting;
 #endif
+    }
+
+    /** A thunderstorm: oCSkyControler_Barrier's own gate for the lightning bolts (rain above half, not snow). */
+    bool IsThunderstorm() {
+        return GetRenderLighting() && GetRainFXWeight() > 0.5f && GetWeatherType() != zTWEATHER_SNOW;
+    }
+
+    /** zrenderMan.hintLightning, the barrier's per-frame flash; only trusted while the storm that sets it lasts. */
+    bool IsLightningFlashing() {
+        constexpr unsigned int hintAddr = GothicMemoryLocations::zCSkyController::ADDR_HintLightning;
+        if constexpr ( hintAddr == 0 ) {
+            return false;
+        } else {
+            return IsThunderstorm() && *reinterpret_cast<int*>( hintAddr ) != 0;
+        }
     }
 
     int GetRainingCounter() {
@@ -524,6 +563,14 @@ public:
 
     zCSkyState* GetMasterState() {
         return reinterpret_cast<zCSkyState*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_MasterState ));
+    }
+
+    /** State whose layer[channel] Interpolate() put on sky layer `channel`; masterState carries no textures. */
+    zCSkyState* GetSkyLayerState( int channel ) {
+        if constexpr ( GothicMemoryLocations::zCSkyController_Outdoor::Offset_SkyLayerState != 0 )
+            return reinterpret_cast<zCSkyState**>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_SkyLayerState ))[channel];
+        else
+            return nullptr;
     }
 };
 

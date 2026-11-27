@@ -23,7 +23,10 @@ public:
     static constexpr UINT kViewPointFirst = 5;   // then one per point-light bake of the frame
     static constexpr UINT kPointViews = 16;
     static constexpr UINT kPointCommandCapacity = 4096;   // commands per list (opaque, alpha) per point view
-    static constexpr UINT kViews = kViewPointFirst + kPointViews;
+    static constexpr UINT kViewMainLate = kViewPointFirst + kPointViews;   // the main view's second phase
+    static constexpr UINT kViews = kViewMainLate + 1;
+
+    enum class Phase : uint8_t { Single, Early, Late };
 
     /** One view to cull into. */
     struct View {
@@ -34,6 +37,14 @@ public:
         DirectX::XMFLOAT3 Center = {};
         float Radius = 0.0f;
         D3D12_GPU_VIRTUAL_ADDRESS Report = 0;   // sphere view: where it reports materials it left out (u2)
+        Phase MainPhase = Phase::Single;        // main view: early draws last frame's visible clusters, late the rest
+        bool Cones = false;                     // main view: drop clusters facing away from ConeEye
+        DirectX::XMFLOAT3 ConeEye = {};
+        DirectX::XMFLOAT4X4 HiZViewProj = {};   // late: the reversed-Z view-proj the Hi-Z was built with (b1 layout)
+        UINT HiZIndex = 0, HiZWidth = 0, HiZHeight = 0, HiZMipCount = 0;   // late: 0 mips = no occlusion test
+        bool Compact = false;                   // cascade: draw only triangles that can cover a shadow-map texel
+        DirectX::XMFLOAT4X4 CompactViewProj = {};   // the cascade's render view-proj (transposed like CullViewProj)
+        UINT CompactMapSize = 0;
     };
 
     /** Water, portals, waterfall foam and alpha-blended meshes: the main view still collects them on the CPU. */
@@ -62,6 +73,10 @@ public:
     /** A point view's cube commands through `sig` (D3D12PointShadows' caster signature). Any thread. */
     void DrawCube( Rhi::CmdList& cmd, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const;
     bool Drawable( UINT view ) const { return m_ArgsDrawable[view]; }
+    /** The index buffer a view's commands index when Cull compacted it this frame, else nullptr (the world IB). */
+    Rhi::Resource* CompactIndices( UINT view ) const { return m_Compacted[view] ? m_Compact[view].Get() : nullptr; }
+    /** -GPUTIMERS: copies the drawn index counts of the main and cascade views for the timer log. Main thread, after the lit pass. */
+    void RecordStats( Rhi::CmdList& cmd );
     /** Whether a material's texture is resident; if not, it is cached in from the next BeginFrame on. */
     bool RequestResident( uint32_t material );
 
@@ -91,6 +106,7 @@ private:
     static bool IsSpecial( const MeshKey& key );
     UINT CommandCapacity( UINT view ) const;   // per list
     static UINT CommandStride( UINT view );
+    static bool IsPointView( UINT view ) { return view >= kViewPointFirst && view < kViewPointFirst + kPointViews; }
     bool Build( Rhi::CmdList& cmd );
     void Resolve( uint32_t m, bool cacheIn );
     void ProcessFeedback();
@@ -106,6 +122,7 @@ private:
     std::vector<uint32_t> m_DirtyMaterials;
     std::vector<uint32_t> m_Queue;
     uint32_t m_RefreshCursor = 0;
+    uint32_t m_HeightEpoch = 0;   // D3D12GraphicsEngine::m_HeightPartitionEpoch the materials were last resolved against
     size_t m_MeshCount = 0, m_ClusterCount = 0, m_SectionCount = 0;
 
     std::mutex m_FreedMutex;
@@ -113,9 +130,14 @@ private:
 
     UINT m_Capacity = 0;   // commands per list
     Microsoft::WRL::ComPtr<Rhi::Resource> m_Sections, m_Meshes, m_Clusters, m_MaterialBuffer, m_Seen;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_Cones, m_History;   // per cluster: normal cone, main-view visibility
     Microsoft::WRL::ComPtr<Rhi::Resource> m_Args[kViews], m_ArgCount[kViews];
     bool m_ArgsDrawable[kViews] = {};   // Args + ArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
     bool m_SeenReadable = false;        // m_Seen in COPY_SOURCE, else UNORDERED_ACCESS
+    // Per view, created on first use: the compacted indices (world IB size), INDEX_BUFFER once drawable.
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_Compact[kViews];
+    bool m_Compacted[kViews] = {};      // the view's last cull compacted into m_Compact
+    bool m_CompactReadable[kViews] = {};
 
     static constexpr UINT kFrames = 3;   // D3D12GraphicsEngine::kBackBufferMax, asserted in the .cpp
     static constexpr UINT kStagingBytes = 64 * 1024;
@@ -124,4 +146,11 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Resource> m_Readback[kFrames];
     const uint32_t* m_ReadbackPtr[kFrames] = {};
     bool m_ReadbackPending[kFrames] = {};
+    // b1 per view and frame slot, and the stats readback (main, late, three cascades: 16 B each).
+    static constexpr UINT kExtCbStride = 256;
+    static constexpr UINT kStatViews = 5;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_ExtCb[kFrames], m_Stats[kFrames];
+    uint8_t* m_ExtCbPtr[kFrames] = {};
+    const uint32_t* m_StatsPtr[kFrames] = {};
+    bool m_StatsPending[kFrames] = {};
 };

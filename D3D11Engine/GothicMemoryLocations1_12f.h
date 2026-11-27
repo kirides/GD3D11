@@ -143,8 +143,11 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_Planets = 0x5DC;
         static const unsigned int Offset_ResultFogScale = 0x560;
         static const unsigned int Offset_MasterTime = 0x6C;
+        // float dayCounter (zCSkyControler_Outdoor::dayCounter), 0 = unknown offset
+        static const unsigned int Offset_DayCounter = 0;
         static const unsigned int Offset_LastMasterTime = 0x70;
         static const unsigned int Offset_MasterState = 0x74;
+        static const unsigned int Offset_SkyLayerState = 0;
 
         static const unsigned int Offset_InitDone = 0x68;
         static const unsigned int Init = 0x005DA640;
@@ -173,6 +176,7 @@ struct GothicMemoryLocations {
         static const unsigned int VTBL_RenderSkyPost = 21;
         static const unsigned int static_skyEffectsEnabled = 0x887EDC; // int*
         static const unsigned int ClearBackground = 0;
+        static const unsigned int ADDR_HintLightning = 0; // G1's zCRenderManager has no hintLightning
     };
 
     struct zCParticleEmitter {

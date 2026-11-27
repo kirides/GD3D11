@@ -51,11 +51,25 @@ public:
     // mirroring D3D11's ShaderRegistry normalmappingConfigurationBuilder) that CompileFromFile adds to
     // every compile. The Definition pointers are static literals, so the vector may outlive this call.
     // NOT null-terminated — the caller adds the {nullptr,nullptr} sentinel.
-    static void AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list );
+    // fileName/target: the tuning macros below are only appended to the pixel shaders of the files that include the
+    // lit-pass lighting header, so flipping one recompiles those few instead of every shader.
+    static void AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list, const std::string& fileName, const char* target );
+
+    // The settings that AppendGlobalMacros turns into shader permutations, packed into one value: a change
+    // means the compiled shaders no longer match (the engine reloads them). CompiledSettingsKey() is the key
+    // of the most recent compile (~0u before the first).
+    static uint32_t SettingsKey( const struct GothicRendererSettings& s );
+    static uint32_t CompiledSettingsKey();
+    // Main thread, once per frame before SettingsKey: notes the first time the scene is wet (rain, or the manual
+    // wetness override). The lit shaders are compiled without the wetness code until then and keep it afterwards
+    // (one reload per session at most).
+    static void ObserveWeather( const struct GothicRendererSettings& s );
 
     // -GPUHEAPCHECK: compiles GD_HEAP() as a checked access (Shaders/D3D12/include/HeapCheck.hlsl). Set before
     // the first compile; the engine enables it once the check buffers exist.
     static void SetHeapCheck( bool enabled );
+    // false: DXIL compiles without -enable-16bit-types and with USE_FP16_LIGHTING=0. Set before the first compile.
+    static void SetNative16Bit( bool enabled );
     static bool IsHeapCheckEnabled();
     // "File.hlsl:Entry" for a GD_SHADER_ID a heap-check report carries.
     static std::string ShaderNameForId( uint32_t id );

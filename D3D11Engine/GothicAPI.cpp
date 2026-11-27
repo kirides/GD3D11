@@ -13,6 +13,7 @@
 #include "WorldConverter.h"
 #include "MeshOptimizeCache.h"
 #include "StaticLightFarField.h"
+#include "WorldTessOverrides.h"
 #include "HookedFunctions.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
@@ -42,6 +43,7 @@
 #include "D3D7\MyDirect3DDevice7.h"
 #include "GVegetationBox.h"
 #include "oCNPC.h"
+#include "AutomationInput.h"
 #include "oCVisFX.h"
 #include "zCMeshSoftSkin.h"
 #include "zCVobLight.h"
@@ -113,7 +115,7 @@ void MaterialInfo::WriteToFile( const std::string_view name ) {
 void MaterialInfo::LoadFromFile( const std::string_view name ) {
     
     bool foundFile = false;
-    char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
+    char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )] = {};
     
     thread_local std::string filePath{};
     filePath.reserve( 255 );
@@ -146,7 +148,12 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     
     // Then the data
     ZeroMemory( &buffer, sizeof( MaterialInfo::Buffer ) );
-    memcpy( &buffer, ReadBuffer + sizeof( int ), sizeof( MaterialInfo::Buffer ) );
+    // v6 files stop before Roughness; copy only the legacy part of those.
+    memcpy( &buffer, ReadBuffer + sizeof( int ),
+        version >= 7 ? sizeof( MaterialInfo::Buffer ) : offsetof( MaterialInfo::Buffer, Roughness ) );
+    if ( version < 7 ) {
+        buffer.Roughness = -1.0f;
+    }
 
     if ( version < 2 ) {
         if ( buffer.DisplacementFactor == 0.0f ) {
@@ -609,6 +616,7 @@ void GothicAPI::UpdateTextureMaxSize() {
 void GothicAPI::OnWorldUpdate() {
     ZoneScopedN( "GothicAPI::OnWorldUpdate" );
     ++FrameNumber;
+    AutomationInput::Tick();
 #if BUILD_SPACER
     zCBspBase* rootBsp = oCGame::GetGame()->_zCSession_world->GetBspTree()->GetRootNode();
     BspInfo* root = &State->BspLeafVobLists[rootBsp];
@@ -642,6 +650,27 @@ void GothicAPI::OnWorldUpdate() {
     // The CPU twin of the simulated sea (swimming, floating plants) and the clock the GPU simulation follows
     {
         const auto& rs = RendererState.RendererSettings;
+        // The wind wanders up to ~55 degrees around WaterWindAngle over the game days; eased, so day wraps and sleeping don't snap it
+        float driftTarget = 0.0f;
+        float weatherSeaTarget = 0.0f;
+        zCWorld* gameWorld = oCGame::GetGame() ? oCGame::GetGame()->_zCSession_world : nullptr;
+        if ( zCSkyController_Outdoor* sky = gameWorld ? gameWorld->GetSkyControllerOutdoor() : nullptr ) {
+            if ( rs.WaterWindDrift ) {
+                const float days = sky->GetDayCounter() + sky->GetMasterTime();
+                driftTarget = 0.6f * std::sin( 6.2831853f * days * 0.9f + 1.3f ) + 0.35f * std::sin( 6.2831853f * days * 0.37f + 4.1f );
+            }
+            // Rain roughens the sea towards 2, a thunderstorm towards 3; snow leaves it alone
+            if ( sky->GetWeatherType() == zTWEATHER_RAIN ) {
+                const float rain = std::clamp( sky->GetRainFXWeight() / 0.85f, 0.0f, 1.0f );
+                weatherSeaTarget = rain * ( sky->GetRenderLighting() ? 3.0f : 2.0f );
+            }
+        }
+        OceanFFT::Surface& sea = OceanFFT::GetSurface();
+        const float frameSec = std::min( GetFrameTimeSec(), 0.1f );
+        const float ease = 1.0f - std::exp( -frameSec / 10.0f );
+        sea.SetWindDrift( sea.WindDrift() + ( driftTarget - sea.WindDrift() ) * ease );
+        const float seaEase = 1.0f - std::exp( -frameSec / 40.0f );   // the sea builds up and settles over about a minute
+        sea.SetWeatherSeaState( sea.WeatherSeaState() + ( weatherSeaTarget - sea.WeatherSeaState() ) * seaEase );
         OceanFFT::GetSurface().Refresh( FeatureLevel10Compatibility ? 0 : static_cast<int>( rs.WaterSimulation ), rs.WaterSeaState, rs.WaterWindAngle,
             rs.WaterWaveScale, rs.WaterChoppiness, Engine::IsModernBackend() ? 2 : 1 );
     }
@@ -654,9 +683,10 @@ void GothicAPI::OnWorldUpdate() {
 #else
         const int waveMode = GothicRendererSettings::WATER_WAVES_OFF;
 #endif
+        const bool waterTessellated = RendererState.RendererSettings.WaterTessellation && Engine::IsModernBackend();
         const float totalTime = GetTotalTime();
         for ( VobInfo* vi : State->FloatingVobs ) {
-            UpdateWaterBob( *vi->WaterBob, totalTime, waveMode );
+            UpdateWaterBob( *vi->WaterBob, totalTime, waveMode, waterTessellated );
         }
     }
 
@@ -717,6 +747,9 @@ void GothicAPI::OnWorldUpdate() {
                 skyController->SetTimeStartRain( timeStartRain );
                 skyController->SetTimeStopRain( timeStopRain );
                 skyController->SetRenderLighting( renderLightning );
+
+                // RenderSkyPre's dice also advances the day, which picks the sky texture variant.
+                skyController->SetDayCounter( skyController->GetDayCounter() + 1.0f );
             }
 
             // RenderSkyPre is skipped for the scattering dome; without this masterState (sky IBL colours) freezes.
@@ -974,6 +1007,7 @@ State->WorldSections.clear();
 
     SAFE_DELETE( WrappedWorldMesh );
     GetStaticLightFarField().Reset();
+    GetWorldTessOverrides().Reset();
 
     // Clear inventory too?
 }
@@ -4123,6 +4157,9 @@ void GothicAPI::SendMessageToGameWindow( UINT msg, WPARAM wParam, LPARAM lParam 
 /** Message-Callback for the main window */
 LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) {
     switch ( msg ) {
+    case AutomationInput::WM_AUTOMATION:
+        AutomationInput::Tick( true );
+        return 0;
     case WM_KEYDOWN:
         Engine::GraphicsEngine->OnKeyDown( wParam );
         switch ( wParam ) {
@@ -4177,7 +4214,8 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             break;
 
         case VK_NUMPAD1:
-            if ( !Engine::ImGuiHandle->GetIsActive() && !GMPModeActive && Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys )
+            if ( !Engine::ImGuiHandle->GetIsActive() && !GMPModeActive && Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys
+                && GetLoadedWorldInfo() && GetLoadedWorldInfo()->BspTree )   // no world in the main menu
                 SpawnVegetationBoxAt( GetCameraPosition() );
             break;
         }
@@ -5762,6 +5800,9 @@ void GothicAPI::LoadCustomZENResources() {
 
     // Load vegetation
     LoadVegetation( zen + ".veg" );
+
+    // Per-mesh world tessellation overrides (needs the sections, which exist by now)
+    GetWorldTessOverrides().Load( zen + ".wts" );
 }
 
 /** Saves resources created for this .ZEN */
@@ -5793,6 +5834,8 @@ void GothicAPI::SaveCustomZENResources() {
 
     // Save vegetation
     SaveVegetation( zen + ".veg" );
+
+    GetWorldTessOverrides().Save( zen + ".wts" );
 }
 
 /** Applys the suppressed textures */
@@ -6034,6 +6077,9 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "LowCloudDistance", float_to_string( s.LowCloudDistance, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "LowCloudSpeed", float_to_string( s.LowCloudSpeed, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "LowCloudSunLight", float_to_string( s.LowCloudSunLight, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DynamicWeather", to_string_locale_independent( s.DynamicWeather ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "WeatherVariety", float_to_string( s.WeatherVariety, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "WeatherBias", float_to_string( s.WeatherBias, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableHDR", to_string_locale_independent( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableBloom", to_string_locale_independent( s.EnableBloom ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6122,10 +6168,24 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaves", to_string_locale_independent( (int)s.WaterWaves ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSimulation", to_string_locale_independent( (int)s.WaterSimulation ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterTessellation", to_string_locale_independent( s.WaterTessellation ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterTessellationMaxFactor", to_string_locale_independent( s.WaterTessellationMaxFactor ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WorldTessellation", to_string_locale_independent( s.WorldTessellation ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WorldTessellationMaxFactor", to_string_locale_independent( s.WorldTessellationMaxFactor ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WorldTessellationRange", float_to_string( s.WorldTessellationRange, 0 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WorldTessellationStrength", float_to_string( s.WorldTessellationStrength, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapShading", to_string_locale_independent( s.HeightMapShading ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapDepth", float_to_string( s.HeightMapDepth, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapShadowSteps", to_string_locale_independent( s.HeightMapShadowSteps ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapRange", float_to_string( s.HeightMapRange, 0 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapPom", to_string_locale_independent( s.HeightMapPom ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapPomSteps", to_string_locale_independent( s.HeightMapPomSteps ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeightMapSilhouettes", to_string_locale_independent( s.HeightMapSilhouettes ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSeaState", float_to_string( s.WaterSeaState, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveScale", float_to_string( s.WaterWaveScale, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterChoppiness", float_to_string( s.WaterChoppiness, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWindAngle", float_to_string( s.WaterWindAngle, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterWindDrift", to_string_locale_independent( s.WaterWindDrift ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterReflectionMode", to_string_locale_independent( (int)s.WaterReflectionMode ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterRayTracing", to_string_locale_independent( (int)s.WaterRayTracing ).c_str(), ini.c_str() );
@@ -6226,10 +6286,14 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuScene", to_string_locale_independent( s.GpuScene ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuWorld", to_string_locale_independent( s.GpuWorld ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuWorldOcclusion", to_string_locale_independent( s.GpuWorldOcclusion ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuWorldConeCulling", to_string_locale_independent( s.GpuWorldConeCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "ShadowTriangleCulling", to_string_locale_independent( s.ShadowTriangleCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     // Persisted because it is not a live toggle: MorphGpu::IsActive() freezes it at load (it decides how the
     // morph vertex buffers get created), so the only way to turn it off is for the NEXT run.
     WritePrivateProfileStringA( "Debug", "GpuMorphFold", to_string_locale_independent( s.UseGpuMorphFold ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuUploadRings", to_string_locale_independent( s.UseGpuUploadRings ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "VertexPulling", to_string_locale_independent( s.VertexPulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseShadowAtlas", to_string_locale_independent( s.DebugSettings.FeatureSet.UseShadowAtlas ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseScreenSpaceShadowMask", to_string_locale_independent( s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GenerateAONormalsFromDepth", to_string_locale_independent( s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6240,6 +6304,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "UseMDIOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseMDIOverride ) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseLayeredRenderingOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseLayeredRenderingOverride ) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseTransientAliasingOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseTransientAliasingOverride ) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "IntegratedGpuTuningOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.IntegratedGpuTuningOverride ) ).c_str(), ini.c_str() );
 
     return XR_SUCCESS;
 }
@@ -6270,6 +6335,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.LowCloudDistance = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudDistance", ds.LowCloudDistance, ini.c_str() ), 0.45f, 4.0f );
         s.LowCloudSpeed = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudSpeed", ds.LowCloudSpeed, ini.c_str() ), 0.0f, 10.0f );
         s.LowCloudSunLight = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudSunLight", ds.LowCloudSunLight, ini.c_str() ), 0.0f, 4.0f );
+        s.DynamicWeather = GetPrivateProfileBoolA( "General", "DynamicWeather", ds.DynamicWeather, ini );
+        s.WeatherVariety = std::clamp( GetPrivateProfileFloatA( "General", "WeatherVariety", ds.WeatherVariety, ini.c_str() ), 0.0f, 1.0f );
+        s.WeatherBias = std::clamp( GetPrivateProfileFloatA( "General", "WeatherBias", ds.WeatherBias, ini.c_str() ), -1.0f, 1.0f );
         s.AtmosphericScattering = GetPrivateProfileBoolA( "General", "AtmosphericScattering", ds.AtmosphericScattering, ini );
         s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", ds.EnableHDR, ini );
         s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );
@@ -6442,10 +6510,33 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             GothicRendererSettings::WATER_WAVES_OFF, GothicRendererSettings::WATER_WAVES_D3D11 ) );
         s.WaterSimulation = static_cast<GothicRendererSettings::E_WaterSimulation>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterSimulation", ds.WaterSimulation, ini.c_str() ),
             GothicRendererSettings::WATER_SIM_OFF, GothicRendererSettings::WATER_SIM_HIGH ) );
+        s.WaterTessellation = GetPrivateProfileBoolA( "Display", "WaterTessellation", ds.WaterTessellation, ini );
+        s.WaterTessellationMaxFactor = std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterTessellationMaxFactor", ds.WaterTessellationMaxFactor, ini.c_str() ), 4, 64 );
+        s.WorldTessellation = GetPrivateProfileBoolA( "Display", "WorldTessellation", ds.WorldTessellation, ini );
+        s.WorldTessellationMaxFactor = std::clamp<INT>( GetPrivateProfileIntA( "Display", "WorldTessellationMaxFactor", ds.WorldTessellationMaxFactor, ini.c_str() ), 1, 16 );
+        s.WorldTessellationRange = std::clamp( GetPrivateProfileFloatA( "Display", "WorldTessellationRange", ds.WorldTessellationRange, ini ), 500.0f, 20000.0f );
+        s.WorldTessellationStrength = std::clamp( GetPrivateProfileFloatA( "Display", "WorldTessellationStrength", ds.WorldTessellationStrength, ini ), 0.0f, 1.0f );
+#ifdef PUBLIC_RELEASE
+        // Hidden in public builds; a stale ini must not switch it on
+        s.WaterTessellation = false;
+        s.WorldTessellation = false;
+#endif
+        s.HeightMapShading = GetPrivateProfileBoolA( "Display", "HeightMapShading", ds.HeightMapShading, ini );
+        s.HeightMapDepth = std::clamp( GetPrivateProfileFloatA( "Display", "HeightMapDepth", ds.HeightMapDepth, ini ), 0.0f, 50.0f );
+        s.HeightMapShadowSteps = std::clamp<INT>( GetPrivateProfileIntA( "Display", "HeightMapShadowSteps", ds.HeightMapShadowSteps, ini.c_str() ), 0, 32 );
+        s.HeightMapRange = std::clamp( GetPrivateProfileFloatA( "Display", "HeightMapRange", ds.HeightMapRange, ini ), 2000.0f, 20000.0f );
+        s.HeightMapPom = GetPrivateProfileBoolA( "Display", "HeightMapPom", ds.HeightMapPom, ini );
+        s.HeightMapPomSteps = std::clamp<INT>( GetPrivateProfileIntA( "Display", "HeightMapPomSteps", ds.HeightMapPomSteps, ini.c_str() ), 8, 64 );
+        s.HeightMapSilhouettes = GetPrivateProfileBoolA( "Display", "HeightMapSilhouettes", ds.HeightMapSilhouettes, ini );
+#ifdef PUBLIC_RELEASE
+        s.HeightMapShading = false;
+        s.HeightMapPom = false;
+#endif
         s.WaterSeaState = std::clamp( GetPrivateProfileFloatA( "Display", "WaterSeaState", ds.WaterSeaState, ini ), 0.0f, 3.0f );
         s.WaterWaveScale = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWaveScale", ds.WaterWaveScale, ini ), 0.0f, 3.0f );
         s.WaterChoppiness = std::clamp( GetPrivateProfileFloatA( "Display", "WaterChoppiness", ds.WaterChoppiness, ini ), 0.0f, 2.0f );
         s.WaterWindAngle = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWindAngle", ds.WaterWindAngle, ini ), -360.0f, 360.0f );
+        s.WaterWindDrift = GetPrivateProfileBoolA( "Display", "WaterWindDrift", ds.WaterWindDrift, ini );
         // Backward compat: legacy [Display]/WaterSSR bool maps to Medium/Disabled when the
         // new WaterSSRQuality key is absent.
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 4));
@@ -6540,8 +6631,12 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.GpuVobOcclusionCulling = GetPrivateProfileBoolA( "Debug", "GpuVobOcclusionCulling", ds.GpuVobOcclusionCulling, ini );
         s.GpuScene = GetPrivateProfileBoolA( "Debug", "GpuScene", ds.GpuScene, ini );
         s.GpuWorld = GetPrivateProfileBoolA( "Debug", "GpuWorld", ds.GpuWorld, ini );
+        s.GpuWorldOcclusion = GetPrivateProfileBoolA( "Debug", "GpuWorldOcclusion", ds.GpuWorldOcclusion, ini );
+        s.GpuWorldConeCulling = GetPrivateProfileBoolA( "Debug", "GpuWorldConeCulling", ds.GpuWorldConeCulling, ini );
+        s.ShadowTriangleCulling = GetPrivateProfileBoolA( "Debug", "ShadowTriangleCulling", ds.ShadowTriangleCulling, ini );
         s.UseGpuMorphFold = GetPrivateProfileBoolA( "Debug", "GpuMorphFold", ds.UseGpuMorphFold, ini );
         s.UseGpuUploadRings = GetPrivateProfileBoolA( "Debug", "GpuUploadRings", ds.UseGpuUploadRings, ini );
+        s.VertexPulling = GetPrivateProfileBoolA( "Debug", "VertexPulling", ds.VertexPulling, ini );
         s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", ds.DebugSettings.FeatureSet.UseShadowAtlas, ini );
         s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask = GetPrivateProfileBoolA( "Debug", "UseScreenSpaceShadowMask", ds.DebugSettings.FeatureSet.UseScreenSpaceShadowMask, ini );
         s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth = GetPrivateProfileBoolA( "Debug", "GenerateAONormalsFromDepth", ds.DebugSettings.FeatureSet.GenerateAONormalsFromDepth, ini );
@@ -6560,6 +6655,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DebugSettings.FeatureSet.UseMDIOverride = readFeatureOverride( "UseMDIOverride", ds.DebugSettings.FeatureSet.UseMDIOverride );
         s.DebugSettings.FeatureSet.UseLayeredRenderingOverride = readFeatureOverride( "UseLayeredRenderingOverride", ds.DebugSettings.FeatureSet.UseLayeredRenderingOverride );
         s.DebugSettings.FeatureSet.UseTransientAliasingOverride = readFeatureOverride( "UseTransientAliasingOverride", ds.DebugSettings.FeatureSet.UseTransientAliasingOverride );
+        s.DebugSettings.FeatureSet.IntegratedGpuTuningOverride = readFeatureOverride( "IntegratedGpuTuningOverride", ds.DebugSettings.FeatureSet.IntegratedGpuTuningOverride );
 
         // Fix the resolution if the players maximum resolution got lower
         /*RECT r;

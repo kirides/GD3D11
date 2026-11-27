@@ -1,6 +1,9 @@
 #include "ImGuiShim.h"
+#include "OceanSpectrum.h"
 #include "StaticLightFarField.h"
 #include "GSky.h"
+#include "oCGame.h"
+#include "zCSkyController_Outdoor.h"
 #include "D3D11PipelineStateCache.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
 #include "VulkanEngine/VulkanDevice.h"
@@ -925,15 +928,16 @@ void ImGuiShim::OnResize( INT2 newSize )
 // override is stored; picking one re-resolves the effective value against the live device.
 static void FeatureOverrideRow( const char* label, GothicRendererSettings& settings,
     GothicRendererSettings::E_FeatureOverride& value, const bool& effective, bool deviceSupports,
-    const char* toolTip ) {
+    const char* toolTip, ShaderCategory reloadShaders = ShaderCategory::None ) {
     static const ListItem<GothicRendererSettings::E_FeatureOverride> overrides[] = {
         { "Auto",      GothicRendererSettings::FEATURE_AUTO },
         { "Force Off", GothicRendererSettings::FEATURE_FORCE_OFF },
         { "Force On",  GothicRendererSettings::FEATURE_FORCE_ON },
     };
 
-    if ( ImComboBox( label, overrides, &value, [&settings] {
+    if ( ImComboBox( label, overrides, &value, [&settings, reloadShaders] {
         settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
+        if ( reloadShaders != ShaderCategory::None ) Engine::GraphicsEngine->ReloadShaders( reloadShaders );
     } ) ) {
         ImGui::EndCombo();
     }
@@ -1199,6 +1203,30 @@ void ImGuiShim::RenderSettingsWindow()
                     shadersToReload |= ShaderCategory::Water;
                 }
             }
+#ifndef PUBLIC_RELEASE
+            ImGui::Checkbox( "Water tessellation (D3D12/Vulkan)", &settings.WaterTessellation );
+            ImGui::SetItemTooltip( "Tessellates water in the DX11 wave mode; the edge presplit needs a world reload." );
+            ImGui::SliderInt( "Water tess max factor", &settings.WaterTessellationMaxFactor, 4, 64 );
+            ImGui::Checkbox( "World tessellation (D3D12/Vulkan)", &settings.WorldTessellation );
+            ImGui::SetItemTooltip( "PN-smoothed main-view world mesh; needs Vertex Pulling." );
+            ImGui::SliderInt( "World tess max factor", &settings.WorldTessellationMaxFactor, 1, 16 );
+            ImGui::SliderFloat( "World tess range", &settings.WorldTessellationRange, 500.0f, 20000.0f, "%.0f" );
+            ImGui::SliderFloat( "World tess strength", &settings.WorldTessellationStrength, 0.0f, 1.0f );
+            ImGui::Checkbox( "Height map shading (D3D12/Vulkan)", &settings.HeightMapShading );
+            ImGui::SetItemTooltip( "Micro shadows, cavity AO and normals from <texture>_HEIGHT.DDS (R channel, 0.5 = rest)." );
+            ImGui::SliderFloat( "Height map depth (cm)", &settings.HeightMapDepth, 0.0f, 50.0f, "%.1f" );
+            ImGui::SetItemTooltip( "Peak-to-peak range; also the world tessellation displacement." );
+            ImGui::SliderInt( "Height map shadow steps", &settings.HeightMapShadowSteps, 0, 32 );
+            ImGui::SliderFloat( "Height map range", &settings.HeightMapRange, 2000.0f, 20000.0f, "%.0f" );
+            ImGui::SetItemTooltip( "How far height shading/POM reaches; full to 75%." );
+            ImGui::Checkbox( "Height map parallax (POM)", &settings.HeightMapPom );
+            ImGui::SetItemTooltip( "Parallax occlusion mapping beyond the tessellation range (everywhere when tessellation is off)." );
+            ImGui::BeginDisabled( !settings.HeightMapPom );
+            ImGui::SliderInt( "Height map POM steps", &settings.HeightMapPomSteps, 8, 64 );
+            ImGui::Checkbox( "Height map silhouettes", &settings.HeightMapSilhouettes );
+            ImGui::SetItemTooltip( "Curved edges cut out by the parallax ray; needs parallax." );
+            ImGui::EndDisabled();
+#endif // !PUBLIC_RELEASE
             {
                 const char* simLevels[] = { "Off", "Low", "Medium", "High" };   // E_WaterSimulation
                 int sim = settings.WaterSimulation;
@@ -1206,9 +1234,12 @@ void ImGuiShim::RenderSettingsWindow()
                     settings.WaterSimulation = (GothicRendererSettings::E_WaterSimulation)sim;
                 ImGui::SetItemTooltip( "FFT sea waves on MT_Ocean water; the quality tier reallocates the simulation." );
                 ImGui::SliderFloat( "Sea state", &settings.WaterSeaState, 0.0f, 3.0f );
+                ImGui::SetItemTooltip( "Minimum; rain raises it towards 2, a thunderstorm towards 3 (weather now: %.2f).",
+                    OceanFFT::GetSurface().WeatherSeaState() );
                 ImGui::SliderFloat( "Wave height", &settings.WaterWaveScale, 0.0f, 3.0f );
                 ImGui::SliderFloat( "Wave choppiness", &settings.WaterChoppiness, 0.0f, 2.0f );
                 ImGui::SliderFloat( "Wind direction", &settings.WaterWindAngle, -180.0f, 180.0f );
+                ImGui::Checkbox( "Wind drifts with the day", &settings.WaterWindDrift );
             }
             {
                 const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High", "Ultra" };
@@ -1595,6 +1626,46 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::PopID();
         }
 
+        ImGui::SeparatorText( "Dynamic Weather" );
+        {
+            ImGui::PushID( "DynamicWeatherSettings" );
+            ImGui::Checkbox( "Dynamic Weather", &settings.DynamicWeather );
+            ImGui::BeginDisabled( !settings.DynamicWeather );
+            ImGui::SliderFloat( "Variety", &settings.WeatherVariety, 0.0f, 1.0f );
+            ImGui::SliderFloat( "Bias", &settings.WeatherBias, -1.0f, 1.0f );
+            ImGui::SetItemTooltip( "Shifts the overcast estimate: negative is clearer, positive gloomier." );
+            ImGui::EndDisabled();
+
+            if ( GSky* sky = Engine::GAPI->GetSky() ) {
+                const WeatherDebugInfo info = sky->GetWeatherDebug();
+                ImGui::Text( "Active: %s", info.Active ? "yes" : "no" );
+                ImGui::Text( "Day counter: %.3f", info.DayCounter );
+                ImGui::Text( "Calendar day k: %d", info.K );
+                ImGui::Text( "Seed target: %.3f", info.SeedTarget );
+                ImGui::Text( "Texture bias: %.3f", info.TextureBias );
+                ImGui::Text( "Rain ramp: %.3f", info.RainRamp );
+                ImGui::Text( "Overcast raw: %.3f", info.Raw );
+                ImGui::Text( "Overcast: %.3f", info.Overcast );
+
+                // UI-only override state, not persisted; pushed to GSky only when edited.
+                static bool s_OverrideOn = false;
+                static float s_OverrideValue = 0.5f;
+                const bool toggled = ImGui::Checkbox( "Override overcast", &s_OverrideOn );
+                ImGui::BeginDisabled( !s_OverrideOn );
+                const bool moved = ImGui::SliderFloat( "Overcast", &s_OverrideValue, 0.0f, 1.0f );
+                ImGui::EndDisabled();
+                if ( toggled || moved ) sky->SetWeatherOverride( s_OverrideOn ? s_OverrideValue : -1.0f );
+            }
+
+            if ( ImGui::Button( "Next day" ) ) {
+                oCGame* game = oCGame::GetGame();
+                zCSkyController_Outdoor* sc = ( game && game->_zCSession_world ) ? game->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+                if ( sc ) sc->SetDayCounter( sc->GetDayCounter() + 1.0f );
+            }
+            ImGui::SetItemTooltip( "Advances Gothic's day counter by one. No effect where the offset is unknown." );
+            ImGui::PopID();
+        }
+
         ImGui::SeparatorText( "Depth of Field" );
         {
             ImGui::PushID( "DoFSettings" );
@@ -1721,6 +1792,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SetItemTooltip( "D3D12/Vulkan: keep the light, skeletal and VOB/shadow instance rings in CPU-writable\n"
             "VRAM (GPU_UPLOAD / ReBAR) so the GPU stops reading them over PCIe. Needs Resizable BAR on D3D12.\n"
             "Takes effect after a restart. See Log.txt for which heap the rings got." );
+        ImGui::Checkbox( "Vertex pulling (world mesh)", &settings.VertexPulling );
+        ImGui::SetItemTooltip( "D3D12/Vulkan: read the world mesh vertices in the vertex shader instead of through the\n"
+            "input assembler, in every pass that draws it. Temporary A/B toggle; live, applies next frame." );
         // Both of these only describe the CPU deform, which the fold replaces outright.
         ImGui::BeginDisabled( MorphGpu::IsActive() );
         ImGui::Checkbox( "Reimplemented morph blend", &settings.UseReimplementedMorphBlend );
@@ -2272,6 +2346,14 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SetItemTooltip("Static VOBs live in a persistent GPU table: the main view culls them and builds their draw commands\non the GPU instead of walking the BSP leaves every frame. Implies GPU VOB culling");
                 ImGui::Checkbox("GPU world mesh", &settings.GpuWorld );
                 ImGui::SetItemTooltip("Cull the world mesh's 128-triangle clusters per view on the GPU, which also writes its draw commands.\nWater, portals and blended surfaces stay on the CPU");
+                ImGui::BeginDisabled( !settings.GpuWorld );
+                ImGui::Checkbox("World occlusion (two-phase Hi-Z)", &settings.GpuWorldOcclusion );
+                ImGui::SetItemTooltip("Draw last frame's visible world clusters first, then test the rest against their Hi-Z");
+                ImGui::Checkbox("World backface cones", &settings.GpuWorldConeCulling );
+                ImGui::SetItemTooltip("Skip world clusters whose triangles all face away from the camera");
+                ImGui::Checkbox("Shadow triangle culling", &settings.ShadowTriangleCulling );
+                ImGui::SetItemTooltip("The cascades draw only world triangles that can cover a shadow-map texel");
+                ImGui::EndDisabled();
 
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
@@ -2367,6 +2449,13 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                         "Render the shadow cascades in one layered pass instead of one draw per cascade." );
 
                     if ( Engine::IsModernBackend() ) {
+                        FeatureOverrideRow( "Integrated GPU Tuning", settings,
+                            settings.DebugSettings.FeatureSet.IntegratedGpuTuningOverride,
+                            settings.DebugSettings.FeatureSet.IntegratedGpuTuning,
+                            Engine::GraphicsEngine->GetDeviceCapabilities().IntegratedGpu,
+                            "D3D12/Vulkan: cheaper shader permutations for GPUs that share system memory (fewer\nsky-visibility and shadow taps, unused features and dry-weather wetness compiled out)\nand a compressed R11G11B10 scene colour (not with TAA). Auto is on for integrated GPUs.\nReloads shaders, once more the first time the scene gets wet; the scene colour format\napplies after a restart.",
+                            ShaderCategory::All );
+
                         FeatureOverrideRow( "Alias Transient Textures", settings,
                             settings.DebugSettings.FeatureSet.UseTransientAliasingOverride,
                             settings.DebugSettings.FeatureSet.UseTransientAliasing,

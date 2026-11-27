@@ -11,6 +11,7 @@
 #include <dxgi1_6.h>
 #include "D3D12Rhi.h"
 #include <memory>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -25,6 +26,7 @@
 
 struct RenderBucket;
 struct MeshKey;
+struct MaterialInfo;
 class D3D12LineRenderer;
 struct GothicBlendStateInfo;
 struct FrameVobUpload;
@@ -46,10 +48,14 @@ class D3D12GpuScene;
 class D3D12Ocean;
 struct GpuSceneCasterView;
 struct GpuScenePointView;
+struct Fsr1LateTargets;   // D3D12Fsr1Late.h
 class D3D12GpuWorld;
 class D3D12MeshArena;
 class D3D12RayTracing;
+class D3D12GeometryStreams;
+class D3D12VertexPullSelfTest;
 class D3D12HeapCheck;
+class D3D12GpuTimers;
 struct FrameSkelDraw;
 struct FrameAttachDraw;
 struct TransparentItem;
@@ -72,6 +78,9 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     friend class D3D12MeshArena;
     // The ray-traced scene builds over the arenas, the posed skinning streams and the frame's draw lists.
     friend class D3D12RayTracing;
+    // Stream table + startup self-test for vertex pulling (VERTEX_PULLING_PLAN.md).
+    friend class D3D12GeometryStreams;
+    friend class D3D12VertexPullSelfTest;
 
 public:
     /** Compile-time array-sizing bound for every per-frame resource ring (1 current + up to 2 queued).
@@ -362,7 +371,7 @@ private:
     Rhi::Resource*             GetDisplayTarget() const;
     D3D12_CPU_DESCRIPTOR_HANDLE GetDisplayRtv() const;
     // World/DepthPrepass/Vob pipeline creation now lives in m_Pipelines (CreateWorld/CreateDepthPrepass/CreateVob).
-    void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
+    void DrawDepthPrepass( bool lateWorld = false );   // opaque world-mesh depth before the lit passes; late = the GPU world's second phase
     bool CreateLightCullBuffers( INT2 size ); // per-resolution clustered light-grid UAV buffer (rebuilt on resize)
     void DispatchLightCulling();      // dispatch the clustered light cull (writes the per-cluster mask grid)
     // Vob pipeline creation now lives in m_Pipelines.CreateVob (buffers stay: CreateVobInstanceBuffers).
@@ -377,14 +386,22 @@ private:
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     // Set a lit draw's per-material bindless normal/ORM indices (b6 root consts). matRootParam = 10 (world/VOB
     // root sig) or 12 (skeletal). Call once per material change, right after binding its diffuse SRV.
-    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam );
+    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam, const MaterialInfo* info = nullptr );
     // Bindless variant: same b6 block plus the diffuse SRV heap slot as the third constant. Used by the
     // skeletal passes, whose root signature carries no diffuse descriptor table.
-    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam, UINT diffuseSlot );
-    void ResolveMaterialMapSlots( class zCTexture* tex, UINT* outNormalOrm ) const;
+    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam, UINT diffuseSlot, const MaterialInfo* info = nullptr );
+    void ResolveMaterialMapSlots( class zCTexture* tex, UINT* outNormalOrm, const MaterialInfo* info = nullptr ) const;
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
-    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5 );   // light SRV(t1)+count+cluster-mask(t2); (3,4,5)=world, (4,5,6)=skeletal, (5,6,7)=grass
+    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5 );   // light SRV(t1)+LightCB root CBV+cluster-mask(t2); (3,4,5)=world/decal, (4,5,6)=skeletal, (5,6,7)=grass
+    struct LightCBData {   // HLSL LightCB (include/LightCB.hlsl)
+        UINT LightCount, NumTilesX, LimitLightIntensity, PointShadowDynIndex, RtShadowMaskIndex;
+        float ProjA, ProjB, NearZ, FarZ;
+    };
+    static constexpr UINT kLightCbStride = 256;   // root-CBV alignment
+    static constexpr UINT kLightCbSlots = 64;     // distinct LightCB values per frame
+    bool CreateLightConstantBuffer();
+    D3D12_GPU_VIRTUAL_ADDRESS AllocLightCb( const LightCBData& cb );   // per-frame ring slot for these values
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     // Skeletal (animated NPC/monster) pipeline creation now lives in m_Pipelines.CreateSkeletal (root sig + lit +
     // depth-prepass PSOs). The per-frame skeletal CB ring stays here:
@@ -728,7 +745,10 @@ private:
     // The two below it belong to D3D12HeapCheck (Shaders/D3D12/include/HeapCheck.hlsl), reserved whether it runs or not.
     // Below those, the static-light far field's per-vertex buffer (Shaders/D3D12/include/FarField.hlsl).
     static constexpr UINT kFarFieldVertexSlot = 65532;
-    static constexpr UINT kReservedTopSlots = 4;
+    // Below that, the per-material map table: StructuredBuffer<uint2> by diffuse slot (Shaders/D3D12/include/MaterialMaps.hlsl).
+    static constexpr UINT kMaterialMapsSlot = 65531;
+    static constexpr UINT kReservedTopSlots = 5;
+    static constexpr UINT kMaterialMapsNone = 0xFFFFFFFFu;
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxTable;    // DEFAULT, MaterialFx::Entry[kMaxSlots]
     Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxUpload;   // UPLOAD, one table per frame in flight
     uint8_t* m_MaterialFxUploadPtr = nullptr;
@@ -799,6 +819,8 @@ private:
     UINT m_DefaultOrmSrvSlot = UINT_MAX;
     /** SRV heap slot of the default ORM texture for this frame's DefaultMaterialRoughness setting. */
     UINT GetDefaultOrmSrvSlot() const { return m_DefaultOrmSrvSlot; }
+    /** The default-ORM slot for a material without a map: its per-material roughness step if set, else the global one. */
+    UINT DefaultOrmSlotFor( const MaterialInfo* info ) const;
     /** Re-resolves m_DefaultOrmSrvSlot from RendererSettings.DefaultMaterialRoughness. Frame-start only. */
     void RefreshDefaultOrmSlot();
     std::unique_ptr<D3D12Texture> m_DistortionTexture;    // distortion2.dds — wet-ground normal fallback (see LoadDistortionTexture)
@@ -939,23 +961,33 @@ private:
     void WetNormalFallback( uint32_t& slot, float& strength ) const;
     // The main view's GPU world cull, before the depth prepass.
     void CullGpuWorldMain();
+    void CullGpuWorldLate();   // two-phase: the main view's clusters not drawn early, against the Hi-Z of the early depth
 
-    struct VobDrawCommand {                          // 48 bytes; all members 4-byte, no GPUVA alignment to keep
+    struct VobDrawCommand {                          // 56 bytes; all members 4-byte, no GPUVA alignment to keep
         uint32_t MatNormalIndex;                     // @0  b6.x  (0xFFFFFFFF = no normal map)
         uint32_t MatOrmIndex;                        // @4  b6.y  (default ORM slot when no _FX)
         uint32_t MatDiffuseIndex;                    // @8  b6.z  bindless diffuse (alpha clip + albedo)
         float    WindMinHeight;                      // @12 b4[4] per-visual bbox.min.y
         float    WindMaxHeight;                      // @16 b4[5] per-visual bbox.max.y
-        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @20 (20 bytes) — ends the indirect arguments at @40
+        // The pulled VS adds these to SV_VertexID / SV_InstanceID, which exclude the draw's bases (root param 15, b10).
+        // VertexBase mirrors Draw.BaseVertexLocation. InstanceBase mirrors Draw.StartInstanceLocation, except that a
+        // GPU-culled far run sets kVobFarRunBit and names the LAST element of its visual's block (CSPatchArgs packs the
+        // far survivors backward from there, and rewriting root arguments on the GPU would escape the Vulkan CPU replay).
+        uint32_t VertexBase;                         // @20 b10.x
+        uint32_t InstanceBase;                       // @24 b10.y
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @28 (20 bytes) — ends the indirect arguments at @48
         // --- Past the end of the command signature's arguments. ExecuteIndirect reads the args packed from
         // offset 0 and only requires ByteStride to COVER them, so trailing fields are free per-command payload
         // for our own compute passes. VisualIndex tells CSPatchArgs which per-visual surviving-instance count
         // to write into Draw.InstanceCount; 0xFFFFFFFF = "leave the CPU's count alone" (not GPU-culled).
-        uint32_t VisualIndex;                        // @40
+        uint32_t VisualIndex;                        // @48
         // Which of the visual's two compacted instance runs this command draws; CSPatchArgs picks the
         // matching count + StartInstanceLocation from it.
-        uint32_t LodBucket;                          // @44
+        uint32_t LodBucket;                          // @52
     };
+    static constexpr uint32_t kVobFarRunBit = 0x80000000u;   // VobVertexPull.hlsl kVobFarRun
+    // Instance buffers a VS reads through a root SRV (the pulled VOB draws) after a GPU write: the IA read states plus NON_PIXEL_SHADER_RESOURCE.
+    static constexpr D3D12_RESOURCE_STATES kVobInstanceRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
     static constexpr uint32_t kLodBucketNear = 0;
     static constexpr uint32_t kLodBucketFar  = 1;
@@ -964,7 +996,7 @@ private:
     // bump would multiply across 3 cascades x kBackBufferCount rings and cost real 32-bit address space.
     static constexpr UINT kMaxVobDrawCommands       = 16384;  // main view: visuals x materials x sub-meshes
     static constexpr UINT kMaxShadowVobDrawCommands = 8192;   // per shadow cascade; overflow logs + drops
-    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_VobIndirectCmdSig;        // b6(3) + b4[4..5](2) + DrawIndexed
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_VobIndirectCmdSig;        // b6(3) + b4[4..5](2) + b10(2) + DrawIndexed
     // Every static VOB sub-mesh in one DEFAULT-heap VB/IB pair — see D3D12VobArena.h. Filled from OnAddVob
     // (which fires per vob during world load, so the world is resident before the first frame) and flushed
     // once per frame at the top of UploadFrameVobInstances.
@@ -975,13 +1007,37 @@ private:
     // World mesh culled per view on the GPU (D3D12GpuWorld.cpp); decided once per frame in OnStartWorldRendering.
     std::unique_ptr<D3D12GpuWorld> m_GpuWorld;
     bool m_GpuWorldActive = false;
+    bool m_GpuWorldTwoPhase = false;   // this frame's main view culls early + late (CULLING_PLAN.md stage 1)
+    bool m_GpuWorldCones = false;      // ...and drops back-facing clusters (stage 2)
     // Skinned bodies (ExSkelVertexStruct) and node attachments (ExVertexStruct), requested by
     // PrepareFrameSkeletals and flushed right after the main view's prepare. See D3D12MeshArena.h.
     std::unique_ptr<D3D12MeshArena> m_SkelArena;
     std::unique_ptr<D3D12MeshArena> m_AttachArena;
     // Inline ray tracing (water reflections, shadow mask); null without ray queries or when neither shader built.
     std::unique_ptr<D3D12RayTracing> m_RayTracing;
+    std::unique_ptr<D3D12GeometryStreams> m_GeometryStreams;       // bindless raw SRVs of every vertex resource
+    std::unique_ptr<D3D12VertexPullSelfTest> m_VertexPullSelfTest; // one-shot SV_VertexID/InstanceID base check
+    // [Debug] VertexPulling A/B: latched once per frame in OnStartWorldRendering (after the stream table refresh); every
+    // world and VOB pass of the frame reads these, so prepass and lit pass always agree and the two never mix.
+    // m_WorldVbSlot = the world VB's heap index = the stream table's base.
+    bool m_VertexPullWorld = false;
+    UINT m_WorldVbSlot = UINT_MAX;
+    // World tessellation latch (OnStartWorldRendering): main-view world prepass + lit opaque pass use the patch PSOs.
+    bool m_WorldTessActive = false;
+    Rhi::PipelineState* WorldTessPick( Rhi::PipelineState* flat, Rhi::PipelineState* tess ) const { return m_WorldTessActive && tess ? tess : flat; }
+    Rhi::PipelineState* PullPick( Rhi::PipelineState* ia, Rhi::PipelineState* pulled ) const { return m_VertexPullWorld && pulled ? pulled : ia; }
+    /** Sets b9 { world VB heap index, no VOB info } of the root signature's `rootParam`; no-op while the frame is on the IA path. */
+    void BindWorldPull( D3D12CmdList& cmdList, UINT rootParam ) const;
+    /** Sets the stream-table base (b11 of the Skeletal/GhostSkeletal root signatures) at `rootParam`; no-op while the frame is on the IA path. */
+    void BindSkelPull( D3D12CmdList& cmdList, UINT rootParam ) const;
+    /** Binds one grass box's mesh VB (slot 0) and 64 B matrix stream (slot 1): as the IA vertex buffers, or (`pulled`) as the t7/t8 root SRVs at `rootParam`/+1 (offset 0). */
+    void BindGrassBuffers( D3D12CmdList& cmdList, bool pulled, UINT rootParam, const D3D12_VERTEX_BUFFER_VIEW& mesh, const D3D12_VERTEX_BUFFER_VIEW& instances ) const;
+    /** The pulled VOB draw bind: b9 { stream base, instance stride | VB stream offset << 16 } and `instances` as the t6 root SRV (buffer start). */
+    void BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances, UINT instanceStride,
+        bool attachArena ) const;
     std::unique_ptr<D3D12HeapCheck> m_HeapCheck;   // -GPUHEAPCHECK only
+    std::unique_ptr<D3D12GpuTimers> m_GpuTimers;   // -GPUTIMERS only (D3D12)
+    UINT m_GpuFrameZone = UINT_MAX;
     // This frame's ray-traced point shadows, decided before the light buffer is built
     bool m_RtPointShadowsActive = false;
     // Shadow-mask SRV the lit opaque passes read (UINT_MAX outside them); see BindFrameLights
@@ -1004,12 +1060,15 @@ private:
     // Re-uploads the arena ranges of animated static VOBs (.MMS morph meshes) from their own vertex buffers.
     // Runs right after DispatchMorphFold, which is what produces this frame's deformed vertices.
     void RefreshDynamicVobArena();
-    /** The one IA bind every instanced-VOB ExecuteIndirect needs: the mega-buffers on slot 0 / the index
+    /** The one bind every instanced-VOB ExecuteIndirect needs: the mega-buffers on slot 0 / the index
         stream, and `instances` (the per-instance VobInstanceInfo stream this pass draws from — the raw
         upload ring for the shadow/rain passes, the GPU-compacted buffer for a culled main view) on slot 1.
-        Returns false when the arena holds nothing, in which case the caller must not submit: its commands
-        would index a buffer that doesn't exist. instanceStride 0 = VobInstanceStride(). */
-    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes, UINT instanceStride = 0 );
+        While the frame is vertex-pulled (m_VertexPullWorld) the vertex slots are not bound; `pull` (the root signature's
+        VobPullRoots) then gets the b9 stream info and `instances` as a root SRV at its start, which is what the
+        commands' element indices address. Returns false when the arena holds nothing, in which case the caller must
+        not submit: its commands would index a buffer that doesn't exist. instanceStride 0 = VobInstanceStride(). */
+    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes, UINT instanceStride = 0,
+        const D3D12PipelineState::VobPullRoots* pull = nullptr );
     Microsoft::WRL::ComPtr<Rhi::Resource> m_VobDrawArgs[kBackBufferMax];   // main-view (prepass+color share it)
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
@@ -1076,19 +1135,20 @@ private:
     // (Base/StartIndex in the draw) and per-vob data in the skeletal ring (t3, located by SkelInstanceRow) or
     // the VOB instance ring (StartInstanceLocation). That keeps both signatures DGC-able on Vulkan.
     // Argument order follows the root parameter order (D3D12 requires it increasing): b10 is param 2, b6 param 11.
-    struct SkeletalDrawCommand {                     // 36 bytes
-        uint32_t InstanceRow;                        // @0  b10   SkeletalInstanceGPU row in the skeletal ring
-        uint32_t MatNormalIndex;                     // @4  b6.x  (0xFFFFFFFF = no normal map)
-        uint32_t MatOrmIndex;                        // @8  b6.y  (default ORM slot when no _FX)
-        uint32_t MatDiffuseIndex;                    // @12 b6.z  bindless diffuse (alpha clip + albedo)
-        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @16 (20 bytes)
+    struct SkeletalDrawCommand {                     // 40 bytes
+        uint32_t InstanceRow;                        // @0  b10.x SkeletalInstanceGPU row in the skeletal ring
+        uint32_t VertexBase;                         // @4  b10.y first posed vertex (== Draw.BaseVertexLocation); the pulled VS adds it to SV_VertexID
+        uint32_t MatNormalIndex;                     // @8  b6.x  (0xFFFFFFFF = no normal map)
+        uint32_t MatOrmIndex;                        // @12 b6.y  (default ORM slot when no _FX)
+        uint32_t MatDiffuseIndex;                    // @16 b6.z  bindless diffuse (alpha clip + albedo)
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @20 (20 bytes)
     };
     // Both are per-frame-in-flight UPLOAD rings, so keep the caps tight — the 32-bit address space is the
     // binding constraint, not the command count. A crowd of NPCs is ~100 vobs x a handful of materials x
     // sub-meshes; overflow logs once and drops the tail (same contract as the VOB/world rings).
     static constexpr UINT kMaxSkeletalDrawCommands = 4096;   // base skinned meshes (visual x material x sub-mesh)
     static constexpr UINT kMaxAttachDrawCommands   = 4096;   // node attachments (weapons/heads/held items)
-    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_SkeletalIndirectCmdSig;  // b10(1) + b6(3) + DrawIndexed
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_SkeletalIndirectCmdSig;  // b10(2) + b6(3) + DrawIndexed
     Microsoft::WRL::ComPtr<Rhi::Resource> m_SkeletalDrawArgs[kBackBufferMax];
     uint8_t* m_SkeletalDrawArgsPtr[kBackBufferMax] = {};
     UINT m_SkeletalDrawCount = 0;                    // commands built this frame (prepass + color share them)
@@ -1100,9 +1160,10 @@ private:
     UINT m_AttachOpaqueDrawCount = 0;                // alpha-test partition — see m_WorldOpaqueDrawCount
     unsigned int m_SkeletalDrawnTriangles = 0;       // triangles in this frame's skeletal+attachment command set (stats)
     bool m_SkeletalDrawArgsOverflowLogged = false;
-    /** Binds the posed skinned streams (slots 0/1), the skeletal arena's indices and the skeletal ring at root
-        parameter `skelDataParam`. False (and nothing bound) when there is nothing to draw from yet. */
-    bool BindSkinnedGeometry( D3D12CmdList& cmdList, UINT skelDataParam );
+    /** Binds the skeletal arena's indices and the skeletal ring at root parameter `skelDataParam`, plus the posed skinned
+        streams on slots 0/1 on the IA path. While the frame is vertex-pulled the streams come from the stream table instead:
+        `pullParam` (the root signature's b11 stream-base constant) is set. False (and nothing bound) when there is nothing to draw from yet. */
+    bool BindSkinnedGeometry( D3D12CmdList& cmdList, UINT skelDataParam, UINT pullParam = UINT_MAX );
 
     // ---- Compute skinning (D3D12Skinning.cpp, Shaders/D3D12/SkinVertices.hlsl) ----------------------------------
     // PrepareFrameSkeletals reserves each prepared sub-mesh a range of the two posed streams (ReserveSkinned,
@@ -1125,11 +1186,14 @@ private:
     uint32_t ReserveSkinned( const SkeletalMeshVisualInfo* visual, uint32_t instanceRow, uint32_t& count );
     void DispatchSkinning();     // after the frame's last PrepareFrameSkeletals, before the depth prepass
     D3D12_VERTEX_BUFFER_VIEW SkinnedPosUvView() const;
-    /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1. */
-    bool BindAttachArenaIA( D3D12CmdList& cmdList );
+    /** Resting state of the two posed streams: vertex input, and a VS reading them through the stream table. */
+    static constexpr D3D12_RESOURCE_STATES kSkinnedRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1 (BindVobArenaIA's `pull` rules). */
+    bool BindAttachArenaIA( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots* pull = nullptr );
     /** Direct draws on m_CmdList (ghosts, item previews): bind one mesh out of its arena, requesting it on
         first sight. False until a flush has uploaded it; on true, `draw` holds the mesh's draw arguments. */
-    bool BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
+    /** `pulled`: the VS reads the arena vertices itself (b10.y = draw.BaseVertexLocation), so no vertex buffer is bound. */
+    bool BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw, bool pulled = false );
     bool BindAttachmentMesh( const MeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
     bool CreateSkeletalIndirectSignature();
     bool CreateSkeletalIndirect();                   // command signature + both per-frame arg rings (once, at init)
@@ -1425,6 +1489,11 @@ private:
     // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph — see D3D12DoF.cpp's file
     // header / D3D12RenderDepthOfField's declaration above for why.
     void RenderSMAA( class D3D12RenderGraph& graph );
+    // The three SMAA passes over a `size` image. begin/end bracket them: begin (at execute time) names the source SRV
+    // and destination, end restores the source. Display chain = the display-res steps; FSR 1 late = render-res pair.
+    struct DisplayChainStep;
+    void AddSmaaPasses( class D3D12RenderGraph& graph, INT2 size, std::function<DisplayChainStep( D3D12CmdList& )> begin,
+        std::function<void( D3D12CmdList& )> end );
 
     // --- The post-tonemap DISPLAY CHAIN -------------------------------------------------------------------
     // SMAA, sharpen and the underwater FX each read the finished display image and write it back, which a
@@ -1677,6 +1746,11 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_TaaHistory[2];
     UINT m_TaaHistorySrvSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_TaaHistoryUavSlot[2] = { UINT_MAX, UINT_MAX };
+    // The history is always RGBA16F (weight in alpha, full-precision accumulation). With a compressed R11G11B10 scene
+    // colour the resolve also writes its RGB here (scene-colour format, UAV) and this is what gets copied over the scene
+    // colour; otherwise the history itself is. Rests in UNORDERED_ACCESS.
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_TaaSceneOut;
+    UINT m_TaaSceneOutUavSlot = UINT_MAX;
     UINT m_TaaHistoryIndex = 0;
     // TAA needs the PREVIOUS frame's depth for its disocclusion test — nothing else in the frame keeps one, so
     // this is a private snapshot taken at the end of RenderTAA.
@@ -1734,6 +1808,18 @@ private:
     bool m_FsrInitFailed = false;       // don't retry m_FsrFailedKind every frame; cleared by ReleaseFsr
     int  m_FsrFailedKind = 0;
     bool m_FsrDispatchFailureLogged = false;
+    // FSR 1 in AMD's order (D3D12, SDR output): tonemap + SMAA at render res, EASU/RCAS on the LDR image, then the display
+    // chain. m_Fsr1LateCtx = the FSR 1 context was built for it (LDR BGRA output) and m_Fsr1LateTargets exist instead of
+    // m_FsrOutput; m_Fsr1LateFrame = this frame's graph takes that path (SMAA must then skip the display chain).
+    bool m_Fsr1LateCtx = false;
+    bool m_Fsr1LateFrame = false;
+    std::unique_ptr<Fsr1LateTargets> m_Fsr1LateTargets;
+    UINT m_Fsr1LateSrvSlot[2] = { UINT_MAX, UINT_MAX };           // kept across re-creations (slots are never freed)
+    bool Fsr1LateEligible() const;                                // D3D12, SDR output, display chain ready, BGRA8 typed UAV
+    bool CreateFsr1LateTargets();                                 // render-res LDR pair + display-res UAV output
+    void ReleaseFsr1Late();                                       // requires an idle GPU
+    bool UseFsr1Late() const;                                     // this frame runs the late order
+    void RecordFsr1Late( class D3D12RenderGraph& graph );         // adds the passes that replace FSR + resolve + SMAA
 
     int  WantedFsrKind() const;                                   // E_Upscaler the settings ask for; DEFAULT = none
     void ApplyPendingUpscalerChange();                            // OnBeginFrame: idles + drops a context of another kind
@@ -2164,8 +2250,53 @@ private:
         UINT  Enabled;
         float _pad;
     };
-    static constexpr UINT kShadowCbSize = 768;
-    static_assert( kFarFieldCbOffset + sizeof( FarFieldCBData ) <= kShadowCbSize, "FarFieldCBData ends the shadow CB" );
+    // World tessellation block (b11 WorldTessCB, root CBV at 256-aligned offset); mirrors Shaders/D3D12/include/WorldTess.hlsl
+    static constexpr UINT kWorldTessCbOffset = 768;
+    struct WorldTessCBData {
+        float CamPos[3];
+        float MaxFactor;
+        float UnitsPerPx;
+        float Range;
+        float Strength;
+        float FadeStart;
+        float DispScale;         // HeightMapDepth while tessellating, else 0
+        float HeightDepth;       // HeightMapDepth, world units peak-to-peak
+        float HeightShadowSteps; // HeightMapShadowSteps
+        float HeightShading;     // HeightMapShading as 0/1
+        float HeightRange;       // HeightMapRange, world units
+        float PomSteps;          // HeightMapPomSteps
+        float PomFlags;          // float of a bitmask: bit0 = HeightMapPom && HeightMapShading, bit1 = HeightMapSilhouettes
+        float TessActive;        // 1 while the world is tessellated
+    };
+    static_assert( sizeof( WorldTessCBData ) == 64, "WorldTessCBData mirrors WorldTessCB" );
+    static constexpr UINT kShadowCbSize = 1024;
+    static_assert( kFarFieldCbOffset + sizeof( FarFieldCBData ) <= kWorldTessCbOffset, "FarFieldCBData ends before the tessellation block" );
+    static_assert( kWorldTessCbOffset % 256 == 0 && kWorldTessCbOffset + sizeof( WorldTessCBData ) <= kShadowCbSize, "WorldTessCBData ends the shadow CB" );
+    /** Every world frame once the camera is final: the camera/factor block (b11) the HS/DS and the lit world PS read. */
+    void UploadWorldTessConstants();
+    /** Edit-rate: re-uploads the per-mesh override table (WorldTessOverrides) as geometry stream WorldTessParams; empty table releases it. */
+    void UpdateWorldTessTable();
+    /** Per frame while height shading or tessellation is on: height SRV slot per diffuse slot into m_MaterialMaps. */
+    void UpdateMaterialMaps();
+    /** At most once per frame, when dirty: re-uploads m_MaterialMaps to the kMaterialMapsSlot buffer. */
+    void UploadMaterialMaps();
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_WorldTessTable;
+    uint32_t m_WorldTessTableVersion = UINT32_MAX;
+    uint32_t m_MaterialMapsTexVersion = UINT32_MAX;   // overrides version the unique-texture list was built for
+    std::vector<zCMaterial*> m_WorldTessUniqueTex;   // unique world materials; textures are read from them per frame
+    std::vector<uint32_t> m_WorldTessUniqueHeight;   // resolved height SRV slot per unique texture (kMaterialMapsNone = none)
+    std::vector<uint32_t> m_WorldTessMeshTex;        // mesh -> index into m_WorldTessUniqueTex (UINT32_MAX = no texture)
+    bool m_HeightPomState = false;                   // HeightMapPom && HeightMapShading as last seen
+    /** Bumped when the POM setting combo or any world height slot changes; D3D12GpuWorld re-resolves its materials on a change. */
+    uint32_t m_HeightPartitionEpoch = 0;
+    uint32_t m_MaterialInfoEpochSeen = 0;            // g_MaterialInfoEpoch as last applied (per-material roughness edits)
+    std::vector<XMFLOAT4> m_WorldTessScratch;    // copy of GetGpuTable() with .w filled, reused
+    // uint2 per diffuse SRV slot (.x height slot, .y reserved), guarded by m_SrvHeapMutex: FreeSrvSlot resets entries off-thread
+    std::vector<uint32_t> m_MaterialMaps;
+    std::vector<uint32_t> m_MaterialMapsScratch;  // snapshot taken for the upload
+    std::vector<std::pair<UINT, uint32_t>> m_MaterialMapsPending;   // (diffuse slot, height slot) resolved outside the lock
+    bool m_MaterialMapsDirty = false;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialMapsBuffer;
     /** Every frame with the light buffer: the bake's vertex buffer (heap slot kFarFieldVertexSlot) and CB block. */
     void UpdateFarField();
     Microsoft::WRL::ComPtr<Rhi::Resource> m_FarFieldVertexBuffer;
@@ -2232,6 +2363,10 @@ private:
     uint8_t* m_LightBufferPtr[kBackBufferMax] = {};
     UINT m_LightBufferCapacity = 0;                               // max lights per frame
     UINT m_FrameLightCount = 0;                                   // lights written this frame
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_LightCB[kBackBufferMax];   // LightCB ring (kLightCbSlots x 256 B), persistently mapped UPLOAD
+    uint8_t* m_LightCBMapped[kBackBufferMax] = {};
+    UINT m_LightCbUsed[kBackBufferMax] = {};
+    LightCBData m_LightCbLast[kBackBufferMax] = {};               // CPU copy of the last slot (never read the UPLOAD heap)
     bool m_LightOverflowLogged = false;
 
     // Water (transparent world surfaces). Own root sig = the world layout + b2 = { time, alpha } (VS

@@ -178,8 +178,12 @@ struct GothicMemoryLocations {
         // float resultFogScale — fades the planets out on foggy days (zCSkyControler_Outdoor::RenderPlanets).
         static const unsigned int Offset_ResultFogScale = 0x560;
         static const unsigned int Offset_MasterTime = 0x6C;
+        // float dayCounter (zCSkyControler_Outdoor::dayCounter), 0 = unknown offset
+        static const unsigned int Offset_DayCounter = 0x550;
         static const unsigned int Offset_LastMasterTime = 0x70;
         static const unsigned int Offset_MasterState = 0x74;
+        // zCSkyState* skyLayerState[2]: the states whose layer[c].tex is drawn, 0 = unknown offset
+        static const unsigned int Offset_SkyLayerState = 0x588;
         /*static const unsigned int Offset_SkyLayer1 = 0x5A8;
         static const unsigned int Offset_SkyLayer2 = 0x5C4;
         static const unsigned int Offset_SkyLayerState = 0x5A0;
@@ -214,6 +218,7 @@ struct GothicMemoryLocations {
         static const unsigned int VTBL_RenderSkyPost = 21;
         static const unsigned int static_skyEffectsEnabled = 0x8422A0; // int*
         static const unsigned int ClearBackground = 0x005ba2f0;
+        static const unsigned int ADDR_HintLightning = 0; // G1's zCRenderManager has no hintLightning
     };
 
     struct zCParticleEmitter {
@@ -577,6 +582,7 @@ struct GothicMemoryLocations {
 
     struct zCWorld {
         static const unsigned int Render = 0x005F3EC0;
+        static const unsigned int Offset_WayNet = 0x78;
         static const unsigned int LoadWorld = 0x005F8A00;
         static const unsigned int VobRemovedFromWorld = 0x005F64C0;
         static const unsigned int VobAddedToWorld = 0x005F6360;
@@ -613,6 +619,7 @@ struct GothicMemoryLocations {
 
     struct oCNPC {
         static const unsigned int ResetPos = 0x0074CED0;
+        static const unsigned int BeamTo = 0x00693B10; // int __thiscall (const zSTRING& waypoint/freepoint/vob name)
         static const unsigned int Enable = 0x006A2000;
         static const unsigned int Disable = 0x006A1D20;
         static const unsigned int InitModel = 0x00695020;
@@ -620,6 +627,7 @@ struct GothicMemoryLocations {
         static const unsigned int GetName = 0x0068D0B0;
         static const unsigned int HasFlag = 0x0068E150;
         static const unsigned int Offset_focus_vob = 0x9e4;
+        static const unsigned int Offset_variousFlags = 0x180;   // NPC_FLAG_* (ZenGin API header)
         static const unsigned int Offset_states = 0x470;
         static const unsigned int GetInvSlot_zString = 0x006a5770;
     };

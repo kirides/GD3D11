@@ -496,7 +496,8 @@ struct LowCloudConstantBuffer {
     XMFLOAT4 LC_MoonScreen;
     float LC_Frame;               // march jitter phase under TAA/FSR, 0 otherwise
     uint32_t LC_NoiseIndex;       // D3D12: bindless SRV of the 3D noise texture
-    float LC_Pad[2];
+    float LC_Overcast;            // GSky::GetOvercast
+    float LC_Pad;
 };
 static_assert( sizeof( LowCloudConstantBuffer ) == 240 );
 
@@ -506,10 +507,11 @@ struct OceanTessConstants {
     XMFLOAT4X4 View;
     float Camera[4];
     float Tile[4];      // cascade tile sizes (m), 0 = unused
-    float Params[4];    // N, world units per metre, shore field valid, -
+    float Params[4];    // N, world units per metre, shore field valid, time (s)
     float ShoreMap[4];  // ShoreField::GetMapping
+    float Direction[4]; // wind drift (rad), shore swell height (world units), -, -
 };
-static_assert( sizeof( OceanTessConstants ) == 192 );
+static_assert( sizeof( OceanTessConstants ) == 208 );
 
 /** PS_Water b3: moon glint, ocean look and sky-march gate; WP_IsOcean changes per texture batch. */
 struct WaterParamsConstantBuffer {
@@ -556,7 +558,10 @@ struct AtmosphereConstantBuffer {
 
     float3 AC_SpherePosition;
     float AC_RainFXWeight;
+
+    float4 AC_Weather;   // x = overcast, yzw = cloud tint rgb
 };
+static_assert( sizeof( AtmosphereConstantBuffer ) == 128 );
 
 struct CASConstantBuffer {
     FfxUInt32x4 const0;  // CasSetup output

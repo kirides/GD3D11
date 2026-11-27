@@ -22,13 +22,37 @@ struct VS_IN {
 };
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 dif : TEXCOORD1; float3 wpos : TEXCOORD2; };
 
+// VERTEX_PULL: ParticleInstanceInfo (56 B: pos f3 @0, color f4 @12, size f3 @28, type u32 @40, velocity f3 @44) from the frame's
+// instance ring (root SRV at offset 0); each draw's first element comes in b3, since SV_InstanceID excludes StartInstanceLocation.
+#ifdef VERTEX_PULL
+ByteAddressBuffer ParticleInstances : register(t1);
+cbuffer ParticlePullCB : register(b3) { uint ParticleInstanceBase; };
+struct VS_ENTRY_IN { uint vid : SV_VertexID; uint iid : SV_InstanceID; };
+VS_IN FetchParticle( VS_ENTRY_IN e )
+{
+    const uint a = ( ParticleInstanceBase + e.iid ) * 56;
+    VS_IN i;
+    i.vertexID = e.vid;
+    i.pos  = asfloat( ParticleInstances.Load3( a ) );
+    i.dif  = asfloat( ParticleInstances.Load4( a + 12 ) );
+    i.size = asfloat( ParticleInstances.Load3( a + 28 ) );
+    i.type = ParticleInstances.Load( a + 40 );
+    i.vel  = asfloat( ParticleInstances.Load3( a + 44 ) );
+    return i;
+}
+#else
+typedef VS_IN VS_ENTRY_IN;
+VS_IN FetchParticle( VS_ENTRY_IN e ) { return e; }
+#endif
+
 static const float tu[4] = { 0.0, 1.0, 0.0, 1.0 };
 static const float tv[4] = { 1.0, 1.0, 0.0, 0.0 };
 static const float vr[4] = { -1.0,  1.0, -1.0, 1.0 };
 static const float vu[4] = { -1.0, -1.0,  1.0, 1.0 };
 
-VS_OUT VSMain( VS_IN i )
+VS_OUT VSMain( VS_ENTRY_IN e )
 {
+    const VS_IN i = FetchParticle( e );
     float3 planeNormal = normalize( -( i.pos - CameraPosition ) );
     float3 position = i.pos;
     float3 upVector;
