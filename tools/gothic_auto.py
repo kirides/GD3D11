@@ -19,7 +19,8 @@ Free camera (Gothic free-look, hero asleep; needs a loaded world):
   freecam:on|off  freecam_pos:x,y,z[,yawDeg,pitchDeg]  freecam_lookat:x,y,z[,dist]|NAME[,dist] (NAME = alias/waypoint/hero)  camget
   lookat only aims unless dist is given: then the camera flies along its line of sight to dist units (cm) from the target.
 
-Step language (";" separated): beam:NAME|tp:ALIAS (teleport player to waypoint)  pos  waypoints (dump)
+Step language (";" separated): beam:NAME|tp:ALIAS (teleport player to waypoint, then park him)  park:on|off  pos  waypoints (dump)
+The hero is immortal while -GAUTOMATION runs; a beam parks him (asleep: no AI or physics, hits don't move him), park:off undoes it.
   wait:SEC  key:NAME[+NAME] (game input)  wmkey:NAME (GD3D11 hotkey: f11, num0)  hold:NAME:SEC  text:STR  click:X,Y  shot:LABEL (window capture, png)  eshot:LABEL (engine NUMPAD7 jpg)
   log:SUBSTRING (wait until Log.txt contains it, 120 s)  quit
 Key names: enter esc space up down left right tab f1..f12 num0..num9 a..z 0..9 ctrl alt shift
@@ -399,6 +400,7 @@ class Game:
             elif cmd == 'key': self.key(arg)
             elif cmd in ('beam', 'tp'): print('  ok' if self.beam(arg) else '  FAILED')
             elif cmd == 'pos': print('  ' + self.cmd('pos'))
+            elif cmd == 'park': print('  ' + self.cmd('park ' + (arg or 'on')))
             elif cmd == 'waypoints':
                 r = self.cmd('waypoints')
                 print('  ' + r)

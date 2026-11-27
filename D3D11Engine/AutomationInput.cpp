@@ -122,6 +122,21 @@ namespace AutomationInput {
         }
 #endif
 
+#ifdef AUTOMATION_HAS_BEAM
+        // ---- The hero during automation: immortal, and parked (asleep: no AI or physics, hits don't move him) after a beam ----
+        oCNPC* g_ParkedPlayer = nullptr;   // a new world brings a new, awake hero
+
+        void MakeImmortal( oCNPC* player ) {
+            *reinterpret_cast<int*>( reinterpret_cast<char*>( player ) + GothicMemoryLocations::oCNPC::Offset_variousFlags ) |= NPC_FLAG_IMMORTAL;
+        }
+
+        void SetParked( oCNPC* player, bool parked ) {
+            if ( parked == ( g_ParkedPlayer == player ) ) return;
+            player->SetSleeping( parked ? 1 : 0 );   // oCNpc::Disable does not stop the hero
+            g_ParkedPlayer = parked ? player : nullptr;
+        }
+#endif
+
 #ifdef AUTOMATION_HAS_GAME_CALLS
         // ---- Free camera: Gothic's own free-look (F6, as the editor does) with the hero put to sleep ---------------
         bool g_FreeCam = false;
@@ -280,8 +295,14 @@ namespace AutomationInput {
             if ( !player ) return "ERR no player (world not loaded)";
             if ( cmd == "beam" ) {
                 zSTRING name( arg.c_str() );
+                SetParked( player, false );   // BeamTo moves an awake NPC
                 const int ok = reinterpret_cast<int( __fastcall* )(oCNPC*, int, const zSTRING&)>(GothicMemoryLocations::oCNPC::BeamTo)(player, 0, name);
+                SetParked( player, true );
                 return ok ? "OK" : "ERR waypoint/freepoint/vob not found: " + arg;
+            }
+            if ( cmd == "park" ) {
+                SetParked( player, arg != "off" && arg != "0" );
+                return "OK";
             }
             if ( cmd == "pos" ) {
                 const XMFLOAT3 p = player->GetPositionWorld();
@@ -303,6 +324,9 @@ namespace AutomationInput {
 
     void Tick( bool force ) {
         if ( !g_Keys ) return;
+#ifdef AUTOMATION_HAS_BEAM
+        if ( oCNPC* player = oCGame::GetPlayer() ) MakeImmortal( player );   // a dead hero leaves the camera on the ground
+#endif
         static unsigned frame = 0;
         if ( !force && (++frame & 7) != 0 ) return;  // poll about every 8th frame
         const std::string path = g_Dir + "auto_cmd.txt";

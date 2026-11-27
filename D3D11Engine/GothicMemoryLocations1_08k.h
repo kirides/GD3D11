@@ -626,6 +626,7 @@ struct GothicMemoryLocations {
         static const unsigned int GetName = 0x0068D0B0;
         static const unsigned int HasFlag = 0x0068E150;
         static const unsigned int Offset_focus_vob = 0x9e4;
+        static const unsigned int Offset_variousFlags = 0x180;   // NPC_FLAG_* (ZenGin API header)
         static const unsigned int Offset_states = 0x470;
         static const unsigned int GetInvSlot_zString = 0x006a5770;
     };
