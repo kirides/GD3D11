@@ -103,7 +103,6 @@ ImGuiEditorView::ImGuiEditorView() {
     SelectedMeshDisplacement = 1.0f;
     SelectedTessMesh = UINT_MAX;
     SelectedTessSectionX = SelectedTessSectionY = 0;
-    SelectedImageThumbnail = nullptr;
 
     MainTabIndex = 0;
     SelectionTabIndex = 0;
@@ -268,10 +267,15 @@ void ImGuiEditorView::RenderSelectionTab() {
 }
 
 void ImGuiEditorView::RenderTextureSelectionPanel() {
-    // Thumbnail image
-    if (SelectedImageThumbnail
-        && GetImTextureIdFromGfx(SelectedImageThumbnail)) {
-        ImGui::Image(GetImTextureIdFromGfx(SelectedImageThumbnail), ImVec2(128, 128));
+    // Thumbnail image, resolved per frame: a texture purge (e.g. toggling normal maps) frees the engine texture
+    GfxTexture* thumbnail = nullptr;
+    if (zCTexture* tx = Selection.SelectedMaterial ? Selection.SelectedMaterial->GetTextureSingle() : nullptr) {
+        if (MyDirectDrawSurface7* surface = tx->GetSurface(); surface && surface->IsSurfaceReady()) {
+            thumbnail = surface->GetEngineTexture();
+        }
+    }
+    if (ImTextureID id = thumbnail ? GetImTextureIdFromGfx(thumbnail) : ImTextureID{}) {
+        ImGui::Image(id, ImVec2(128, 128));
     } else {
         ImGui::Dummy(ImVec2(128, 128));
     }
@@ -941,18 +945,6 @@ void ImGuiEditorView::UpdateSelectionPanel() {
     ShowVobSettingsDialog = Selection.SelectedSkeletalVob != nullptr || Selection.SelectedVobInfo != nullptr;
     
     if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTextureSingle()) {
-        auto tx = Selection.SelectedMaterial->GetTextureSingle();
-        // Select preferred texture for the texture settings
-        // Engine::AntTweakBar->SetPreferredTextureForSettings(tx->GetNameWithoutExt());
-
-        // Update thumbnail
-
-        if (MyDirectDrawSurface7* surface = tx->GetSurface(); surface && surface->IsSurfaceReady()) {
-            if (GfxTexture* engineTex = surface->GetEngineTexture()) {
-                SelectedImageThumbnail = engineTex;
-            }
-        }
-
         // Load texture settings
         MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial);
         if (info) {

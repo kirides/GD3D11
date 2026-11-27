@@ -255,9 +255,6 @@ protected:
     bool ShowVobSettingsDialog;
     bool ShowMaterialInfoDialog;
 
-    /** Thumbnail texture */
-    GfxTexture* SelectedImageThumbnail;
-
     WidgetContainer* Widgets;
 };
 
