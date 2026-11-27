@@ -507,7 +507,7 @@ struct OceanTessConstants {
     XMFLOAT4X4 View;
     float Camera[4];
     float Tile[4];      // cascade tile sizes (m), 0 = unused
-    float Params[4];    // N, world units per metre, shore field valid, -
+    float Params[4];    // N, world units per metre, shore field valid, time (s)
     float ShoreMap[4];  // ShoreField::GetMapping
 };
 static_assert( sizeof( OceanTessConstants ) == 192 );

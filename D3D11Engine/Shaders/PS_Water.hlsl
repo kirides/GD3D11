@@ -310,6 +310,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	px.oceanNormal = float3( 0.0f, 1.0f, 0.0f );
 	px.oceanFoam = 0.0f;
 	px.oceanActive = 0.0f;
+	px.restXZ = Input.vOceanXZ;
 	float2 oceanFootprint = abs( ddx( Input.vOceanXZ ) ) + abs( ddy( Input.vOceanXZ ) );
 	[branch] if ( WP_IsOcean > 0.5f && WP_OceanFFT > 0.5f )
 	{

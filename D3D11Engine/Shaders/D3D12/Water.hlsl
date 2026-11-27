@@ -423,6 +423,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     px.oceanNormal = float3( 0.0f, 1.0f, 0.0f );
     px.oceanFoam = 0.0f;
     px.oceanActive = 0.0f;
+    px.restXZ = Input.oxz;
     float2 oceanFootprint = abs( ddx( Input.oxz ) ) + abs( ddy( Input.oxz ) );
     [branch] if ( IsOcean != 0 && OceanDispIndex != 0xFFFFFFFFu )
     {
@@ -530,8 +531,12 @@ VS_OUT DSOcean( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatch<
     VS_OUT o;
     o.oxz = pos.xz;
     float dist = length( pos - RI_CameraPosition );
-    OceanSurfaceSample s = OceanEvaluate( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, OceanDepthWeight( pos.xz ) );
+    float4 field = WaterShoreField( pos.xz );
+    OceanSurfaceSample s = OceanEvaluate( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, OceanShoreWeight( field.y, field.x ) );
     pos += s.offset;
+    // The coast simulation's swell rolls the sea in where the FFT waves calm down
+    [branch] if ( ShoreFieldIndex != 0xFFFFFFFFu )
+        pos.y += WaterSurfAt( WaterShoreFromField( field ), o.oxz, RI_Time, true ).swellHeight;
     o.clip = mul( float4( pos, 1.0 ), ViewProj );
     o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
     o.col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;

@@ -792,6 +792,7 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         { "Simple", GothicRendererSettings::WATER_FOAM_STYLE_SIMPLE, "Foam bands from the water depth under each pixel. No waves." },
         { "Coast Simulation", GothicRendererSettings::WATER_FOAM_STYLE_COAST,
             "Waves roll in along the coast, break in the shallows and carry the foam up the beach and back.\n"
+            "With Ocean Simulation on, the simulated sea runs up to the surf zone and the swell rolls the surface in.\n"
             "Bakes a map of the coastline when the world loads (or when you switch to it)." },
     };
     ImGui::BeginDisabled( settings.WaterShoreFoam == GothicRendererSettings::WATER_FOAM_OFF );

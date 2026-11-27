@@ -9,7 +9,7 @@ struct OceanTessData
 	matrix View;
 	float4 Camera;     // xyz camera position
 	float4 Tile;       // cascade tile sizes in metres, 0 = unused
-	float4 Params;     // x tile texels N, y world units per metre, z shore field valid (1), w unused
+	float4 Params;     // x tile texels N, y world units per metre, z shore field valid (1), w time in seconds (RI_Time)
 	float4 ShoreMap;   // xy field corner (world xz), zw 1 / extent
 };
 

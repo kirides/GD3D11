@@ -103,14 +103,14 @@ private:
 
 Surface& GetSurface();
 
-/** Wave damping towards land (world units): calm in the shallows and at the waterline, full height far out to sea. The CPU twin of
+/** Wave damping towards land (world units): calm in the shallows and at the waterline, full height outside the surf zone. The CPU twin of
     OceanShoreWeight in include/OceanSurface.hlsl; keep both in step. */
 inline float WaveWeightForShore( float depth, float distanceToShore ) {
     auto smooth = []( float edge0, float edge1, float x ) {
         const float t = x <= edge0 ? 0.0f : ( x >= edge1 ? 1.0f : ( x - edge0 ) / ( edge1 - edge0 ) );
         return t * t * ( 3.0f - 2.0f * t );
     };
-    return smooth( 0.0f, 600.0f, depth ) * smooth( 500.0f, 20000.0f, distanceToShore );
+    return smooth( 0.0f, 400.0f, depth ) * smooth( 150.0f, 2500.0f, distanceToShore );
 }
 
 }  // namespace OceanFFT

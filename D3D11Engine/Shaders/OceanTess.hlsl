@@ -22,14 +22,14 @@ float4 OceanFetchDisp( uint c, float2 uv, float lod ) { return TX_OceanDisp.Samp
 float4 OceanFetchDeriv( uint c, float2 uv, float lod ) { return TX_OceanDeriv.SampleLevel( SS_Linear, float3( uv, c ), lod ); }
 
 #include <include/OceanSurface.hlsl>
+#include <include/WaterSurf.hlsl>
 
-// Wave height damping towards the shore: calm in the shallows and near land (OceanShoreWeight)
-float OceanDepthWeight( float2 xz )
+// Shore field texel (distance, depth, seaward xz); away from it, as far from any shore as WaterShading's fallback
+float4 OceanShoreFieldAt( float2 xz )
 {
 	float2 uv = ( xz - oc.ShoreMap.xy ) * oc.ShoreMap.zw;
-	if ( oc.Params.z < 0.5f || any( uv < 0.0f ) || any( uv > 1.0f ) ) return 1.0f;
-	float4 f = TX_ShoreField.SampleLevel( SS_Linear, uv, 0 );
-	return OceanShoreWeight( f.y, f.x );
+	if ( oc.Params.z < 0.5f || any( uv < 0.0f ) || any( uv > 1.0f ) ) return float4( WATER_SHORE_FAR, WATER_SHORE_NO_FLOOR, 0.0f, 0.0f );
+	return TX_ShoreField.SampleLevel( SS_Linear, uv, 0 );
 }
 
 struct TessVertex
@@ -105,8 +105,12 @@ DS_OUTPUT DSMain( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatc
 	DS_OUTPUT o;
 	o.vOceanXZ = pos.xz;
 	float dist = length( pos - oc.Camera.xyz );
-	OceanSurfaceSample s = OceanEvaluate( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, OceanDepthWeight( pos.xz ) );
+	float4 field = OceanShoreFieldAt( pos.xz );
+	OceanSurfaceSample s = OceanEvaluate( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, OceanShoreWeight( field.y, field.x ) );
 	pos += s.offset;
+	// The coast simulation's swell rolls the sea in where the FFT waves calm down
+	[branch] if ( oc.Params.z > 0.5f )
+		pos.y += WaterSurfAt( WaterShoreFromField( field ), o.vOceanXZ, oc.Params.w, true ).swellHeight;
 	o.vPosition = mul( float4( pos, 1.0f ), oc.ViewProj );
 	o.vTexcoord = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
 	o.vDiffuse = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;

@@ -8,6 +8,7 @@
 // (AC_LightPos, AC_RainFXWeight).
 
 #include "WaterWaves.hlsl"
+#include "WaterSurf.hlsl"
 
 static const float3 WATER_LUMA = float3( 0.2126f, 0.7152f, 0.0722f );
 
@@ -337,32 +338,6 @@ float WaterPlumbDepth( float3 surfaceWS, float3 cameraWS, float maxDepth, float 
     return hiGap < max( 4.0f, ( hi - lo ) * 2.5f * rayStretch + footprint ) ? ( lo + hi ) * 0.5f : -1.0f;
 }
 
-// PCG2D (Jarzynski & Olano) in [0, 1); integer math, so every GPU and both compilers agree
-float2 WaterFoamHash( int2 cell )
-{
-    uint2 v = asuint( cell ) * 1664525u + 1013904223u;
-    v.x += v.y * 1664525u;
-    v.y += v.x * 1664525u;
-    v ^= v >> 16u;
-    v.x += v.y * 1664525u;
-    v.y += v.x * 1664525u;
-    v ^= v >> 16u;
-    return float2( v >> 8u ) * ( 1.0f / 16777216.0f );
-}
-
-float WaterFoamNoise( float2 p )
-{
-    float2 c = floor( p );
-    float2 f = p - c;
-    f = f * f * ( 3.0f - 2.0f * f );
-    int2 i = int2( c );
-    float a = WaterFoamHash( i ).x;
-    float b = WaterFoamHash( i + int2( 1, 0 ) ).x;
-    float d = WaterFoamHash( i + int2( 0, 1 ) ).x;
-    float e = WaterFoamHash( i + int2( 1, 1 ) ).x;
-    return lerp( lerp( a, b, f.x ), lerp( d, e, f.x ), f.y );
-}
-
 // Bubble lace: 1 along the borders of drifting cells, 0 in their middles; grad = its gradient per cell. Per-cell
 // weights bend the borders and vary the cell sizes; width = strand thickness in cells.
 float WaterFoamLace( float2 p, float time, float width, out float2 grad )
@@ -493,80 +468,8 @@ float WaterBandFoamAmount( float2 posXZ, float depth, float time, bool isOcean, 
     return saturate( max( waterline, swash ) );
 }
 
-//--------------------------------------------------------------------------------------
-// Surf from the baked shoreline field (ShoreField.cpp): waves run in along the shore normal and break in the shallows
-//--------------------------------------------------------------------------------------
-static const float WATER_SHORE_FAR = 30000.0f;     // what WaterShoreField returns away from any shore
-static const float WATER_SHORE_NO_FLOOR = 5000.0f;
-
-struct WaterShore
-{
-    float  distance;    // to the nearest shoreline in world units, negative under the beach
-    float  depth;       // baked water depth
-    float2 seaward;     // unit direction away from the shore
-    float  coherence;   // 0 where two shores meet and the direction is ambiguous
-};
-
-WaterShore WaterReadShore( float2 xz )
-{
-    float4 field = WaterShoreField( xz );
-    WaterShore shore;
-    shore.distance = field.x;
-    shore.depth = field.y;
-    float len = length( field.zw );
-    shore.seaward = len > 0.0001f ? field.zw / len : float2( 0.0f, 0.0f );
-    shore.coherence = saturate( len * 1.25f );
-    return shore;
-}
-
-struct WaterSurf
-{
-    float  cycle;        // 0 as a crest passes, rising to 1 just before the next one
-    float  age;          // seconds since the crest passed
-    float  strength;     // this wave's size
-    float  breaking;     // 1 in the surf zone, shoreward of where this wave breaks
-    float  nearBreak;    // 1 just seaward of the break point, where the crest steepens
-    float  carried;      // how far the bore has pushed the water shoreward, world units
-    float  stretch;      // backwash stretch of the foam along the shore normal
-    float2 swellSlope;   // gradient of the swell height, for the surface normal
-};
-
-WaterSurf WaterSurfAt( WaterShore shore, float2 xz, float time, bool isOcean )
-{
-    float wavelength = isOcean ? 900.0f : 260.0f;
-    float period = isOcean ? 7.0f : 3.2f;
-    // Phase falls toward the shore as time goes on, so crests run in; the stagger keeps them from arriving
-    // along the whole coast at once
-    float stagger = WaterFoamNoise( xz / 2600.0f + 3.1f ) * 0.9f + WaterFoamNoise( xz / 700.0f - 5.7f ) * 0.18f;
-    float phase = shore.distance / wavelength + time / period + stagger;
-    float waveIndex = floor( phase );
-
-    WaterSurf surf;
-    surf.cycle = phase - waveIndex;
-    surf.age = surf.cycle * period;
-    float waveSet = 0.5f + 0.5f * sin( waveIndex * 1.3f );   // sets of bigger and smaller waves
-    surf.strength = lerp( 0.5f, 1.0f, saturate( WaterFoamHash( int2( (int)waveIndex, 17 ) ).x * 0.6f + waveSet * 0.4f ) );
-
-    float breakDepth = ( isOcean ? 95.0f : 22.0f ) * lerp( 0.75f, 1.15f, surf.strength );
-    surf.breaking = 1.0f - smoothstep( breakDepth * 0.8f, breakDepth, shore.depth );
-    surf.nearBreak = smoothstep( breakDepth * 1.7f, breakDepth, shore.depth ) * ( 1.0f - surf.breaking );
-
-    // The bore pushes the water up the shore quickly; the backwash drains it slowly and streaks the foam
-    float push = smoothstep( 0.0f, 0.28f, surf.cycle ) - smoothstep( 0.28f, 1.0f, surf.cycle );
-    surf.carried = ( isOcean ? 110.0f : 25.0f ) * surf.strength * surf.breaking * push * shore.coherence;
-    float backwash = smoothstep( 0.30f, 0.70f, surf.cycle ) * ( 1.0f - smoothstep( 0.85f, 1.0f, surf.cycle ) );
-    surf.stretch = 1.0f + 1.6f * backwash * surf.breaking * shore.coherence * ( 1.0f - smoothstep( 300.0f, 700.0f, shore.distance ) );
-
-    // Swell: crest at cycle 0, a gentle back and a steep shoreward face. It grows in the shallows and flattens once
-    // broken; its set modulation is smooth in the phase, so the slope has no seam where the wave index changes.
-    float swellSet = 0.72f + 0.28f * sin( phase * 1.18f + 1.0f );
-    float back = saturate( 1.0f - surf.cycle / 0.55f );
-    float face = saturate( ( surf.cycle - 0.82f ) / 0.18f );
-    float heightPerCycle = -2.0f * back / 0.55f + 2.0f * face / 0.18f;
-    float amplitude = isOcean ? 22.0f * swellSet * smoothstep( 700.0f, 160.0f, shore.depth ) * ( 1.0f - 0.65f * surf.breaking ) : 0.0f;
-    surf.swellSlope = shore.seaward * ( amplitude * heightPerCycle / wavelength * shore.coherence );
-    return surf;
-}
+// Shore state at a point of the baked field (WaterSurf.hlsl)
+WaterShore WaterReadShore( float2 xz ) { return WaterShoreFromField( WaterShoreField( xz ) ); }
 
 // Foam laid down by the surf: the breaking bore and its trail, a cap on crests about to break, the swash line,
 // leftovers in the shallows and streaks drifting outside the surf zone. aeration = how milky the water turns.
@@ -645,6 +548,7 @@ struct WaterPixel
     float3 oceanNormal;       // FFT ocean shading normal (valid when oceanActive)
     float  oceanFoam;         // FFT ocean whitecap coverage 0..1
     float  oceanActive;       // 1 on simulated ocean water, 0 elsewhere
+    float2 restXZ;            // undisplaced world xz, where the domain shader read the shore swell
 };
 
 struct WaterFrame
@@ -753,8 +657,9 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     surf.stretch = 1.0f;
     [branch] if ( fieldOn && ( foamOn || fr.shoreFieldState > 1.5f ) && topSide > 0.5f )
     {
-        coast = WaterReadShore( px.worldPos.xz );
-        surf = WaterSurfAt( coast, px.worldPos.xz, fr.time, isOcean );
+        float2 coastXZ = px.oceanActive > 0.5f ? px.restXZ : px.worldPos.xz;
+        coast = WaterReadShore( coastXZ );
+        surf = WaterSurfAt( coast, coastXZ, fr.time, isOcean );
         float3 swell = float3( -surf.swellSlope.x, 0.0f, -surf.swellSlope.y ) * ( foamOn ? WaterFlatness( px.geometricNormal ) : 0.0f );
         wavesFres = normalize( wavesFres / max( wavesFres.y, 0.2f ) + swell );
         wavesSmall = normalize( wavesSmall / max( wavesSmall.y, 0.2f ) + swell );

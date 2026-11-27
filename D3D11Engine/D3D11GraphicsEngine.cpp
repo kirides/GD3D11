@@ -5763,6 +5763,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         for ( int c = 0; c < cascades.count; ++c ) oc.Tile[c] = cascades.c[c].length;
         oc.Params[0] = static_cast<float>( cascades.size );
         oc.Params[1] = OceanFFT::UnitsPerMetre;
+        oc.Params[3] = Engine::GAPI->GetTimeSeconds();   // PS_Water's RI_Time: the shore swell must match its normals
         if ( ShoreField* shoreField = Engine::GAPI->GetShoreField() ) {
             oceanShoreSrv = D3D11Texture::From( shoreField->GetTexture() )->GetShaderResourceView().Get();
             const XMFLOAT4 map = shoreField->GetMapping();
