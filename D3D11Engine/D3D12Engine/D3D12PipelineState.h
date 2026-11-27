@@ -607,7 +607,7 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> VobSphereClearPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            SceneCubeArgsCsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneCubeArgsPSO;
-        // GPU world mesh (D3D12GpuWorld): b0 31 consts, b1 ext CBV, t0-t4 root SRVs, u0-u3 root UAVs.
+        // GPU world mesh (D3D12GpuWorld): b0 31 consts, b1 ext CBV, t0-t6 root SRVs, u0-u4 root UAVs.
         Microsoft::WRL::ComPtr<Rhi::RootSignature> WorldCullRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            WorldCullCsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> WorldCullPSO;

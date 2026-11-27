@@ -42,6 +42,9 @@ public:
         DirectX::XMFLOAT3 ConeEye = {};
         DirectX::XMFLOAT4X4 HiZViewProj = {};   // late: the reversed-Z view-proj the Hi-Z was built with (b1 layout)
         UINT HiZIndex = 0, HiZWidth = 0, HiZHeight = 0, HiZMipCount = 0;   // late: 0 mips = no occlusion test
+        bool Compact = false;                   // cascade: draw only triangles that can cover a shadow-map texel
+        DirectX::XMFLOAT4X4 CompactViewProj = {};   // the cascade's render view-proj (transposed like CullViewProj)
+        UINT CompactMapSize = 0;
     };
 
     /** Water, portals, waterfall foam and alpha-blended meshes: the main view still collects them on the CPU. */
@@ -70,6 +73,8 @@ public:
     /** A point view's cube commands through `sig` (D3D12PointShadows' caster signature). Any thread. */
     void DrawCube( Rhi::CmdList& cmd, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const;
     bool Drawable( UINT view ) const { return m_ArgsDrawable[view]; }
+    /** The index buffer a view's commands index when Cull compacted it this frame, else nullptr (the world IB). */
+    Rhi::Resource* CompactIndices( UINT view ) const { return m_Compacted[view] ? m_Compact[view].Get() : nullptr; }
     /** -GPUTIMERS: copies the drawn index counts of the main and cascade views for the timer log. Main thread, after the lit pass. */
     void RecordStats( Rhi::CmdList& cmd );
     /** Whether a material's texture is resident; if not, it is cached in from the next BeginFrame on. */
@@ -129,6 +134,10 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Resource> m_Args[kViews], m_ArgCount[kViews];
     bool m_ArgsDrawable[kViews] = {};   // Args + ArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
     bool m_SeenReadable = false;        // m_Seen in COPY_SOURCE, else UNORDERED_ACCESS
+    // Per view, created on first use: the compacted indices (world IB size), INDEX_BUFFER once drawable.
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_Compact[kViews];
+    bool m_Compacted[kViews] = {};      // the view's last cull compacted into m_Compact
+    bool m_CompactReadable[kViews] = {};
 
     static constexpr UINT kFrames = 3;   // D3D12GraphicsEngine::kBackBufferMax, asserted in the .cpp
     static constexpr UINT kStagingBytes = 64 * 1024;

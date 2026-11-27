@@ -4,6 +4,7 @@
 #include "D3D12GraphicsEngine.h"
 #include "D3D12GpuScene.h"
 #include "D3D12GpuTimers.h"
+#include "D3D12VertexBuffer.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../WorldObjects.h"
@@ -47,7 +48,7 @@ namespace {
     constexpr uint32_t kMeshMain = 1u, kMeshCaster = 2u, kMeshPoint = 4u;
     constexpr uint32_t kMaterialAlpha = 1u, kMaterialReady = 2u;
     constexpr uint32_t kViewMainFlag = 1u, kViewNoFrustum = 2u, kViewFeedback = 4u, kViewGridRadius = 8u;
-    constexpr uint32_t kViewSphere = 16u, kViewCube = 32u, kViewEarly = 64u, kViewLate = 128u;
+    constexpr uint32_t kViewSphere = 16u, kViewCube = 32u, kViewEarly = 64u, kViewLate = 128u, kViewCompact = 256u;
     constexpr uint32_t kExtCones = 1u;
     constexpr UINT kArgCountBytes = 16;   // opaque count, alpha count, drawn indices, pad
     constexpr uint32_t kTouchInterval = 30;       // frames between CacheIn touches of a seen material
@@ -156,6 +157,8 @@ void D3D12GpuWorld::Reset() {
               std::addressof( m_MaterialBuffer ), std::addressof( m_Seen ), std::addressof( m_Cones ), std::addressof( m_History ) } )
         if ( *r ) m_E.QueueResourceForRelease( std::move( *r ) );
     for ( UINT v = 0; v < kViews; ++v ) {
+        if ( m_Compact[v] ) m_E.QueueResourceForRelease( std::move( m_Compact[v] ) );
+        m_Compacted[v] = m_CompactReadable[v] = false;
         if ( m_Args[v] ) m_E.QueueResourceForRelease( std::move( m_Args[v] ) );
         if ( m_ArgCount[v] ) m_E.QueueResourceForRelease( std::move( m_ArgCount[v] ) );
         m_ArgsDrawable[v] = false;
@@ -503,9 +506,33 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
     }
     const bool main = mainFirst || mainLast;
 
+    // Triangle compaction reads the world IB/VB; each compacting view owns an index buffer the size of the world IB.
+    MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+    D3D12VertexBuffer* wvb = wm && wm->GetMeshVertexBuffer() ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
+    D3D12VertexBuffer* wib = wm && wm->GetMeshIndexBuffer() ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
+    const bool worldBuffers = wvb && wib && wvb->GetResource() && wib->GetResource();
+    bool compact[kViews] = {};
+    for ( UINT i = 0; i < count; ++i ) {
+        const UINT v = first + i;
+        if ( !views[i].Active ) continue;
+        m_Compacted[v] = false;
+        if ( !views[i].Compact || !worldBuffers || views[i].CompactMapSize == 0 ) continue;
+        if ( !m_Compact[v] ) {
+            const D3D12_RESOURCE_DESC bd = BufferDesc( wib->GetSizeInBytes(), true );
+            if ( FAILED( m_E.GetRhi()->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                    m_Compact[v].ReleaseAndGetAddressOf() ) ) ) {
+                Logging::Wrn( "D3D12: the compacted cascade index buffer could not be created; triangle culling stays off." );
+                continue;
+            }
+            m_Compact[v]->SetName( L"GpuWorldCompactIndices" );
+            m_CompactReadable[v] = false;
+        }
+        compact[v] = true;
+    }
+
     // Rest states the previous frame's draws and feedback copy left.
     {
-        D3D12ResourceTransition pre[2 * kViews + 1] = {};
+        D3D12ResourceTransition pre[3 * kViews + 1] = {};
         UINT n = 0;
         for ( UINT i = 0; i < count; ++i ) {
             const UINT v = first + i;
@@ -513,6 +540,11 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
             pre[n++] = { m_Args[v].Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
             pre[n++] = { m_ArgCount[v].Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
             m_ArgsDrawable[v] = false;
+        }
+        for ( UINT v = 0; v < kViews; ++v ) {
+            if ( !compact[v] || !m_CompactReadable[v] ) continue;
+            pre[n++] = { m_Compact[v].Get(), D3D12_RESOURCE_STATE_INDEX_BUFFER, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            m_CompactReadable[v] = false;
         }
         if ( mainFirst && m_SeenReadable ) {
             pre[n++] = { m_Seen.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
@@ -552,6 +584,9 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
     cmd.SetComputeRootShaderResourceView( 4, m_MaterialBuffer->GetGPUVirtualAddress() );
     cmd.SetComputeRootUnorderedAccessView( 9, m_History->GetGPUVirtualAddress() );
     cmd.SetComputeRootShaderResourceView( 10, m_Cones->GetGPUVirtualAddress() );
+    // Real buffers even when no view compacts, since the reads are bounded by them only through the cluster table.
+    cmd.SetComputeRootShaderResourceView( 11, worldBuffers ? wib->GetGpuVirtualAddress() : m_Clusters->GetGPUVirtualAddress() );
+    cmd.SetComputeRootShaderResourceView( 12, worldBuffers ? wvb->GetGpuVirtualAddress() : m_Clusters->GetGPUVirtualAddress() );
     const UINT frame = m_E.GetFrameIndex();
     for ( UINT i = 0; i < count; ++i ) {
         if ( !views[i].Active ) continue;
@@ -561,7 +596,8 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
         const uint32_t phase = !isMain ? 0u : late ? kViewLate : views[i].MainPhase == Phase::Early ? kViewEarly : 0u;
         cb.CullViewProj = views[i].CullViewProj;
         cb.ViewFlags = ( isMain ? kViewMainFlag | kViewFeedback | ( gridRadius ? kViewGridRadius : 0u ) : 0u ) | phase
-            | ( views[i].NoFrustum ? kViewNoFrustum : 0u ) | ( views[i].Sphere ? kViewSphere | kViewCube : 0u );
+            | ( views[i].NoFrustum ? kViewNoFrustum : 0u ) | ( views[i].Sphere ? kViewSphere | kViewCube : 0u )
+            | ( compact[v] ? kViewCompact : 0u );
 
         WorldCullExtCB ext = {};
         ext.HiZViewProj = views[i].HiZViewProj;
@@ -572,6 +608,11 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
         ext.HiZMipCount = late ? views[i].HiZMipCount : 0u;
         ext.ConeEye = views[i].ConeEye;
         ext.ExtFlags = isMain && views[i].Cones ? kExtCones : 0u;
+        if ( compact[v] ) {
+            ext.HiZViewProj = views[i].CompactViewProj;
+            ext.HiZWidth = ext.HiZHeight = views[i].CompactMapSize;
+        }
+        cmd.SetComputeRootUnorderedAccessView( 13, compact[v] ? m_Compact[v]->GetGPUVirtualAddress() : m_History->GetGPUVirtualAddress() );
         memcpy( m_ExtCbPtr[frame] + v * kExtCbStride, &ext, sizeof( ext ) );
         cmd.SetComputeRootConstantBufferView( 8, m_ExtCb[frame]->GetGPUVirtualAddress() + v * kExtCbStride );
         cb.SectionRadiusSq = isMain && !gridRadius ? radius * radius : 0.0f;
@@ -595,11 +636,15 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
     }
 
     {
-        D3D12ResourceTransition post[2 * kViews + 1] = {};
+        D3D12ResourceTransition post[3 * kViews + 1] = {};
         UINT n = 0;
         for ( UINT i = 0; i < count; ++i ) {
             const UINT v = first + i;
             if ( !views[i].Active ) continue;
+            if ( compact[v] ) {
+                post[n++] = { m_Compact[v].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDEX_BUFFER };
+                m_CompactReadable[v] = m_Compacted[v] = true;
+            }
             post[n++] = { m_Args[v].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT };
             post[n++] = { m_ArgCount[v].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT };
             m_ArgsDrawable[v] = true;

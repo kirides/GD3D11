@@ -923,6 +923,7 @@ struct GothicRendererSettings {
         GpuWorld = false;
         GpuWorldOcclusion = true;
         GpuWorldConeCulling = true;
+        ShadowTriangleCulling = false;
         UseGpuUploadRings = false;
         VertexPulling = true;
         EnableVSync = true;
@@ -1290,6 +1291,8 @@ struct GothicRendererSettings {
     // clusters and normal-cone backface rejection.
     bool GpuWorldOcclusion;
     bool GpuWorldConeCulling;
+    // Stage 4: the cascades draw only the world triangles that can cover a shadow-map texel.
+    bool ShadowTriangleCulling;
     // D3D12/Vulkan: the light, skeletal and VOB/shadow instance rings live in CPU-writable VRAM (GPU_UPLOAD /
     // ReBAR) instead of system memory. Read when the rings are created, so it takes effect after a restart.
     bool UseGpuUploadRings;

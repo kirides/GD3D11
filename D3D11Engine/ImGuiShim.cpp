@@ -2347,6 +2347,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SetItemTooltip("Draw last frame's visible world clusters first, then test the rest against their Hi-Z");
                 ImGui::Checkbox("World backface cones", &settings.GpuWorldConeCulling );
                 ImGui::SetItemTooltip("Skip world clusters whose triangles all face away from the camera");
+                ImGui::Checkbox("Shadow triangle culling", &settings.ShadowTriangleCulling );
+                ImGui::SetItemTooltip("The cascades draw only world triangles that can cover a shadow-map texel");
                 ImGui::EndDisabled();
 
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );

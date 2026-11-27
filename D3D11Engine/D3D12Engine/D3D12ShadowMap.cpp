@@ -978,7 +978,14 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 	// GPU world: the cascades' world casters are culled and listed on the GPU, recorded here ahead of the jobs.
 	if ( haveWorld && castersNeeded && m_E->m_GpuWorldActive ) {
 		D3D12GpuWorld::View views[kShadowCascades] = {};
-		for ( UINT c = 0; c < kShadowCascades; ++c ) views[c] = { m_CascadeCullViewProj[c], m_ShouldUpdateCascade[c], false };
+		const bool compact = Engine::GAPI->GetRendererState().RendererSettings.ShadowTriangleCulling;
+		for ( UINT c = 0; c < kShadowCascades; ++c ) {
+			views[c] = { m_CascadeCullViewProj[c], m_ShouldUpdateCascade[c], false };
+			views[c].Compact = compact;
+			views[c].CompactViewProj = m_CascadeViewProj[c];
+			views[c].CompactMapSize = m_MapSize;
+		}
+		const D3D12GpuTimerScope cullTimer( m_E->m_GpuTimers.get(), m_E->m_CmdList, "csm cull" );
 		m_WorldGpu = m_E->m_GpuWorld->Cull( m_E->m_CmdList, views, 1, kShadowCascades );
 	}
 
@@ -1523,7 +1530,10 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 
 		const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-		const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+		// Triangle culling: the GPU world's commands index its compacted copy of the world IB, which is just as large.
+		Rhi::Resource* compacted = gpuWorld ? m_E->m_GpuWorld->CompactIndices( c + 1 ) : nullptr;
+		const D3D12_INDEX_BUFFER_VIEW  ibv = { compacted ? compacted->GetGPUVirtualAddress() : ib->GetGpuVirtualAddress(),
+			ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
 		cmdList->IASetVertexBuffers( 0, 1, &vbv );
 		cmdList->IASetIndexBuffer( &ibv );
 

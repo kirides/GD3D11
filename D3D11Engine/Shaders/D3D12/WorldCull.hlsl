@@ -81,12 +81,13 @@ cbuffer WorldCullCB : register( b0 )
 #define VIEW_CUBE        32u   // point-light cube: WORLD_MESH_POINT meshes, PointShadowCasterCommand records
 #define VIEW_EARLY       64u   // main view, phase 1: only clusters visible last frame
 #define VIEW_LATE       128u   // main view, phase 2: the rest, Hi-Z tested; writes the history
+#define VIEW_COMPACT    256u   // cascade: each mesh's surviving triangles are compacted into CompactIndices
 
 cbuffer WorldCullExtCB : register( b1 )
 {
-    float4x4 ExtViewProj;       // VIEW_LATE: the reversed-Z view-proj the Hi-Z was rendered with
+    float4x4 ExtViewProj;       // VIEW_LATE: the Hi-Z's reversed-Z view-proj. VIEW_COMPACT: the cascade's render view-proj
     uint     HiZIndex;
-    uint     HiZWidth;
+    uint     HiZWidth;          // VIEW_COMPACT: the shadow map size
     uint     HiZHeight;
     uint     HiZMipCount;
     float3   ConeEye;
@@ -105,6 +106,9 @@ RWByteAddressBuffer             ArgCount     : register( u1 );   // [0] opaque, 
 RWByteAddressBuffer             Feedback     : register( u2 );
 StructuredBuffer<ClusterCone>   Cones        : register( t4 );
 RWByteAddressBuffer             History      : register( u3 );   // one uint per cluster: visible in the last late phase
+ByteAddressBuffer               WorldIndices : register( t5 );   // the wrapped world IB (R32, absolute vertex indices)
+ByteAddressBuffer               WorldVertices: register( t6 );   // the world VB, ExVertexStructGPU (position at 0)
+RWByteAddressBuffer             CompactIndices : register( u4 ); // VIEW_COMPACT: this view's index buffer
 
 #define WORLD_DRAW_COMMAND_STRIDE 36u
 #define CUBE_COMMAND_STRIDE 32u       // D3D12PointShadows' PointShadowCasterCommand: b1 diffuse, { VertexBase, InstanceBase } (unused here), DrawIndexed
@@ -219,6 +223,80 @@ bool IsClusterVisible( uint i )
     return ( gVisible[i >> 5] >> ( i & 31u ) ) & 1u;
 }
 
+#define WORLD_VERTEX_STRIDE 36u   // ExVertexStructGPU
+
+// Orthographic cascade, depth clip off: a triangle is drawn unless it is outside one side of the slice, has no
+// area, or its bounds hold no texel centre (with a little slack, so rounding never drops a covered texel).
+bool IsTriangleDrawn( uint3 idx )
+{
+    float2 p[3];
+    [unroll]
+    for ( uint k = 0; k < 3; ++k )
+        p[k] = mul( float4( asfloat( WorldVertices.Load3( idx[k] * WORLD_VERTEX_STRIDE ) ), 1.0 ), ExtViewProj ).xy;
+    const float2 lo = min( p[0], min( p[1], p[2] ) ), hi = max( p[0], max( p[1], p[2] ) );
+    if ( any( hi < -1.0 ) || any( lo > 1.0 ) ) return false;
+    const float2 e1 = p[1] - p[0], e2 = p[2] - p[0];
+    if ( e1.x * e2.y - e1.y * e2.x == 0.0 ) return false;
+    const float size = (float)HiZWidth;
+    const float2 t0 = ( lo * 0.5 + 0.5 ) * size - 0.5, t1 = ( hi * 0.5 + 0.5 ) * size - 0.5;
+    return all( floor( t1 + 1.0 / 64.0 ) >= ceil( t0 - 1.0 / 64.0 ) );
+}
+
+groupshared uint gCompactTotal, gCompactBase, gCompactCount;
+groupshared uint gWaveKept[WORLDCULL_GROUP_SIZE];
+
+// One command per mesh over its surviving triangles; clusters past the bitmask are taken whole. The survivors keep
+// their original order (prefix sums per 64-triangle chunk), which preserves the IB's vertex reuse.
+void CompactMesh( WorldMesh m, WorldMaterial mat, uint gtid, uint culled )
+{
+    if ( gtid == 0u ) { gCompactTotal = 0u; gCompactCount = 0u; }
+    GroupMemoryBarrierWithGroupSync();
+    uint mine = 0u;
+    for ( uint i = gtid; i < m.ClusterCount; i += WORLDCULL_GROUP_SIZE )
+        if ( i >= culled || IsClusterVisible( i ) ) mine += Clusters[m.ClusterFirst + i].IndexCount;
+    InterlockedAdd( gCompactTotal, mine );
+    GroupMemoryBarrierWithGroupSync();
+    // Every view's buffer holds the whole world IB, so the sum over meshes cannot overflow it.
+    if ( gtid == 0u && gCompactTotal > 0u ) ArgCount.InterlockedAdd( 12u, gCompactTotal, gCompactBase );
+    GroupMemoryBarrierWithGroupSync();
+    if ( gCompactTotal == 0u ) return;
+    for ( uint c = 0u; c < m.ClusterCount; ++c )
+    {
+        if ( c < culled && !IsClusterVisible( c ) ) continue;
+        const WorldCluster cl = Clusters[m.ClusterFirst + c];
+        const uint lanes = WaveGetLaneCount();
+        const uint wave = gtid / lanes;
+        for ( uint chunk = 0u; chunk * 3u < cl.IndexCount; chunk += WORLDCULL_GROUP_SIZE )
+        {
+            const uint t = chunk + gtid;
+            uint3 idx = uint3( 0u, 0u, 0u );
+            bool keep = false;
+            if ( t * 3u < cl.IndexCount )
+            {
+                idx = WorldIndices.Load3( ( cl.IndexStart + t * 3u ) * 4u );
+                keep = IsTriangleDrawn( idx );
+            }
+            const uint before = WavePrefixCountBits( keep );
+            const uint kept = WaveActiveCountBits( keep );
+            if ( WaveIsFirstLane() ) gWaveKept[wave] = kept;
+            GroupMemoryBarrierWithGroupSync();
+            uint at = gCompactCount + before;
+            uint total = 0u;
+            for ( uint w = 0u; w * lanes < WORLDCULL_GROUP_SIZE; ++w )
+            {
+                if ( w < wave ) at += gWaveKept[w];
+                total += gWaveKept[w];
+            }
+            if ( keep ) CompactIndices.Store3( ( gCompactBase + at * 3u ) * 4u, idx );
+            GroupMemoryBarrierWithGroupSync();
+            if ( gtid == 0u ) gCompactCount += total;
+            GroupMemoryBarrierWithGroupSync();
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if ( gtid == 0u && gCompactCount > 0u ) EmitCommand( mat, gCompactBase, gCompactCount * 3u );
+}
+
 // First cluster at or after `from` that is not visible, else `count`.
 uint RunEnd( uint from, uint count )
 {
@@ -267,6 +345,11 @@ void CSWorldCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
     }
     GroupMemoryBarrierWithGroupSync();
     if ( !active ) return;
+    if ( ViewFlags & VIEW_COMPACT )
+    {
+        CompactMesh( m, mat, gtid, culled );
+        return;
+    }
     // Clusters past the bitmask are drawn unculled by the early (or only) phase.
     const bool drawTail = !( ViewFlags & VIEW_LATE );
 
