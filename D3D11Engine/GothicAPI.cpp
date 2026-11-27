@@ -650,6 +650,16 @@ void GothicAPI::OnWorldUpdate() {
     // The CPU twin of the simulated sea (swimming, floating plants) and the clock the GPU simulation follows
     {
         const auto& rs = RendererState.RendererSettings;
+        // The wind wanders up to ~55 degrees around WaterWindAngle over the game days; eased, so day wraps and sleeping don't snap it
+        float driftTarget = 0.0f;
+        zCWorld* gameWorld = oCGame::GetGame() ? oCGame::GetGame()->_zCSession_world : nullptr;
+        if ( zCSkyController_Outdoor* sky = ( rs.WaterWindDrift && gameWorld ) ? gameWorld->GetSkyControllerOutdoor() : nullptr ) {
+            const float days = sky->GetDayCounter() + sky->GetMasterTime();
+            driftTarget = 0.6f * std::sin( 6.2831853f * days * 0.9f + 1.3f ) + 0.35f * std::sin( 6.2831853f * days * 0.37f + 4.1f );
+        }
+        OceanFFT::Surface& sea = OceanFFT::GetSurface();
+        const float ease = 1.0f - std::exp( -std::min( GetFrameTimeSec(), 0.1f ) / 10.0f );
+        sea.SetWindDrift( sea.WindDrift() + ( driftTarget - sea.WindDrift() ) * ease );
         OceanFFT::GetSurface().Refresh( FeatureLevel10Compatibility ? 0 : static_cast<int>( rs.WaterSimulation ), rs.WaterSeaState, rs.WaterWindAngle,
             rs.WaterWaveScale, rs.WaterChoppiness, Engine::IsModernBackend() ? 2 : 1 );
     }
@@ -6164,6 +6174,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WaterWaveScale", float_to_string( s.WaterWaveScale, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterChoppiness", float_to_string( s.WaterChoppiness, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWindAngle", float_to_string( s.WaterWindAngle, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterWindDrift", to_string_locale_independent( s.WaterWindDrift ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterReflectionMode", to_string_locale_independent( (int)s.WaterReflectionMode ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterRayTracing", to_string_locale_independent( (int)s.WaterRayTracing ).c_str(), ini.c_str() );
@@ -6514,6 +6525,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.WaterWaveScale = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWaveScale", ds.WaterWaveScale, ini ), 0.0f, 3.0f );
         s.WaterChoppiness = std::clamp( GetPrivateProfileFloatA( "Display", "WaterChoppiness", ds.WaterChoppiness, ini ), 0.0f, 2.0f );
         s.WaterWindAngle = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWindAngle", ds.WaterWindAngle, ini ), -360.0f, 360.0f );
+        s.WaterWindDrift = GetPrivateProfileBoolA( "Display", "WaterWindDrift", ds.WaterWindDrift, ini );
         // Backward compat: legacy [Display]/WaterSSR bool maps to Medium/Disabled when the
         // new WaterSSRQuality key is absent.
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 4));

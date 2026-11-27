@@ -11,6 +11,7 @@ struct OceanTessData
 	float4 Tile;       // cascade tile sizes in metres, 0 = unused
 	float4 Params;     // x tile texels N, y world units per metre, z shore field valid (1), w time in seconds (RI_Time)
 	float4 ShoreMap;   // xy field corner (world xz), zw 1 / extent
+	float4 Direction;  // x wind drift (rad, rotates the whole sea), y shore swell height (world units), zw unused
 };
 
 #endif

@@ -1236,6 +1236,7 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::SliderFloat( "Wave height", &settings.WaterWaveScale, 0.0f, 3.0f );
                 ImGui::SliderFloat( "Wave choppiness", &settings.WaterChoppiness, 0.0f, 2.0f );
                 ImGui::SliderFloat( "Wind direction", &settings.WaterWindAngle, -180.0f, 180.0f );
+                ImGui::Checkbox( "Wind drifts with the day", &settings.WaterWindDrift );
             }
             {
                 const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High", "Ultra" };

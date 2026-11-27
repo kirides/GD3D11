@@ -198,8 +198,10 @@ void UpdateWaterBob( VobWaterBob& bob, float totalTimeMs, int waveMode, bool tes
         const ShoreField* field = Engine::GAPI->GetShoreField();
         float depth = 5000.0f, distance = 30000.0f;
         if ( field ) field->Sample( pos.x, pos.z, distance, depth );
-        float d[3];
-        sea.Displacement( pos.x, pos.z, OceanFFT::WaveWeightForShore( depth, distance ), d );
+        float d[3], longWeight, detailWeight;
+        OceanFFT::WaveWeightsForShore( depth, distance, longWeight, detailWeight );
+        sea.Displacement( pos.x, pos.z, longWeight, detailWeight, d );
+        if ( field ) d[1] += field->SwellAt( pos.x, pos.z, Engine::GAPI->GetTimeSeconds(), sea.SwellHeight() );
         offset = XMFLOAT3( d[0], d[1], d[2] );
     } else if ( tessellated && waveMode == GothicRendererSettings::WATER_WAVES_D3D11 ) {
         // Gerstner depends on the xz position only, and the tessellated surface evaluates it per point rather than per corner

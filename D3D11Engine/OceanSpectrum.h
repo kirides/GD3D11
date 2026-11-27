@@ -3,6 +3,7 @@
 // FFT ocean spectrum (Tessendorf; JONSWAP + Hasselmann spreading after Horvath 2015) and cascade layout.
 // CPU side of OceanFFT.hlsl: keep both in step. SI units (metres, seconds); Gothic's world unit is the centimetre.
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -78,15 +79,23 @@ public:
     double Seconds() const { return m_Seconds; }            // monotonic, independent of game pause
     float WrappedSeconds() const { return m_Wrapped; }      // modulo RepeatTime, what the shaders use
 
-    /** Displacement (world units) of the surface point whose rest position is (x, z); weight 0..1 calms the waves (shore). */
-    void Displacement( float x, float z, float weight, float out[3] ) const;
+    /** Rotation of the whole sea (radians), so the wind direction can drift without rebuilding the spectrum. */
+    void SetWindDrift( float radians ) { m_Drift = radians; }
+    float WindDrift() const { return m_Drift; }
+    /** Crest-to-trough height (world units) of the swell the coast simulation runs in near land, from this sea's wave height. */
+    float SwellHeight() const { return m_SwellHeight; }
+
+    /** Displacement (world units) of the surface point whose rest position is (x, z); the weights (WaveWeightsForShore) calm
+        the long and the short waves towards the shore. */
+    void Displacement( float x, float z, float longWeight, float detailWeight, float out[3] ) const;
     /** Height offset (world units) of the surface above the world position (x, z), allowing for the choppy horizontal shift. */
-    float HeightAt( float x, float z, float weight ) const;
+    float HeightAt( float x, float z, float longWeight, float detailWeight ) const;
 
 private:
-    struct Mode { float kx, kz, k, omega, h0r, h0i, gr, gi, hr, hi; };
+    struct Mode { float kx, kz, k, omega, h0r, h0i, gr, gi, hr, hi; bool detail; };
     void BuildModes();
     void EvolveModes();
+    float MeasureSignificantHeight() const;
 
     bool m_Active = false;
     int m_Quality = -1;
@@ -96,6 +105,8 @@ private:
     Cascades m_Cascades{};
     std::vector<Mode> m_Modes;
     double m_Seconds = 0.0;
+    float m_Drift = 0.0f;
+    float m_SwellHeight = 22.0f;
     float m_Wrapped = 0.0f;
     std::chrono::steady_clock::time_point m_Last{};
     bool m_HaveLast = false;
@@ -103,14 +114,17 @@ private:
 
 Surface& GetSurface();
 
-/** Wave damping towards land (world units): calm in the shallows and at the waterline, full height outside the surf zone. The CPU twin of
-    OceanShoreWeight in include/OceanSurface.hlsl; keep both in step. */
-inline float WaveWeightForShore( float depth, float distanceToShore ) {
+inline constexpr float LongTileMetres = 30.0f;   // tiles from this size up are the long cascades (OCEAN_LONG_TILE)
+
+/** Wave damping towards land (world units): the long waves hand over to the coast swell, the short ones calm only at the
+    waterline. The CPU twin of OceanShoreWeights in include/OceanSurface.hlsl; keep both in step. */
+inline void WaveWeightsForShore( float depth, float distanceToShore, float& longWeight, float& detailWeight ) {
     auto smooth = []( float edge0, float edge1, float x ) {
-        const float t = x <= edge0 ? 0.0f : ( x >= edge1 ? 1.0f : ( x - edge0 ) / ( edge1 - edge0 ) );
+        const float t = std::clamp( ( x - edge0 ) / ( edge1 - edge0 ), 0.0f, 1.0f );
         return t * t * ( 3.0f - 2.0f * t );
     };
-    return smooth( 0.0f, 400.0f, depth ) * smooth( 150.0f, 2500.0f, distanceToShore );
+    detailWeight = smooth( 0.0f, 200.0f, depth ) * smooth( 100.0f, 1500.0f, distanceToShore );
+    longWeight = detailWeight * smooth( 1500.0f, 5000.0f, distanceToShore );
 }
 
 }  // namespace OceanFFT

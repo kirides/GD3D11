@@ -68,10 +68,11 @@ struct WaterSurf
     float  swellHeight;  // world units; the tessellated sea displaces by it, flat water only tilts its normal
 };
 
-WaterSurf WaterSurfAt( WaterShore shore, float2 xz, float time, bool isOcean )
+// swellHeight: crest-to-trough height of the sea's swell (world units); longer waves carry the bigger ones in at the same speed
+WaterSurf WaterSurfAt( WaterShore shore, float2 xz, float time, bool isOcean, float swellHeight )
 {
-    float wavelength = isOcean ? 900.0f : 260.0f;
-    float period = isOcean ? 7.0f : 3.2f;
+    float wavelength = isOcean ? max( 900.0f, swellHeight * 12.0f ) : 260.0f;
+    float period = isOcean ? 7.0f * wavelength / 900.0f : 3.2f;
     // Phase falls toward the shore as time goes on, so crests run in; the stagger keeps them from arriving
     // along the whole coast at once
     float stagger = WaterFoamNoise( xz / 2600.0f + 3.1f ) * 0.9f + WaterFoamNoise( xz / 700.0f - 5.7f ) * 0.18f;
@@ -84,7 +85,7 @@ WaterSurf WaterSurfAt( WaterShore shore, float2 xz, float time, bool isOcean )
     float waveSet = 0.5f + 0.5f * sin( waveIndex * 1.3f );   // sets of bigger and smaller waves
     surf.strength = lerp( 0.5f, 1.0f, saturate( WaterFoamHash( int2( (int)waveIndex, 17 ) ).x * 0.6f + waveSet * 0.4f ) );
 
-    float breakDepth = ( isOcean ? 95.0f : 22.0f ) * lerp( 0.75f, 1.15f, surf.strength );
+    float breakDepth = ( isOcean ? max( 95.0f, 1.28f * swellHeight ) : 22.0f ) * lerp( 0.75f, 1.15f, surf.strength );
     surf.breaking = 1.0f - smoothstep( breakDepth * 0.8f, breakDepth, shore.depth );
     surf.nearBreak = smoothstep( breakDepth * 1.7f, breakDepth, shore.depth ) * ( 1.0f - surf.breaking );
 
@@ -94,16 +95,19 @@ WaterSurf WaterSurfAt( WaterShore shore, float2 xz, float time, bool isOcean )
     float backwash = smoothstep( 0.30f, 0.70f, surf.cycle ) * ( 1.0f - smoothstep( 0.85f, 1.0f, surf.cycle ) );
     surf.stretch = 1.0f + 1.6f * backwash * surf.breaking * shore.coherence * ( 1.0f - smoothstep( 300.0f, 700.0f, shore.distance ) );
 
-    // Swell: crest at cycle 0, a gentle back and a steep shoreward face. It grows in the shallows and flattens once
-    // broken; its set modulation is smooth in the phase, so the slope has no seam where the wave index changes.
+    // Swell: rounded crest at cycle 0, a gentle back and a steeper shoreward face (a skewed cosine, smooth everywhere).
+    // It takes over from the open sea near the coast (OceanShoreWeights), flattens once broken, and comes in segments.
+    const float kSkew = 0.55f;
     float swellSet = 0.72f + 0.28f * sin( phase * 1.18f + 1.0f );
-    float back = saturate( 1.0f - surf.cycle / 0.55f );
-    float face = saturate( ( surf.cycle - 0.82f ) / 0.18f );
-    float heightPerCycle = -2.0f * back / 0.55f + 2.0f * face / 0.18f;
-    float profile = back * back + face * face - 0.25f;   // integral of heightPerCycle, about zero mean
-    // Flattening uses the mean wave's break depth: a per-wave one steps the crest where the wave index changes
-    float meanBreaking = isOcean ? 1.0f - smoothstep( 72.0f, 90.0f, shore.depth ) : 0.0f;
-    float amplitude = isOcean ? 22.0f * swellSet * smoothstep( 700.0f, 160.0f, shore.depth ) * ( 1.0f - 0.65f * meanBreaking ) : 0.0f;
+    float skewed = 6.2831853f * ( surf.cycle - kSkew * ( 1.0f - cos( 6.2831853f * surf.cycle ) ) / 6.2831853f );
+    float heightPerCycle = -3.14159265f * sin( skewed ) * ( 1.0f - kSkew * sin( 6.2831853f * surf.cycle ) );
+    float profile = 0.5f * cos( skewed );
+    float segments = lerp( 0.35f, 1.25f, WaterFoamNoise( xz / 1100.0f + float2( time * 0.011f, 7.3f ) ) );
+    // Breaks where the depth nears 1.3x its height; one mean break depth, as a per-wave one steps the crest at each new wave
+    float meanBreakDepth = max( 90.0f, 1.28f * swellHeight );
+    float meanBreaking = 1.0f - smoothstep( 0.7f * meanBreakDepth, 1.4f * meanBreakDepth, shore.depth );
+    float coast = max( smoothstep( 5000.0f, 1500.0f, shore.distance ), smoothstep( 700.0f, 160.0f, shore.depth ) );
+    float amplitude = isOcean ? swellHeight * swellSet * segments * coast * ( 1.0f - 0.65f * meanBreaking ) : 0.0f;
     amplitude *= shore.coherence;
     surf.swellSlope = shore.seaward * ( amplitude * heightPerCycle / wavelength );
     surf.swellHeight = amplitude * profile;

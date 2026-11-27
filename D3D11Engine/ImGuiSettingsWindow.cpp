@@ -761,6 +761,7 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
     SliderFloatRow( "Wave Height", "##WaterWaveScale", &settings.WaterWaveScale, 0.0f, 3.0f );
     SliderFloatRow( "Wave Choppiness", "##WaterChoppiness", &settings.WaterChoppiness, 0.0f, 2.0f );
     SliderFloatRow( "Wind Direction", "##WaterWindAngle", &settings.WaterWindAngle, -180.0f, 180.0f, "%.0f" );
+    CheckRow( "Changing Wind", &settings.WaterWindDrift, "The wind direction wanders over the course of each day, around the direction above." );
     ImGui::EndDisabled();
 
     constexpr ListItem<GothicRendererSettings::E_OceanColor> oceanColors[] = {

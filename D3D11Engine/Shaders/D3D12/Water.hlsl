@@ -76,6 +76,7 @@ cbuffer WaterCB : register(b2)
 
     float4 OceanTile;            // cascade tile sizes in metres, 0 = unused
     float4 OceanParams;          // x tile texels N, y world units per metre, z unused, w max tess factor of the tessellated wave water
+    float4 OceanDirection;       // x wind drift (rad, rotates the whole sea), y shore swell height (world units), zw unused
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -402,8 +403,11 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
 
 #include "../include/OceanSurface.hlsl"
 
-// Wave height damping towards the shore: calm in the shallows and near land (OceanShoreWeight)
-float OceanDepthWeight( float2 xz ) { float4 f = WaterShoreField( xz ); return OceanShoreWeight( f.y, f.x ); }
+// The sea at an undisplaced position: calmed and turned towards the shore by the baked field
+OceanSurfaceSample OceanAt( float2 xz, float footprintM, float4 field )
+{
+    return OceanEvaluateAtShore( xz, footprintM, field, OceanDirection.x );
+}
 
 #include "../include/WaterShading.hlsl"
 
@@ -427,7 +431,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     float2 oceanFootprint = abs( ddx( Input.oxz ) ) + abs( ddy( Input.oxz ) );
     [branch] if ( IsOcean != 0 && OceanDispIndex != 0xFFFFFFFFu )
     {
-        OceanSurfaceSample os = OceanEvaluate( Input.oxz, max( oceanFootprint.x, oceanFootprint.y ) / OceanUnitsPerMetre, OceanDepthWeight( Input.oxz ) );
+        OceanSurfaceSample os = OceanAt( Input.oxz, max( oceanFootprint.x, oceanFootprint.y ) / OceanUnitsPerMetre, WaterShoreField( Input.oxz ) );
         px.oceanNormal = normalize( float3( -os.slope.x, 1.0f, -os.slope.y ) );
         px.oceanFoam = os.foam;
         px.oceanActive = 1.0f;
@@ -449,6 +453,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     fr.skyReflection = SkyReflection;
     fr.shoreFoam = ShoreFoam;
     fr.shoreFieldState = ShoreFieldIndex != 0xFFFFFFFFu ? ShoreFieldState : 0.0f;
+    fr.swellHeight = OceanDirection.y;
 
     // Opaque write: the see-through look is composited from the scene copy, exactly like D3D11
     return float4( WaterToLinear( ShadeWater( px, fr ) ), 1.0f );
@@ -532,11 +537,11 @@ VS_OUT DSOcean( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatch<
     o.oxz = pos.xz;
     float dist = length( pos - RI_CameraPosition );
     float4 field = WaterShoreField( pos.xz );
-    OceanSurfaceSample s = OceanEvaluate( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, OceanShoreWeight( field.y, field.x ) );
+    OceanSurfaceSample s = OceanAt( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, field );
     pos += s.offset;
-    // The coast simulation's swell rolls the sea in where the FFT waves calm down
+    // The coast simulation's swell carries the sea in where the long FFT waves hand over to it
     [branch] if ( ShoreFieldIndex != 0xFFFFFFFFu )
-        pos.y += WaterSurfAt( WaterShoreFromField( field ), o.oxz, RI_Time, true ).swellHeight;
+        pos.y += WaterSurfAt( WaterShoreFromField( field ), o.oxz, RI_Time, true, OceanDirection.y ).swellHeight;
     o.clip = mul( float4( pos, 1.0 ), ViewProj );
     o.uv = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
     o.col = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;

@@ -1055,6 +1055,7 @@ struct GothicRendererSettings {
         WaterWaveScale = 1.0f;
         WaterChoppiness = 1.0f;
         WaterWindAngle = 0.0f;
+        WaterWindDrift = true;
         WaterSSRQuality = WATER_SSR_MEDIUM;
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
         WaterReflectionMode = WATER_REFLECTION_GEOMETRY_SKY;
@@ -1557,6 +1558,7 @@ struct GothicRendererSettings {
     float WaterWaveScale;                // amplitude multiplier
     float WaterChoppiness;               // horizontal displacement multiplier
     float WaterWindAngle;                // degrees, direction the wind blows towards
+    bool WaterWindDrift;                 // the wind direction wanders over the game days around WaterWindAngle
     E_WaterSSRQuality WaterSSRQuality;
     // D3D12 only: temporal SSR on opaque wet/glossy surfaces (D3D12Ssr.cpp's history + the Forward+ PS
     // marcher). Reuses E_WaterSSRQuality's step-count tiers/DISABLED value rather than a parallel enum —

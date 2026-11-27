@@ -317,9 +317,13 @@ std::unique_ptr<ShoreField> ShoreField::Bake( const std::map<int, std::map<int, 
     field->Cell = g.Cell;
     field->Depth.resize( g.Count() );
     field->Distance.resize( g.Count() );
+    field->SeawardX.resize( g.Count() );
+    field->SeawardZ.resize( g.Count() );
     for ( size_t i = 0; i < g.Count(); ++i ) {
         field->Distance[i] = texels[i * 4 + 0];
         field->Depth[i] = texels[i * 4 + 1];
+        field->SeawardX[i] = texels[i * 4 + 2];
+        field->SeawardZ[i] = texels[i * 4 + 3];
     }
     field->Mapping = XMFLOAT4( g.MinX, g.MinZ, 1.0f / ( g.Width * g.Cell ), 1.0f / ( g.Height * g.Cell ) );
 
@@ -329,9 +333,62 @@ std::unique_ptr<ShoreField> ShoreField::Bake( const std::map<int, std::map<int, 
     return field;
 }
 
-void ShoreField::Sample( float x, float z, float& distance, float& depth ) const {
+namespace {
+    // WaterFoamHash / WaterFoamNoise of include/WaterSurf.hlsl: PCG2D in integer math, so the CPU matches the GPU bit for bit
+    float SurfHash( int cx, int cz ) {
+        uint32_t vx = static_cast<uint32_t>( cx ) * 1664525u + 1013904223u;
+        uint32_t vz = static_cast<uint32_t>( cz ) * 1664525u + 1013904223u;
+        vx += vz * 1664525u;
+        vz += vx * 1664525u;
+        vx ^= vx >> 16u;
+        vz ^= vz >> 16u;
+        vx += vz * 1664525u;
+        vx ^= vx >> 16u;
+        return static_cast<float>( vx >> 8u ) * ( 1.0f / 16777216.0f );
+    }
+
+    float SurfNoise( float px, float pz ) {
+        const float cx = std::floor( px ), cz = std::floor( pz );
+        float fx = px - cx, fz = pz - cz;
+        fx = fx * fx * ( 3.0f - 2.0f * fx );
+        fz = fz * fz * ( 3.0f - 2.0f * fz );
+        const int ix = static_cast<int>( cx ), iz = static_cast<int>( cz );
+        const float a = SurfHash( ix, iz ), b = SurfHash( ix + 1, iz ), d = SurfHash( ix, iz + 1 ), e = SurfHash( ix + 1, iz + 1 );
+        const float top = a + ( b - a ) * fx, bottom = d + ( e - d ) * fx;
+        return top + ( bottom - top ) * fz;
+    }
+
+    float SurfSmoothstep( float edge0, float edge1, float x ) {
+        const float t = std::clamp( ( x - edge0 ) / ( edge1 - edge0 ), 0.0f, 1.0f );
+        return t * t * ( 3.0f - 2.0f * t );
+    }
+}
+
+float ShoreField::SwellAt( float x, float z, float timeSeconds, float swellHeight ) const {
+    float distance, depth, seaward[2];
+    Sample( x, z, distance, depth, seaward );
+    const float coherence = std::min( std::sqrt( seaward[0] * seaward[0] + seaward[1] * seaward[1] ) * 1.25f, 1.0f );
+    if ( coherence <= 0.0f ) return 0.0f;
+
+    constexpr float kTwoPi = 6.2831853f, kSkew = 0.55f;
+    const float wavelength = std::max( 900.0f, swellHeight * 12.0f );
+    const float period = 7.0f * wavelength / 900.0f;
+    const float stagger = SurfNoise( x / 2600.0f + 3.1f, z / 2600.0f + 3.1f ) * 0.9f + SurfNoise( x / 700.0f - 5.7f, z / 700.0f - 5.7f ) * 0.18f;
+    const float phase = distance / wavelength + timeSeconds / period + stagger;
+    const float cycle = phase - std::floor( phase );
+    const float swellSet = 0.72f + 0.28f * std::sin( phase * 1.18f + 1.0f );
+    const float skewed = kTwoPi * cycle - kSkew * ( 1.0f - std::cos( kTwoPi * cycle ) );
+    const float segments = 0.35f + 0.9f * SurfNoise( x / 1100.0f + timeSeconds * 0.011f, z / 1100.0f + 7.3f );
+    const float meanBreakDepth = std::max( 90.0f, 1.28f * swellHeight );
+    const float meanBreaking = 1.0f - SurfSmoothstep( 0.7f * meanBreakDepth, 1.4f * meanBreakDepth, depth );
+    const float coast = std::max( SurfSmoothstep( 5000.0f, 1500.0f, distance ), SurfSmoothstep( 700.0f, 160.0f, depth ) );
+    return swellHeight * swellSet * segments * coast * ( 1.0f - 0.65f * meanBreaking ) * coherence * 0.5f * std::cos( skewed );
+}
+
+void ShoreField::Sample( float x, float z, float& distance, float& depth, float* seaward ) const {
     distance = 30000.0f;   // the shaders' values away from the field
     depth = 5000.0f;
+    if ( seaward ) seaward[0] = seaward[1] = 0.0f;
     if ( Depth.empty() ) return;
     const float fx = ( x - MinX ) / Cell - 0.5f, fz = ( z - MinZ ) / Cell - 0.5f;
     if ( fx < -0.5f || fz < -0.5f || fx > Width - 0.5f || fz > Height - 0.5f ) return;
@@ -346,4 +403,8 @@ void ShoreField::Sample( float x, float z, float& distance, float& depth ) const
     };
     distance = lerp2( Distance );
     depth = lerp2( Depth );
+    if ( seaward ) {
+        seaward[0] = lerp2( SeawardX );
+        seaward[1] = lerp2( SeawardZ );
+    }
 }

@@ -106,11 +106,11 @@ DS_OUTPUT DSMain( PatchTess t, float3 bary : SV_DomainLocation, const OutputPatc
 	o.vOceanXZ = pos.xz;
 	float dist = length( pos - oc.Camera.xyz );
 	float4 field = OceanShoreFieldAt( pos.xz );
-	OceanSurfaceSample s = OceanEvaluate( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, OceanShoreWeight( field.y, field.x ) );
+	OceanSurfaceSample s = OceanEvaluateAtShore( pos.xz, dist * 0.0014f * kOceanPixelsPerEdge / OceanUnitsPerMetre, field, oc.Direction.x );
 	pos += s.offset;
-	// The coast simulation's swell rolls the sea in where the FFT waves calm down
+	// The coast simulation's swell carries the sea in where the long FFT waves hand over to it
 	[branch] if ( oc.Params.z > 0.5f )
-		pos.y += WaterSurfAt( WaterShoreFromField( field ), o.vOceanXZ, oc.Params.w, true ).swellHeight;
+		pos.y += WaterSurfAt( WaterShoreFromField( field ), o.vOceanXZ, oc.Params.w, true, oc.Direction.y ).swellHeight;
 	o.vPosition = mul( float4( pos, 1.0f ), oc.ViewProj );
 	o.vTexcoord = p[0].uv * bary.x + p[1].uv * bary.y + p[2].uv * bary.z;
 	o.vDiffuse = p[0].col * bary.x + p[1].col * bary.y + p[2].col * bary.z;

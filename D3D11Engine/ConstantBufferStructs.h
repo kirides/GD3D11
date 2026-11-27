@@ -509,8 +509,9 @@ struct OceanTessConstants {
     float Tile[4];      // cascade tile sizes (m), 0 = unused
     float Params[4];    // N, world units per metre, shore field valid, time (s)
     float ShoreMap[4];  // ShoreField::GetMapping
+    float Direction[4]; // wind drift (rad), shore swell height (world units), -, -
 };
-static_assert( sizeof( OceanTessConstants ) == 192 );
+static_assert( sizeof( OceanTessConstants ) == 208 );
 
 /** PS_Water b3: moon glint, ocean look and sky-march gate; WP_IsOcean changes per texture batch. */
 struct WaterParamsConstantBuffer {

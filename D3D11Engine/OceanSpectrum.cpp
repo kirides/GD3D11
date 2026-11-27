@@ -253,6 +253,7 @@ void Surface::BuildModes() {
                 m.h0r = h[0]; m.h0i = h[1];
                 m.gr = hm[0]; m.gi = -hm[1];   // conj( h0( -k ) )
                 m.hr = m.hi = 0.0f;
+                m.detail = cc.length < LongTileMetres;
                 m_Modes.push_back( m );
             }
         }
@@ -294,6 +295,8 @@ void Surface::Refresh( int simulation, float seaState, float windAngleDeg, float
         m_Cascades = CascadesFor( quality );
         ++m_Generation;
         BuildModes();
+        // The coast swell: about this sea's significant wave height, kept between gentle and what still reads as a wave
+        m_SwellHeight = std::clamp( 0.7f * MeasureSignificantHeight() * UnitsPerMetre, 22.0f, 180.0f );
     }
 
     // One clock for the CPU waves and every backend simulation
@@ -307,34 +310,59 @@ void Surface::Refresh( int simulation, float seaState, float windAngleDeg, float
     m_Active = true;
 }
 
-void Surface::Displacement( float x, float z, float weight, float out[3] ) const {
-    const float X = x / UnitsPerMetre, Z = z / UnitsPerMetre;
+float Surface::MeasureSignificantHeight() const {
+    // 4 standard deviations of the height, sampled on a grid at t = 0
+    constexpr int Grid = 12;
+    constexpr float Spacing = 37.0f;   // m, off the tile sizes
+    double sum = 0.0, sum2 = 0.0;
+    for ( int iz = 0; iz < Grid; ++iz ) {
+        for ( int ix = 0; ix < Grid; ++ix ) {
+            const float X = ix * Spacing, Z = iz * Spacing;
+            float h = 0.0f;
+            for ( const Mode& m : m_Modes ) {
+                const float theta = m.kx * X + m.kz * Z;
+                h += ( m.h0r + m.gr ) * std::cos( theta ) - ( m.h0i + m.gi ) * std::sin( theta );
+            }
+            sum += h;
+            sum2 += static_cast<double>( h ) * h;
+        }
+    }
+    const double n = Grid * Grid, mean = sum / n;
+    return 4.0f * static_cast<float>( std::sqrt( std::max( sum2 / n - mean * mean, 0.0 ) ) );
+}
+
+void Surface::Displacement( float x, float z, float longWeight, float detailWeight, float out[3] ) const {
+    // The sea rotated by the wind drift about the world origin: sample at the inversely rotated point, rotate the shift back
+    const float ca = std::cos( m_Drift ), sa = std::sin( m_Drift );
+    const float X = ( x * ca + z * sa ) / UnitsPerMetre, Z = ( -x * sa + z * ca ) / UnitsPerMetre;
     float dx = 0.0f, dy = 0.0f, dz = 0.0f;
     for ( const Mode& m : m_Modes ) {
         const float theta = m.kx * X + m.kz * Z;
         const float c = std::cos( theta ), s = std::sin( theta );
         const float a = m.hr * c - m.hi * s;   // Re( h e^{i theta} ): the height
         const float b = m.hr * s + m.hi * c;   // Im: the choppy shift is Re( -i kx / k h e^{i theta} )
-        const float f = b / m.k;
-        dy += a;
+        const float w = m.detail ? detailWeight : longWeight;
+        const float f = w * b / m.k;
+        dy += w * a;
         dx += m.kx * f;
         dz += m.kz * f;
     }
-    const float scale = UnitsPerMetre * weight;
-    out[0] = dx * m_Sea.choppiness * scale;
-    out[1] = dy * scale;
-    out[2] = dz * m_Sea.choppiness * scale;
+    dx *= m_Sea.choppiness;
+    dz *= m_Sea.choppiness;
+    out[0] = ( dx * ca - dz * sa ) * UnitsPerMetre;
+    out[1] = dy * UnitsPerMetre;
+    out[2] = ( dx * sa + dz * ca ) * UnitsPerMetre;
 }
 
-float Surface::HeightAt( float x, float z, float weight ) const {
-    if ( !m_Active || weight <= 0.0f ) return 0.0f;
+float Surface::HeightAt( float x, float z, float longWeight, float detailWeight ) const {
+    if ( !m_Active || ( longWeight <= 0.0f && detailWeight <= 0.0f ) ) return 0.0f;
     float px = x, pz = z, d[3] = {};
     for ( int i = 0; i < 3; ++i ) {   // find the rest position whose displaced position is (x, z)
-        Displacement( px, pz, weight, d );
+        Displacement( px, pz, longWeight, detailWeight, d );
         px = x - d[0];
         pz = z - d[2];
     }
-    Displacement( px, pz, weight, d );
+    Displacement( px, pz, longWeight, detailWeight, d );
     return d[1];
 }
 

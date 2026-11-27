@@ -266,7 +266,7 @@ float4 WaterSkyAverage()
 float4 WaterShoreField( float2 xz )
 {
 	float2 uv = ( xz - WP_ShoreFieldMapping.xy ) * WP_ShoreFieldMapping.zw;
-	if ( any( uv < 0.0f ) || any( uv > 1.0f ) ) return float4( 30000.0f, 5000.0f, 0.0f, 0.0f );
+	if ( WP_ShoreFieldState < 0.5f || any( uv < 0.0f ) || any( uv > 1.0f ) ) return float4( 30000.0f, 5000.0f, 0.0f, 0.0f );
 	return TX_ShoreField.SampleLevel( SS_Linear, uv, 0 );
 }
 
@@ -290,8 +290,11 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
 #endif
 }
 
-// Wave height damping towards the shore: calm in the shallows and near land (OceanShoreWeight)
-float OceanDepthWeight( float2 xz ) { float4 f = WaterShoreField( xz ); return OceanShoreWeight( f.y, f.x ); }
+// The sea at an undisplaced position: calmed and turned towards the shore by the baked field
+OceanSurfaceSample OceanAt( float2 xz, float footprintM )
+{
+	return OceanEvaluateAtShore( xz, footprintM, WaterShoreField( xz ), oc.Direction.x );
+}
 
 #include <include/WaterShading.hlsl>
 
@@ -314,7 +317,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float2 oceanFootprint = abs( ddx( Input.vOceanXZ ) ) + abs( ddy( Input.vOceanXZ ) );
 	[branch] if ( WP_IsOcean > 0.5f && WP_OceanFFT > 0.5f )
 	{
-		OceanSurfaceSample os = OceanEvaluate( Input.vOceanXZ, max( oceanFootprint.x, oceanFootprint.y ) / OceanUnitsPerMetre, OceanDepthWeight( Input.vOceanXZ ) );
+		OceanSurfaceSample os = OceanAt( Input.vOceanXZ, max( oceanFootprint.x, oceanFootprint.y ) / OceanUnitsPerMetre );
 		px.oceanNormal = normalize( float3( -os.slope.x, 1.0f, -os.slope.y ) );
 		px.oceanFoam = os.foam;
 		px.oceanActive = 1.0f;
@@ -336,6 +339,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	fr.skyReflection = WP_SkyReflection;
 	fr.shoreFoam = WP_ShoreFoam;
 	fr.shoreFieldState = WP_ShoreFieldState;
+	fr.swellHeight = WP_OceanFFT > 0.5f ? oc.Direction.y : 22.0f;   // b4 is bound with the simulated sea only
 
 	return float4( ShadeWater( px, fr ), 1.0f );
 }

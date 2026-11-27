@@ -568,6 +568,7 @@ struct WaterFrame
     float  skyReflection;     // 1 = screen-space sky march, 0 = geometry hits + cube only
     float  shoreFoam;         // 0 = off, 1 = ocean only, 2 = all water
     float  shoreFieldState;   // 0 = no shoreline field, 1 = field, 2 = field painted for debugging
+    float  swellHeight;       // crest-to-trough height of the shore swell, world units
 };
 
 // Everything the shore foam needs once the water color is known. active = 0: no foam on this pixel.
@@ -659,7 +660,7 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     {
         float2 coastXZ = px.oceanActive > 0.5f ? px.restXZ : px.worldPos.xz;
         coast = WaterReadShore( coastXZ );
-        surf = WaterSurfAt( coast, coastXZ, fr.time, isOcean );
+        surf = WaterSurfAt( coast, coastXZ, fr.time, isOcean, fr.swellHeight );
         float3 swell = float3( -surf.swellSlope.x, 0.0f, -surf.swellSlope.y ) * ( foamOn ? WaterFlatness( px.geometricNormal ) : 0.0f );
         wavesFres = normalize( wavesFres / max( wavesFres.y, 0.2f ) + swell );
         wavesSmall = normalize( wavesSmall / max( wavesSmall.y, 0.2f ) + swell );

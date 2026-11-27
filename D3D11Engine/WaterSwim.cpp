@@ -36,9 +36,12 @@ namespace {
         if ( !info || info->MaterialType != MaterialInfo::MT_Ocean ) return;
 
         // The surface the player sees: calmer in the shallows, never below the floor
-        float shoreDistance = 30000.0f, fieldDepth = 0.0f;
-        if ( const ShoreField* field = Engine::GAPI->GetShoreField() ) field->Sample( testLocation->x, testLocation->z, shoreDistance, fieldDepth );
-        const float height = sea.HeightAt( testLocation->x, testLocation->z, OceanFFT::WaveWeightForShore( depth, shoreDistance ) );
+        float shoreDistance = 30000.0f, fieldDepth = 0.0f, longWeight, detailWeight;
+        const ShoreField* field = Engine::GAPI->GetShoreField();
+        if ( field ) field->Sample( testLocation->x, testLocation->z, shoreDistance, fieldDepth );
+        OceanFFT::WaveWeightsForShore( depth, shoreDistance, longWeight, detailWeight );
+        float height = sea.HeightAt( testLocation->x, testLocation->z, longWeight, detailWeight );
+        if ( field ) height += field->SwellAt( testLocation->x, testLocation->z, Engine::GAPI->GetTimeSeconds(), sea.SwellHeight() );
         state->WaterY = std::max( state->WaterY + height, state->FloorY + 1.0f );
     }
 }

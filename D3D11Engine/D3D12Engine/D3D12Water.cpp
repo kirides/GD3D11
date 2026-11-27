@@ -98,8 +98,9 @@ namespace {
         UINT OceanDerivIndex;
         float OceanTile[4];           // cascade tile sizes (m), 0 = unused
         float OceanParams[4];         // N, world units per metre, -, -
+        float OceanDirection[4];      // wind drift (rad), shore swell height (world units), -, -
     };
-    static_assert( sizeof( WaterCBData ) == 336, "WaterCBData must match Water.hlsl's b2 layout" );
+    static_assert( sizeof( WaterCBData ) == 352, "WaterCBData must match Water.hlsl's b2 layout" );
 
     // Resting state of the water copies: the water PS and the sky-average compute pass both read them.
     constexpr D3D12_RESOURCE_STATES kWaterCopyReadState =
@@ -541,7 +542,9 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             for ( int c = 0; c < cascades.count; ++c ) cb.OceanTile[c] = cascades.c[c].length;
             cb.OceanParams[0] = static_cast<float>( cascades.size );
             cb.OceanParams[1] = OceanFFT::UnitsPerMetre;
+            cb.OceanDirection[0] = OceanFFT::GetSurface().WindDrift();
         }
+        cb.OceanDirection[1] = oceanSimulated ? OceanFFT::GetSurface().SwellHeight() : 22.0f;   // the shore swell
         cb.OceanParams[3] = static_cast<float>( std::clamp( settings.WaterTessellationMaxFactor, 4, 64 ) );
         cb.SkyAverageIndex = skyAverageReady ? m_WaterSkyAverageSrvSlot : UINT_MAX;
         // Same build gate as D3D11's SHD_WATERANI. The Z-prepass shares the VS, so its depth moves with the waves.
