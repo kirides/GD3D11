@@ -32,6 +32,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12VobArena.h"
 #include "D3D12MeshArena.h"
 #include "D3D12GpuScene.h"
+#include "D3D12GpuTimers.h"
 #include "D3D12GpuWorld.h"
 
 static_assert( D3D12ShadowMap::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
@@ -1481,6 +1482,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 	DX_ZONE( cmdList.Get(), "Sun Shadow Cascade" );
 	TracyD3D12ZoneCGX( cmdList.Get(), "Sun Shadow Cascade" );
+	static constexpr const char* kTimerNames[] = { "csm0", "csm1", "csm2", "csm3" };
+	const D3D12GpuTimerScope cascadeTimer( m_E->m_GpuTimers.get(), cmdList, kTimerNames[std::min<UINT>( c, 3u )] );
 
 	cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // DSV stays bound across the PSO switches below
 	// normal-Z under the LESS_EQUAL comparison sampler: far (1.0) reads as unshadowed, near (0.0) as
@@ -1508,6 +1511,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	if ( ( gpuWorld || ( m_WorldDrawCount[c] > 0 && m_WorldDrawArgs[c][frame] ) ) && vb && ib ) {
 		DX_ZONE( cmdList.Get(), "World Mesh" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
+		const D3D12GpuTimerScope worldTimer( m_E->m_GpuTimers.get(), cmdList, "csm world" );
 
 		// Split at the alpha-test partition CullCascade laid out: the leading opaque run needs no cutout, so it
 		// draws with no pixel shader bound (double-rate depth); only the tail pays for PSShadowClip.

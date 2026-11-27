@@ -4487,7 +4487,9 @@ bool D3D12PipelineState::CreateWorldCull() {
     rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 5: u0 Args
     rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 6: u1 ArgCount
     rs.AddUAV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 7: u2 MaterialSeen
-    if ( !rs.Build( device ) ) return false;
+    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 8: b1 WorldCullExtCB, per view in an upload ring
+    rs.AddUAV( 3, D3D12_SHADER_VISIBILITY_ALL );   // 9: u3 History
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) ) return false;   // the Hi-Z
     Cull.WorldCullRootSig = rs.RootSig();
 
     auto make = [&]( const char* entry, ComPtr<ID3DBlob>& blob, ComPtr<Rhi::PipelineState>& pso ) {

@@ -1,6 +1,10 @@
 // GPU-driven world mesh (D3D12GpuWorld): per view, cull every world mesh and its ~128-triangle clusters and
 // write the view's ExecuteIndirect lists (WorldDrawCommand, opaque and alpha-tested, GPU-counted). A run of
 // contiguous visible clusters becomes one command, so hidden clusters drop out without multiplying draws.
+// The main view can run in two phases (CULLING_PLAN.md): early draws what was visible last frame, late tests the
+// rest against the Hi-Z of that depth and records this frame's visibility.
+
+#include "include/HiZTest.hlsl"
 
 struct WorldSection
 {
@@ -66,6 +70,17 @@ cbuffer WorldCullCB : register( b0 )
 #define VIEW_GRID_RADIUS  8u   // section radius in grid cells instead of SectionRadiusSq
 #define VIEW_SPHERE      16u   // boxes are tested against the sphere CamPos / SectionRadiusSq, not CullViewProj
 #define VIEW_CUBE        32u   // point-light cube: WORLD_MESH_POINT meshes, PointShadowCasterCommand records
+#define VIEW_EARLY       64u   // main view, phase 1: only clusters visible last frame
+#define VIEW_LATE       128u   // main view, phase 2: the rest, Hi-Z tested; writes the history
+
+cbuffer WorldCullExtCB : register( b1 )
+{
+    float4x4 ExtViewProj;       // VIEW_LATE: the reversed-Z view-proj the Hi-Z was rendered with
+    uint     HiZIndex;
+    uint     HiZWidth;
+    uint     HiZHeight;
+    uint     HiZMipCount;
+};
 
 StructuredBuffer<WorldSection>  Sections     : register( t0 );
 StructuredBuffer<WorldMesh>     Meshes       : register( t1 );
@@ -76,6 +91,7 @@ RWByteAddressBuffer             ArgCount     : register( u1 );   // [0] opaque, 
 // Main view: one seen flag per material. Cube view: the bake report, { count, material indices } of the casters
 // left out because their texture is not resident (D3D12PointShadows re-bakes the light once they are).
 RWByteAddressBuffer             Feedback     : register( u2 );
+RWByteAddressBuffer             History      : register( u3 );   // one uint per cluster: visible in the last late phase
 
 #define WORLD_DRAW_COMMAND_STRIDE 36u
 #define CUBE_COMMAND_STRIDE 32u       // D3D12PointShadows' PointShadowCasterCommand: b1 diffuse, { VertexBase, InstanceBase } (unused here), DrawIndexed
@@ -123,6 +139,7 @@ void EmitCommand( WorldMaterial mat, uint startIndex, uint indexCount )
     const bool alpha = ( mat.Flags & WORLD_MATERIAL_ALPHA ) != 0u;
     uint slot;
     ArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
+    ArgCount.InterlockedAdd( 8u, indexCount );   // stats: indices this view drew
     if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) )   // the draw clamps the count to capacity
     {
         if ( ViewFlags & VIEW_CUBE ) Feedback.Store( REPORT_OVERFLOW_WORD * 4u, 1u );   // a cached bake lost casters
@@ -164,6 +181,19 @@ void ReportMissing( uint materialIndex )
 }
 
 groupshared uint gVisible[MAX_CLUSTER_WORDS];
+
+// The cluster test for this view and phase. Late also records whether the cluster is visible this frame.
+bool CullCluster( uint clusterIndex, WorldCluster c )
+{
+    bool visible = IsBoxVisible( c.Min, c.Max );
+    if ( ViewFlags & VIEW_EARLY ) return visible && History.Load( clusterIndex * 4u ) != 0u;
+    if ( !( ViewFlags & VIEW_LATE ) ) return visible;
+    if ( visible && HiZMipCount > 0u )
+        visible = !HiZBoxOccluded( c.Min, c.Max, ExtViewProj, HiZIndex, uint2( HiZWidth, HiZHeight ), HiZMipCount );
+    const bool drawnEarly = History.Load( clusterIndex * 4u ) != 0u;
+    History.Store( clusterIndex * 4u, visible ? 1u : 0u );
+    return visible && !drawnEarly;
+}
 
 bool IsClusterVisible( uint i )
 {
@@ -208,12 +238,18 @@ void CSWorldCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
     {
         for ( uint i = gtid; i < culled; i += WORLDCULL_GROUP_SIZE )
         {
-            const WorldCluster c = Clusters[m.ClusterFirst + i];
-            if ( IsBoxVisible( c.Min, c.Max ) ) InterlockedOr( gVisible[i >> 5], 1u << ( i & 31u ) );
+            if ( CullCluster( m.ClusterFirst + i, Clusters[m.ClusterFirst + i] ) ) InterlockedOr( gVisible[i >> 5], 1u << ( i & 31u ) );
         }
+    }
+    else if ( ( ViewFlags & VIEW_LATE ) && gid.x < MeshCount )
+    {
+        // Out of view: next frame's early phase must not draw it.
+        for ( uint i = gtid; i < m.ClusterCount; i += WORLDCULL_GROUP_SIZE ) History.Store( ( m.ClusterFirst + i ) * 4u, 0u );
     }
     GroupMemoryBarrierWithGroupSync();
     if ( !active ) return;
+    // Clusters past the bitmask are drawn unculled by the early (or only) phase.
+    const bool drawTail = !( ViewFlags & VIEW_LATE );
 
     bool any = false;
     for ( uint i = gtid; i < culled; i += WORLDCULL_GROUP_SIZE )
@@ -221,13 +257,13 @@ void CSWorldCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
         if ( !IsClusterVisible( i ) || ( i > 0u && IsClusterVisible( i - 1u ) ) ) continue;   // not a run start
         any = true;
         uint end = RunEnd( i + 1u, culled );
-        if ( end == culled ) end = m.ClusterCount;   // clusters past the bitmask ride along with the last run
+        if ( end == culled && drawTail ) end = m.ClusterCount;   // clusters past the bitmask ride along with the last run
         const uint start = Clusters[m.ClusterFirst + i].IndexStart;
         const WorldCluster last = Clusters[m.ClusterFirst + end - 1u];
         EmitCommand( mat, start, last.IndexStart + last.IndexCount - start );
     }
     // Past the bitmask with no run reaching it: the tail draws on its own.
-    if ( gtid == 0u && m.ClusterCount > culled && !IsClusterVisible( culled - 1u ) )
+    if ( drawTail && gtid == 0u && m.ClusterCount > culled && !IsClusterVisible( culled - 1u ) )
     {
         any = true;
         const uint start = Clusters[m.ClusterFirst + culled].IndexStart;
@@ -238,10 +274,10 @@ void CSWorldCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
         Feedback.Store( m.MaterialIndex * 4u, 1u );
 }
 
-// Zeroes a view's two command counts and, with VIEW_FEEDBACK, the material feedback.
+// Zeroes a view's command counts and stats and, with VIEW_FEEDBACK, the material feedback (once per frame: not late).
 [numthreads(64, 1, 1)]
 void CSWorldClear( uint3 DTid : SV_DispatchThreadID )
 {
-    if ( DTid.x == 0u ) ArgCount.Store2( 0, uint2( 0u, 0u ) );
-    if ( ( ViewFlags & VIEW_FEEDBACK ) && DTid.x < MaterialCount ) Feedback.Store( DTid.x * 4u, 0u );
+    if ( DTid.x == 0u ) ArgCount.Store4( 0, uint4( 0u, 0u, 0u, 0u ) );
+    if ( ( ViewFlags & VIEW_FEEDBACK ) && !( ViewFlags & VIEW_LATE ) && DTid.x < MaterialCount ) Feedback.Store( DTid.x * 4u, 0u );
 }

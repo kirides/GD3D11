@@ -58,6 +58,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12VobArena.h"
 #include "D3D12GpuScene.h"
 #include "D3D12GpuWorld.h"
+#include "D3D12GpuTimers.h"
 #include "D3D12MeshArena.h"
 #include "../TransparencyQueue.h"
 #include "../StaticLightFarField.h"
@@ -3128,19 +3129,30 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );
+        const D3D12GpuTimerScope prepassTimer( m_GpuTimers.get(), m_CmdList, "prepass" );
 		// Swap the (write-masked-off) scene-color RTV the prepass used to bind for the two motion/normal
 		// G-buffer targets, and clear velocity to its sentinel. The three prepass passes below then run their
 		// *GBuf PSO variants and write real motion vectors + octahedral normals alongside the depth they were
 		// already laying down. No-op when the feature is unavailable, in which case they keep their old
 		// depth-only PSOs and the scene-color binding is left exactly as it was. See D3D12Motion.cpp.
 		BeginMotionGBuffer();
-        DrawDepthPrepass();
+        {
+	        const D3D12GpuTimerScope worldTimer( m_GpuTimers.get(), m_CmdList, "world prepass" );
+            DrawDepthPrepass();
+			// Two-phase world: the clusters not drawn early, tested against the Hi-Z of what was.
+			if ( m_GpuWorldTwoPhase ) {
+				BuildHiZ();
+				CullGpuWorldLate();
+				DrawDepthPrepass( true );
+			}
+        }
 		// GPU VOB culling (D3D12Cull.cpp) sits between the WORLD-MESH depth prepass and the VOB one, which is the
 		// only spot where the depth buffer holds world geometry and nothing else: BuildHiZ min-reduces it into the
 		// occlusion pyramid, then CullVobsGPU frustum+occlusion-tests every uploaded instance, compacts the
 		// survivors and rewrites the instance counts in the arg buffer DrawVobDepthPrepass/DrawVobsInstanced
 		// submit. No-ops (and both passes fall back to the CPU-written arg ring) when m_GpuVobCullActive is false.
 		if ( m_GpuVobCullActive ) {
+			const D3D12GpuTimerScope cullTimer( m_GpuTimers.get(), m_CmdList, "hiz+vob cull" );
 			BuildHiZ();
 			CullVobsGPU();
 		}
@@ -3188,14 +3200,23 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// Join the shadow recorders and slot their lists in between — the lit passes below are the first thing this
 	// frame that samples the cascade map / point-shadow cubes. Also re-establishes the scene-color RT + depth.
-	FinishShadowPasses();
+	{
+		// Brackets the shadow lists, which execute between the two halves of the main list.
+		const UINT shadowZone = m_GpuTimers ? m_GpuTimers->Begin( m_CmdList, "shadows" ) : UINT_MAX;
+		FinishShadowPasses();
+		if ( m_GpuTimers ) m_GpuTimers->End( m_CmdList, shadowZone );
+	}
 	// Sky geometry, now that the depth prepass has something for it to be rejected against. After
 	// FinishShadowPasses because the fixed-function path inherits whatever OM state that re-established.
 	DrawSky();
     {
         DX_ZONE( m_CmdList.Get(), "Lit Geometry Pass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Lit Geometry Pass" );
-	    DrawWorldMesh();
+        const D3D12GpuTimerScope litTimer( m_GpuTimers.get(), m_CmdList, "lit" );
+	    {
+		    const D3D12GpuTimerScope worldTimer( m_GpuTimers.get(), m_CmdList, "lit world" );
+		    DrawWorldMesh();
+	    }
 	    {
 		    DX_ZONE( m_CmdList.Get(), "Draw skeletal (color)" );
 		    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal (color)" );
@@ -3701,19 +3722,49 @@ D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const 
     return m;
 }
 
-void D3D12GraphicsEngine::CullGpuWorldMain() {
-    // Gothic's own camera frustum, which the CPU path tests meshes against (BuildWorldDrawCommands' playerFrustum).
-    D3D12GpuWorld::View view{};
-    view.Active = true;
-    if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
-        const XMMATRIX viewProj = XMMatrixMultiply( XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoView ) ),
-            XMLoadFloat4x4( &cam->trafoProjection ) );
-        XMStoreFloat4x4( &view.CullViewProj, XMMatrixTranspose( viewProj ) );
-    } else {
-        view.NoFrustum = true;
+namespace {
+    /** The main view of the GPU world: Gothic's own camera frustum, which the CPU path tests meshes against
+        (BuildWorldDrawCommands' playerFrustum). */
+    D3D12GpuWorld::View GpuWorldMainView( D3D12GpuWorld::Phase phase ) {
+        D3D12GpuWorld::View view{};
+        view.Active = true;
+        view.MainPhase = phase;
+        if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+            const XMMATRIX viewProj = XMMatrixMultiply( XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoView ) ),
+                XMLoadFloat4x4( &cam->trafoProjection ) );
+            XMStoreFloat4x4( &view.CullViewProj, XMMatrixTranspose( viewProj ) );
+        } else {
+            view.NoFrustum = true;
+        }
+        return view;
     }
+}
+
+void D3D12GraphicsEngine::CullGpuWorldMain() {
+    const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    m_GpuWorldTwoPhase = rs.GpuWorldOcclusion && m_HiZReady && m_DepthSrvSlot != UINT_MAX
+        && m_Pipelines.Cull.HiZCopyPSO && m_Pipelines.Cull.HiZReducePSO && m_Pipelines.Cull.HiZRootSig;
+    const D3D12GpuWorld::View view = GpuWorldMainView( m_GpuWorldTwoPhase ? D3D12GpuWorld::Phase::Early : D3D12GpuWorld::Phase::Single );
     // On failure nothing draws the world this frame: its CPU command set was never built.
     m_GpuWorldActive = m_GpuWorld->Cull( m_CmdList, &view, D3D12GpuWorld::kViewMain, 1 );
+    m_GpuWorldTwoPhase = m_GpuWorldTwoPhase && m_GpuWorldActive;
+}
+
+void D3D12GraphicsEngine::CullGpuWorldLate() {
+    D3D12GpuWorld::View view = GpuWorldMainView( D3D12GpuWorld::Phase::Late );
+    // The same matrices the prepass drew with, so the Hi-Z and the boxes agree.
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMStoreFloat4x4( &view.HiZViewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+    const bool hiz = m_HiZInSrvState && m_HiZSrvSlot != UINT_MAX;
+    view.HiZIndex = hiz ? m_HiZSrvSlot : 0u;
+    view.HiZWidth = m_HiZWidth;
+    view.HiZHeight = m_HiZHeight;
+    view.HiZMipCount = hiz ? m_HiZMipCount : 0u;   // without a pyramid the late phase draws everything not drawn early
+    if ( !m_GpuWorld->Cull( m_CmdList, &view, D3D12GpuWorld::kViewMainLate, 1 ) ) {
+        Logging::Wrn( "D3D12: the GPU world's late cull failed; two-phase culling stays off." );
+        m_GpuWorldTwoPhase = false;
+    }
 }
 
 D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(const MeshKey& key, bool cacheIn ) const {
@@ -4873,10 +4924,11 @@ struct WorldTessScope {
     ~WorldTessScope() { if ( active ) cmd->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ); }
 };
 
-void D3D12GraphicsEngine::DrawDepthPrepass() {
+void D3D12GraphicsEngine::DrawDepthPrepass( bool lateWorld ) {
     // Forward+ opaque WORLD-MESH depth prepass, before the lit color passes. Writes depth only (color write
     // mask 0). Water is skipped: it is transparent and never writes depth, same as in the opaque pass.
-    m_WorldPrepassDrawn = false;
+    if ( lateWorld && !m_GpuWorldActive ) return;
+    if ( !lateWorld ) m_WorldPrepassDrawn = false;
     if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return;
 
@@ -4942,10 +4994,11 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // sets the b6 diffuse index (PSClip alpha-clips bindless) then draws its material's index range. Replaces the
     // per-material descriptor-table binds + DrawIndexedInstanced calls (the CPU cost this optimization targets).
     if ( m_GpuWorldActive ) {
-        if ( !m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) return;
-        m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
+        const UINT worldView = lateWorld ? D3D12GpuWorld::kViewMainLate : D3D12GpuWorld::kViewMain;
+        if ( !m_GpuWorld->Drawable( worldView ) ) return;
+        m_GpuWorld->Draw( m_CmdList, worldView, false );
         if ( splitAlpha ) m_CmdList->SetPipelineState( clipPso );
-        m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+        m_GpuWorld->Draw( m_CmdList, worldView, true );
         m_WorldPrepassDrawn = true;
         return;
     }
@@ -5157,11 +5210,16 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     // the whole opaque world is one API call with zero per-draw descriptor binds (the CPU cost this targets).
     // Frame-constant root args (b0 ViewProj, b1 fog, lights, CSM, point-shadow cubes) are already set above.
     if ( m_GpuWorldActive ) {
+        // Both phases, in the PSOs the prepass drew them with.
+        const bool late = m_GpuWorldTwoPhase && m_GpuWorld->Drawable( D3D12GpuWorld::kViewMainLate );
         if ( m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) {
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
+            if ( late ) m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMainLate, false );
             m_CmdList->SetPipelineState( clipPso );
             m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+            if ( late ) m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMainLate, true );
         }
+        if ( m_GpuTimers ) m_GpuWorld->RecordStats( m_CmdList );
         return XR_SUCCESS;
     }
     if ( m_WorldDrawCount == 0 ) return XR_SUCCESS;

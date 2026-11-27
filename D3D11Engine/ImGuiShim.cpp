@@ -2342,6 +2342,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SetItemTooltip("Static VOBs live in a persistent GPU table: the main view culls them and builds their draw commands\non the GPU instead of walking the BSP leaves every frame. Implies GPU VOB culling");
                 ImGui::Checkbox("GPU world mesh", &settings.GpuWorld );
                 ImGui::SetItemTooltip("Cull the world mesh's 128-triangle clusters per view on the GPU, which also writes its draw commands.\nWater, portals and blended surfaces stay on the CPU");
+                ImGui::BeginDisabled( !settings.GpuWorld );
+                ImGui::Checkbox("World occlusion (two-phase Hi-Z)", &settings.GpuWorldOcclusion );
+                ImGui::SetItemTooltip("Draw last frame's visible world clusters first, then test the rest against their Hi-Z");
+                ImGui::EndDisabled();
 
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );

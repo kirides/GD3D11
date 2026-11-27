@@ -55,6 +55,7 @@ class D3D12RayTracing;
 class D3D12GeometryStreams;
 class D3D12VertexPullSelfTest;
 class D3D12HeapCheck;
+class D3D12GpuTimers;
 struct FrameSkelDraw;
 struct FrameAttachDraw;
 struct TransparentItem;
@@ -370,7 +371,7 @@ private:
     Rhi::Resource*             GetDisplayTarget() const;
     D3D12_CPU_DESCRIPTOR_HANDLE GetDisplayRtv() const;
     // World/DepthPrepass/Vob pipeline creation now lives in m_Pipelines (CreateWorld/CreateDepthPrepass/CreateVob).
-    void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
+    void DrawDepthPrepass( bool lateWorld = false );   // opaque world-mesh depth before the lit passes; late = the GPU world's second phase
     bool CreateLightCullBuffers( INT2 size ); // per-resolution clustered light-grid UAV buffer (rebuilt on resize)
     void DispatchLightCulling();      // dispatch the clustered light cull (writes the per-cluster mask grid)
     // Vob pipeline creation now lives in m_Pipelines.CreateVob (buffers stay: CreateVobInstanceBuffers).
@@ -960,6 +961,7 @@ private:
     void WetNormalFallback( uint32_t& slot, float& strength ) const;
     // The main view's GPU world cull, before the depth prepass.
     void CullGpuWorldMain();
+    void CullGpuWorldLate();   // two-phase: the main view's clusters not drawn early, against the Hi-Z of the early depth
 
     struct VobDrawCommand {                          // 56 bytes; all members 4-byte, no GPUVA alignment to keep
         uint32_t MatNormalIndex;                     // @0  b6.x  (0xFFFFFFFF = no normal map)
@@ -1005,6 +1007,7 @@ private:
     // World mesh culled per view on the GPU (D3D12GpuWorld.cpp); decided once per frame in OnStartWorldRendering.
     std::unique_ptr<D3D12GpuWorld> m_GpuWorld;
     bool m_GpuWorldActive = false;
+    bool m_GpuWorldTwoPhase = false;   // this frame's main view culls early + late (CULLING_PLAN.md stage 1)
     // Skinned bodies (ExSkelVertexStruct) and node attachments (ExVertexStruct), requested by
     // PrepareFrameSkeletals and flushed right after the main view's prepare. See D3D12MeshArena.h.
     std::unique_ptr<D3D12MeshArena> m_SkelArena;
@@ -1032,6 +1035,8 @@ private:
     void BindVobPull( D3D12CmdList& cmdList, const D3D12PipelineState::VobPullRoots& pull, Rhi::Resource* instances, UINT instanceStride,
         bool attachArena ) const;
     std::unique_ptr<D3D12HeapCheck> m_HeapCheck;   // -GPUHEAPCHECK only
+    std::unique_ptr<D3D12GpuTimers> m_GpuTimers;   // -GPUTIMERS only (D3D12)
+    UINT m_GpuFrameZone = UINT_MAX;
     // This frame's ray-traced point shadows, decided before the light buffer is built
     bool m_RtPointShadowsActive = false;
     // Shadow-mask SRV the lit opaque passes read (UINT_MAX outside them); see BindFrameLights

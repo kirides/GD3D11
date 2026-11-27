@@ -33,6 +33,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12GpuScene.h"
 #include "D3D12GpuWorld.h"
 #include "D3D12HeapCheck.h"
+#include "D3D12GpuTimers.h"
 #include "../RHI/GpuDebug.h"
 #include "D3D12MeshArena.h"
 #include "D3D12RayTracing.h"
@@ -185,6 +186,10 @@ XRESULT D3D12GraphicsEngine::Init() {
             }
         }
         D3D12ShaderBackend::SetHeapCheck( m_HeapCheck != nullptr );
+    }
+    if ( GpuDebug::GpuTimers() && m_Api == Rhi::Backend::D3D12 ) {
+        m_GpuTimers = std::make_unique<D3D12GpuTimers>();
+        if ( !m_GpuTimers->Init( m_Rhi.Get(), kBackBufferMax ) ) m_GpuTimers.reset();
     }
     if ( !m_TexturePool.Attach( *this ) ) {
         // Non-fatal: nothing consumes the pool yet (see D3D12RenderGraph.h), so a failure here just means
@@ -2354,6 +2359,10 @@ XRESULT D3D12GraphicsEngine::OpenFrame() {
     m_CmdList.ResetStats();
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
     if ( m_HeapCheck ) m_HeapCheck->BeginFrame( m_CmdList, m_FrameIndex );
+    if ( m_GpuTimers ) {
+        m_GpuTimers->BeginFrame( m_FrameIndex );
+        m_GpuFrameZone = m_GpuTimers->Begin( m_CmdList, "frame" );
+    }
 
     m_CmdList->TransitionBarrier( m_BackBuffers[m_BackBufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
     UploadMaterialFxTable();
@@ -2784,6 +2793,10 @@ XRESULT D3D12GraphicsEngine::Present() {
     {
         DX_ZONE( m_CmdList.Get(), "Texture upload flush (end of frame)" );
         FlushTextureUploads();
+    }
+    if ( m_GpuTimers ) {
+        m_GpuTimers->End( m_CmdList, m_GpuFrameZone );
+        m_GpuTimers->Resolve( m_CmdList );
     }
 
     if ( FAILED( m_CmdList->Close() ) ) return XR_FAILED;

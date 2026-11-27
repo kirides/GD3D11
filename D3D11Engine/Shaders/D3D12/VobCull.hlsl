@@ -14,6 +14,8 @@
 // Everything is bound through root descriptors / root constants (no descriptor tables); the Hi-Z pyramid is
 // the one texture and it comes in bindlessly (SM6.6 ResourceDescriptorHeap) as a full-mip-chain SRV.
 
+#include "include/HiZTest.hlsl"
+
 // Mirrors D3D12GraphicsEngine::VobCullVisual (32 B) — one record per visible VISUAL, describing where its
 // instances live in the ring and the LOCAL-space bounding box shared by all of them.
 struct VobCullVisual
@@ -224,31 +226,7 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
     if ( EnableOcclusion == 0 || HiZMipCount == 0 || !allInFront )
         return true;
 
-    Texture2D<float> hiz = GD_HEAP( HiZIndex );
-
-    float2 hizSize = float2( HiZWidth, HiZHeight );
-    float2 p0 = saturate(uvMin) * hizSize;
-    float2 p1 = saturate(uvMax) * hizSize;
-
-    // Pick the level where the box's footprint spans at most 2x2 texels, so four taps cover it completely.
-    float2 extent = max( p1 - p0, 1e-4 );
-    int    mip    = (int)clamp( ceil( log2( max( extent.x, extent.y ) ) ), 0.0, (float)( HiZMipCount - 1 ) );
-
-    float  mipScale = exp2( (float)mip );
-    int2   mipSize  = max( int2( HiZWidth >> mip, HiZHeight >> mip ), int2( 1, 1 ) );
-    int2   t0 = clamp( int2( p0 / mipScale ), int2( 0, 0 ), mipSize - 1 );
-    int2   t1 = clamp( int2( p1 / mipScale ), int2( 0, 0 ), mipSize - 1 );
-
-    float occluderDepth = hiz.Load( int3( t0.x, t0.y, mip ) );
-    occluderDepth = min( occluderDepth, hiz.Load( int3( t1.x, t0.y, mip ) ) );
-    occluderDepth = min( occluderDepth, hiz.Load( int3( t0.x, t1.y, mip ) ) );
-    occluderDepth = min( occluderDepth, hiz.Load( int3( t1.x, t1.y, mip ) ) );
-
-    // Occluded when the FARTHEST world-mesh pixel over the footprint is still CLOSER than the box's nearest
-    // point (reversed-Z: greater == closer). No epsilon: the tested depth belongs to the world mesh, never to
-    // the VOB itself, so there is no self-occlusion to bias against — and the min-reduced pyramid plus the
-    // "any corner in front" bail-out already err on the side of keeping geometry.
-    return !( occluderDepth > closestDepth );
+    return !HiZRectOccluded( uvMin, uvMax, closestDepth, HiZIndex, uint2( HiZWidth, HiZHeight ), HiZMipCount );
 }
 #endif
 
