@@ -1202,6 +1202,7 @@ void ImGuiShim::RenderSettingsWindow()
                     shadersToReload |= ShaderCategory::Water;
                 }
             }
+#ifndef PUBLIC_RELEASE
             ImGui::Checkbox( "Water tessellation (D3D12/Vulkan)", &settings.WaterTessellation );
             ImGui::SetItemTooltip( "Tessellates water in the DX11 wave mode; the edge presplit needs a world reload." );
             ImGui::SliderInt( "Water tess max factor", &settings.WaterTessellationMaxFactor, 4, 64 );
@@ -1224,6 +1225,7 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Checkbox( "Height map silhouettes", &settings.HeightMapSilhouettes );
             ImGui::SetItemTooltip( "Curved edges cut out by the parallax ray; needs parallax." );
             ImGui::EndDisabled();
+#endif // !PUBLIC_RELEASE
             {
                 const char* simLevels[] = { "Off", "Low", "Medium", "High" };   // E_WaterSimulation
                 int sim = settings.WaterSimulation;

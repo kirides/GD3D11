@@ -700,7 +700,7 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         if ( !IsD3D12() ) shadersToReload |= ShaderCategory::Water;
     } );
 
-#ifdef BUILD_GOTHIC_2_6_fix
+#if defined( BUILD_GOTHIC_2_6_fix ) && !defined( PUBLIC_RELEASE )
     if ( IsD3D12() && settings.WaterWaves == GothicRendererSettings::WATER_WAVES_D3D11 ) {
         CheckRow( "Water Tessellation", &settings.WaterTessellation,
             "Evaluates the DX11 waves on a finely tessellated water mesh that adapts to distance, instead of only at Gothic's coarse vertices. Big lakes only get their full detail after the next world load. The FFT sea (Water Simulation) is always tessellated." );
@@ -709,8 +709,9 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
             "Maximum subdivision per water edge. Lower is faster; near the camera the wave spacing is about 38 m divided by this." );
         ImGui::EndDisabled();
     }
-#endif //BUILD_GOTHIC_2_6_fix
+#endif //BUILD_GOTHIC_2_6_fix && !PUBLIC_RELEASE
 
+#ifndef PUBLIC_RELEASE
     if ( IsD3D12() ) {
         CheckRow( "World Tessellation", &settings.WorldTessellation,
             "Smooths the terrain and buildings by tessellating the world mesh near the camera; hard edges stay sharp. Needs Vertex Pulling (D3D12/Vulkan). Objects and decals resting on smoothed terrain can float or sink slightly." );
@@ -744,6 +745,7 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         ImGui::EndDisabled();
         ImGui::EndDisabled();
     }
+#endif // !PUBLIC_RELEASE
 
     constexpr ListItem<GothicRendererSettings::E_WaterSimulation> waterSims[] = {
         { "Off", GothicRendererSettings::WATER_SIM_OFF, "The sea uses the Water Waves mode above." },

@@ -1036,11 +1036,16 @@ struct GothicRendererSettings {
         WorldTessellationMaxFactor = 8;
         WorldTessellationRange = 4000.0f;
         WorldTessellationStrength = 1.0f;
+#ifdef PUBLIC_RELEASE
+        HeightMapShading = false;   // hidden in public builds
+        HeightMapPom = false;
+#else
         HeightMapShading = true;
+        HeightMapPom = true;
+#endif
         HeightMapDepth = 10.0f;
         HeightMapShadowSteps = 12;
         HeightMapRange = 8000.0f;
-        HeightMapPom = true;
         HeightMapPomSteps = 24;
         HeightMapSilhouettes = true;
         WaterSeaState = 1.0f;

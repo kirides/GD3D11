@@ -6490,6 +6490,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.WorldTessellationMaxFactor = std::clamp<INT>( GetPrivateProfileIntA( "Display", "WorldTessellationMaxFactor", ds.WorldTessellationMaxFactor, ini.c_str() ), 1, 16 );
         s.WorldTessellationRange = std::clamp( GetPrivateProfileFloatA( "Display", "WorldTessellationRange", ds.WorldTessellationRange, ini ), 500.0f, 20000.0f );
         s.WorldTessellationStrength = std::clamp( GetPrivateProfileFloatA( "Display", "WorldTessellationStrength", ds.WorldTessellationStrength, ini ), 0.0f, 1.0f );
+#ifdef PUBLIC_RELEASE
+        // Hidden in public builds; a stale ini must not switch it on
+        s.WaterTessellation = false;
+        s.WorldTessellation = false;
+#endif
         s.HeightMapShading = GetPrivateProfileBoolA( "Display", "HeightMapShading", ds.HeightMapShading, ini );
         s.HeightMapDepth = std::clamp( GetPrivateProfileFloatA( "Display", "HeightMapDepth", ds.HeightMapDepth, ini ), 0.0f, 50.0f );
         s.HeightMapShadowSteps = std::clamp<INT>( GetPrivateProfileIntA( "Display", "HeightMapShadowSteps", ds.HeightMapShadowSteps, ini.c_str() ), 0, 32 );
@@ -6497,6 +6502,10 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.HeightMapPom = GetPrivateProfileBoolA( "Display", "HeightMapPom", ds.HeightMapPom, ini );
         s.HeightMapPomSteps = std::clamp<INT>( GetPrivateProfileIntA( "Display", "HeightMapPomSteps", ds.HeightMapPomSteps, ini.c_str() ), 8, 64 );
         s.HeightMapSilhouettes = GetPrivateProfileBoolA( "Display", "HeightMapSilhouettes", ds.HeightMapSilhouettes, ini );
+#ifdef PUBLIC_RELEASE
+        s.HeightMapShading = false;
+        s.HeightMapPom = false;
+#endif
         s.WaterSeaState = std::clamp( GetPrivateProfileFloatA( "Display", "WaterSeaState", ds.WaterSeaState, ini ), 0.0f, 3.0f );
         s.WaterWaveScale = std::clamp( GetPrivateProfileFloatA( "Display", "WaterWaveScale", ds.WaterWaveScale, ini ), 0.0f, 3.0f );
         s.WaterChoppiness = std::clamp( GetPrivateProfileFloatA( "Display", "WaterChoppiness", ds.WaterChoppiness, ini ), 0.0f, 2.0f );
